@@ -31,6 +31,7 @@ fn request(protocol_version: u32, supported_versions: Option<Vec<u32>>) -> Hands
         client_host: None,
         purpose: None,
         redirect_count: 0,
+        refused_by: Vec::new(),
     }
 }
 
@@ -82,6 +83,7 @@ struct LegacyHandshakeRequest {
 #[test]
 fn new_requests_are_readable_by_legacy_peers_and_legacy_requests_by_new_peers() {
     let new_value = serde_json::to_value(request(1, Some(vec![2, 1]))).unwrap();
+    assert!(new_value.get("refused_by").is_none());
     let legacy: LegacyHandshakeRequest = serde_json::from_value(new_value).unwrap();
     assert_eq!(legacy.protocol_version, 1);
 
@@ -94,6 +96,7 @@ fn new_requests_are_readable_by_legacy_peers_and_legacy_requests_by_new_peers() 
     });
     let decoded: HandshakeRequest = serde_json::from_value(legacy_value).unwrap();
     assert_eq!(decoded.supported_versions, None);
+    assert!(decoded.refused_by.is_empty());
     assert_eq!(negotiate_protocol_version(&decoded), Ok(1));
 }
 

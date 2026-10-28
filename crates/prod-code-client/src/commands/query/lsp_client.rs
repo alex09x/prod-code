@@ -54,6 +54,7 @@ pub async fn execute_lsp_query(
     let mut timing = QueryTiming::new();
     let mut framed = {
         let mut attempt = 0;
+        let mut refused_by = Vec::new();
         loop {
             attempt += 1;
             let stream = prod_code_protocol::transport::connect(remote)
@@ -96,6 +97,7 @@ pub async fn execute_lsp_query(
                     client_host: Some(prod_code_protocol::client_host()),
                     purpose: None,
                     redirect_count: (attempt - 1) as u32,
+                    refused_by: refused_by.clone(),
                 }))
                 .await?;
 
@@ -108,6 +110,7 @@ pub async fn execute_lsp_query(
                     if attempt > 3 {
                         anyhow::bail!("too many gateway redirects: {reason:?}");
                     }
+                    refused_by.push(remote.to_string());
                     tracing::info!(%target_addr, ?reason, "received transparent redirect from gateway");
                     remote = resolve_redirect_target(&target_addr).with_context(|| {
                         format!("invalid redirect target address: {target_addr}")

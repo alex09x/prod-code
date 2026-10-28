@@ -167,6 +167,7 @@ fn test_codec_decodes_embedded_nul_in_frame_len() {
         client_host: None,
         purpose: None,
         redirect_count: 0,
+        refused_by: Vec::new(),
     });
 
     let mut json_with_nul = serde_json::to_vec(&original).unwrap();
@@ -203,6 +204,7 @@ fn test_codec_nul_marker_fails_when_nul_missing() {
         client_host: None,
         purpose: None,
         redirect_count: 0,
+        refused_by: Vec::new(),
     });
 
     enc_codec.encode(original, &mut buf).unwrap();

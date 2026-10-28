@@ -55,6 +55,7 @@ fn handshake(versions: Option<Vec<u32>>, purpose: Option<&str>) -> WireMessage {
         client_host: None,
         purpose: purpose.map(str::to_string),
         redirect_count: 0,
+        refused_by: Vec::new(),
     })
 }
 

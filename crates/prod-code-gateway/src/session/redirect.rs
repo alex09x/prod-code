@@ -221,6 +221,7 @@ pub(crate) async fn validation_redirect_target(
                 && !n.addr.is_empty()
                 && n.addr != own_addr
                 && n.addr != view.this_node
+                && !req.refused_by.contains(&n.addr)
                 && cluster_supports_engine(&n.status, engine)
                 && n.status.host.pressure().is_none()
                 && (req.redirect_count == 0 || !n.workspaces.iter().any(|w| w.name == ws_name))

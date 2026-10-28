@@ -1370,6 +1370,7 @@ async fn the_handshake_says_how_old_the_engine_is() {
                 client_host: None,
                 purpose: None,
                 redirect_count: 0,
+                refused_by: Vec::new(),
             }))
             .await
             .expect("handshake");
@@ -2300,6 +2301,7 @@ impl EditorSession {
                     client_host: None,
                     purpose,
                     redirect_count: 0,
+                    refused_by: Vec::new(),
                 },
             ))
             .await

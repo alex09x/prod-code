@@ -298,3 +298,95 @@ async fn established_session_retries_on_mid_session_redirect() {
     assert_eq!(gateway1.calls(), 1);
     assert_eq!(gateway2.calls(), 1);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn validation_handshake_redirects_carry_refused_gateway_history() {
+    let ws = prod_code_testkit::Workspace::new(&[("src/lib.rs", "pub fn a() {}\n")]);
+    let l1 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let l2 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let l3 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (a1, a2, a3) = (
+        l1.local_addr().unwrap(),
+        l2.local_addr().unwrap(),
+        l3.local_addr().unwrap(),
+    );
+
+    let redirect_peer = |listener: tokio::net::TcpListener, next_addr: std::net::SocketAddr| {
+        tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut framed = Framed::new(socket, ProdCodeCodec::new());
+            loop {
+                match framed.next().await.unwrap().unwrap() {
+                    WireMessage::SyncProbeRequest(req) => {
+                        framed
+                            .send(WireMessage::SyncProbeResponse(
+                                prod_code_protocol::SyncProbeResponse {
+                                    server_workspace_root: req.client_workspace_root,
+                                    seeded: false,
+                                    files_deleted: 0,
+                                    missing: Vec::new(),
+                                },
+                            ))
+                            .await
+                            .unwrap();
+                    }
+                    WireMessage::HandshakeRequest(req) => {
+                        framed
+                            .send(WireMessage::Redirect {
+                                target_addr: next_addr.to_string(),
+                                reason: Some("gateway memory pressure".to_string()),
+                            })
+                            .await
+                            .unwrap();
+                        return (req.redirect_count, req.refused_by);
+                    }
+                    other => panic!("unexpected setup message: {other:?}"),
+                }
+            }
+        })
+    };
+
+    let p1 = redirect_peer(l1, a2);
+    let p2 = redirect_peer(l2, a3);
+    let p3 = tokio::spawn(async move {
+        let (socket, _) = l3.accept().await.unwrap();
+        let mut framed = Framed::new(socket, ProdCodeCodec::new());
+        loop {
+            match framed.next().await.unwrap().unwrap() {
+                WireMessage::SyncProbeRequest(req) => {
+                    framed
+                        .send(WireMessage::SyncProbeResponse(
+                            prod_code_protocol::SyncProbeResponse {
+                                server_workspace_root: req.client_workspace_root,
+                                seeded: false,
+                                files_deleted: 0,
+                                missing: Vec::new(),
+                            },
+                        ))
+                        .await
+                        .unwrap();
+                }
+                WireMessage::HandshakeRequest(req) => {
+                    framed
+                        .send(WireMessage::Disconnect {
+                            reason: "capacity: no memory on final peer".to_string(),
+                        })
+                        .await
+                        .unwrap();
+                    return (req.redirect_count, req.refused_by);
+                }
+                other => panic!("unexpected setup message: {other:?}"),
+            }
+        }
+    });
+
+    let err = LspSession::open_for_validation(a1, &ws.root(), None)
+        .await
+        .err()
+        .expect("final peer refuses handshake")
+        .to_string();
+    assert!(err.contains("capacity: no memory on final peer"), "{err}");
+    assert_eq!(p1.await.unwrap(), (0, Vec::<String>::new()));
+    assert_eq!(p2.await.unwrap(), (1, vec![a1.to_string()]));
+    assert_eq!(p3.await.unwrap(), (2, vec![a1.to_string(), a2.to_string()]));
+}

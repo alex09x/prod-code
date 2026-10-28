@@ -71,7 +71,7 @@ async fn authenticated_handshake_redirect_loop_is_refused_after_three_hops() {
                             .unwrap();
                     }
                     WireMessage::HandshakeRequest(req) => {
-                        hops.push(req.redirect_count);
+                        hops.push((req.redirect_count, req.refused_by));
                         framed
                             .send(WireMessage::Redirect {
                                 target_addr: addr.to_string(),
@@ -135,5 +135,16 @@ async fn authenticated_handshake_redirect_loop_is_refused_after_three_hops() {
             .code(),
         Some(0)
     );
-    assert_eq!(peer.await.unwrap(), vec![0, 1, 2, 3]);
+    assert_eq!(
+        peer.await.unwrap(),
+        vec![
+            (0, vec![]),
+            (1, vec![addr.to_string()]),
+            (2, vec![addr.to_string(), addr.to_string()]),
+            (
+                3,
+                vec![addr.to_string(), addr.to_string(), addr.to_string()]
+            ),
+        ]
+    );
 }

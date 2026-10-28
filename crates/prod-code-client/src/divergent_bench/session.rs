@@ -212,6 +212,7 @@ pub(crate) async fn open_session_unbounded(
             client_host: Some(prod_code_protocol::client_host()),
             purpose: None,
             redirect_count: 0,
+            refused_by: Vec::new(),
         }))
         .await
         .context("send gateway handshake request")?;
