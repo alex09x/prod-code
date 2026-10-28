@@ -11,43 +11,17 @@
 use anyhow::{Result, anyhow};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
-use url::Url;
+use std::path::Path;
 
+use super::budget::{IMPACT_BUDGET, expired as budget_expired, within_deadline};
 use super::call_sites::check_signature_warnings;
-use super::diff::{Change, diff_hunks};
-use super::incoming::{Incoming, incoming_calls, note, test_name, unreadable};
+use super::changed::scan_changed_files;
+use super::diff::diff_hunks;
+use super::incoming::{Incoming, incoming_calls, note, test_name};
+use super::index::swift_index_build;
 use super::pool::SessionPool;
-use super::signatures::check_adjusted_signature;
-use super::symbols::{collect_functions, is_source_file};
 use super::test_cmd::file_language;
-use super::types::{COLD_RETRIES, COLD_WAIT, Gap, ImpactReport, IndexBuild, Reach, Symbol};
-
-async fn swift_index_build(remote: SocketAddr, root: &Path) -> Option<IndexBuild> {
-    let command = vec![
-        "swift".to_string(),
-        "build".to_string(),
-        "--build-tests".to_string(),
-    ];
-    let outcome = crate::exec::run_remote(
-        remote,
-        root,
-        None,
-        command.clone(),
-        Vec::new(),
-        900,
-        false,
-        |_, _| {},
-    )
-    .await;
-    Some(IndexBuild {
-        command: command.join(" "),
-        ok: outcome
-            .as_ref()
-            .is_ok_and(|o| o.exit.exit_code == Some(0) && !o.exit.timed_out),
-        duration_ms: outcome.as_ref().map_or(0, |o| o.exit.duration_ms),
-    })
-}
+use super::types::{COLD_RETRIES, COLD_WAIT, Gap, ImpactReport, Reach, Symbol};
 
 /// Runs the analysis against the checkout at `root` placed on `remote`.
 pub async fn analyze(
@@ -56,138 +30,45 @@ pub async fn analyze(
     base: Option<&str>,
     depth: usize,
 ) -> Result<ImpactReport> {
+    let analysis_started = tokio::time::Instant::now();
+    let deadline = analysis_started + IMPACT_BUDGET;
     let language = crate::sync::expected_engine(root)
         .ok_or_else(|| anyhow!("no project manifest at {}", root.display()))?
         .to_string();
     let tools = crate::verify::detect_tools(root);
     let changes = diff_hunks(root, base)?;
+    let mut timed_out = false;
     let index = if language == "swift" && !changes.is_empty() {
-        swift_index_build(remote, root).await
+        match within_deadline(deadline, swift_index_build(remote, root)).await {
+            Ok(index) => index,
+            Err(_) => {
+                timed_out = true;
+                None
+            }
+        }
     } else {
         None
     };
     let mut session_pool = SessionPool::new(remote, root);
     let changed_files: Vec<String> = changes.keys().cloned().collect();
-    let mut changed: Vec<Symbol> = Vec::new();
-    let mut unattributed: Vec<String> = Vec::new();
-    let mut incomplete: Vec<Gap> = Vec::new();
-    let mut adjusted_signatures: Vec<(Symbol, String, String, u32, u32)> = Vec::new();
-
-    for (file, change) in &changes {
-        if !is_source_file(file) {
-            unattributed.push(file.clone());
-            continue;
-        }
-        let file_hunks = match change {
-            Change::Hunks(hunks) => hunks,
-            Change::Unknown(error) => {
-                let (file, error) = (file.clone(), error.clone());
-                note(&mut incomplete, Gap::Diff { file, error });
-                continue;
-            }
-        };
-        let abs: PathBuf = root.join(file);
-        // A deleted file's functions are gone, and whoever called them changed with them.
-        if !abs.exists() {
-            note(&mut incomplete, Gap::Deleted { file: file.clone() });
-            continue;
-        }
-        if file_hunks.is_empty() {
-            continue; // git counts no changed line: only its mode changed
-        }
-        let text = match std::fs::read_to_string(&abs) {
-            Ok(text) => text,
-            Err(e) => {
-                let error = format!("it cannot be read: {e}");
-                note(
-                    &mut incomplete,
-                    Gap::Symbols {
-                        file: file.clone(),
-                        error,
-                    },
-                );
-                continue;
-            }
-        };
-        let file_lang = file_language(root, file).unwrap_or(&language);
-        let session = match session_pool.session_for_file(&abs).await {
-            Ok(s) => s,
-            Err(e) => {
-                let error = format!("{e:#}");
-                note(
-                    &mut incomplete,
-                    Gap::Symbols {
-                        file: file.clone(),
-                        error,
-                    },
-                );
-                continue;
-            }
-        };
-        let uri = Url::from_file_path(&abs)
-            .map_err(|_| anyhow!("bad path {file}"))?
-            .to_string();
-        let symbols = match session
-            .query(
-                &abs,
-                "textDocument/documentSymbol",
-                serde_json::json!({ "textDocument": { "uri": uri } }),
-            )
-            .await
-        {
-            Ok(serde_json::Value::Array(symbols)) => symbols,
-            res => {
-                let error = match res {
-                    Ok(serde_json::Value::Null) => {
-                        "textDocument/documentSymbol answered null, so its functions are unknown"
-                            .to_string()
-                    }
-                    Ok(other) => unreadable("textDocument/documentSymbol", &other),
-                    Err(e) => format!("{e:#}"),
-                };
-                note(
-                    &mut incomplete,
-                    Gap::Symbols {
-                        file: file.clone(),
-                        error,
-                    },
-                );
-                continue;
-            }
-        };
-        let mut functions = Vec::new();
-        if let Err(error) = collect_functions(&symbols, Some(&text), &mut functions) {
-            let file = file.clone();
-            note(&mut incomplete, Gap::Symbols { file, error });
-            continue;
-        }
-        for (name, start, end, sl, sc) in &functions {
-            if file_hunks.iter().any(|h| h.touches(*start, *end)) {
-                let sym = Symbol {
-                    name: name.clone(),
-                    file: file.clone(),
-                    line: *sl,
-                    col: *sc,
-                };
-                if !changed.contains(&sym) {
-                    changed.push(sym.clone());
-                }
-
-                if let Some(adj) = check_adjusted_signature(
-                    root, file, base, file_hunks, &text, name, file_lang, *sl, &sym,
-                ) {
-                    adjusted_signatures.push(adj);
-                }
-            }
-        }
-        // Each hunk on its own: a changed function does not vouch for a changed import or
-        // constant elsewhere in the same file.
-        let spans: Vec<(u32, u32)> = functions.iter().map(|f| (f.1, f.2)).collect();
-        let lines: Vec<&str> = text.lines().collect();
-        if file_hunks.iter().any(|h| !h.inside(&spans, &lines)) {
-            unattributed.push(file.clone());
-        }
+    let scan = scan_changed_files(
+        root,
+        &language,
+        base,
+        &changes,
+        &mut session_pool,
+        analysis_started,
+        deadline,
+    )
+    .await?;
+    let changed = scan.changed;
+    let unattributed = scan.unattributed;
+    let adjusted_signatures = scan.adjusted_signatures;
+    let mut incomplete = scan.incomplete;
+    if timed_out {
+        budget_expired(analysis_started, deadline, &mut incomplete);
     }
+    timed_out |= scan.timed_out;
 
     // A changed test is affected by its own change, whatever calls it.
     let mut tests: BTreeSet<Symbol> = BTreeSet::new();
@@ -234,13 +115,25 @@ pub async fn analyze(
     // has read the project, and "no callers" would then read as "no test is affected" (#202).
     // For the managed servers, an empty answer for the first changed function is asked again a
     // few times before it is believed; rust-analyzer answers from a database already loaded.
-    if let Some(first) = changed.first() {
+    if !timed_out && let Some(first) = changed.first() {
         let first_abs = root.join(&first.file);
         let first_lang = file_language(root, &first.file).unwrap_or(&language);
-        if first_lang != "rust"
-            && let Ok(first_session) = session_pool.session_for_file(&first_abs).await
-        {
-            let mut answer = incoming_calls(first_session, root, first_lang, first, None).await;
+        let first_session = if first_lang == "rust" {
+            None
+        } else {
+            match within_deadline(deadline, session_pool.session_for_file(&first_abs)).await {
+                Ok(Ok(session)) => Some(session),
+                Ok(Err(_)) => None,
+                Err(_) => {
+                    budget_expired(analysis_started, deadline, &mut incomplete);
+                    timed_out = true;
+                    None
+                }
+            }
+        };
+        if let Some(first_session) = first_session {
+            let mut answer =
+                incoming_calls(first_session, root, first_lang, first, Some(deadline)).await;
             for _ in 0..COLD_RETRIES {
                 match &answer {
                     Incoming::Callers(found) if !found.is_empty() => break,
@@ -250,63 +143,75 @@ pub async fn analyze(
                     Incoming::Failed(_) => break,
                     _ => {}
                 }
-                tokio::time::sleep(COLD_WAIT).await;
-                let Ok(first_session) = session_pool.session_for_file(&first_abs).await else {
+                if budget_expired(analysis_started, deadline, &mut incomplete) {
+                    timed_out = true;
                     break;
+                }
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    budget_expired(analysis_started, deadline, &mut incomplete);
+                    timed_out = true;
+                    break;
+                }
+                tokio::time::sleep(COLD_WAIT.min(remaining)).await;
+                let first_session = match within_deadline(
+                    deadline,
+                    session_pool.session_for_file(&first_abs),
+                )
+                .await
+                {
+                    Ok(Ok(session)) => session,
+                    Ok(Err(_)) => break,
+                    Err(_) => {
+                        budget_expired(analysis_started, deadline, &mut incomplete);
+                        timed_out = true;
+                        break;
+                    }
                 };
-                answer = incoming_calls(first_session, root, first_lang, first, None).await;
+                answer =
+                    incoming_calls(first_session, root, first_lang, first, Some(deadline)).await;
             }
             cache.insert(key(first), answer);
         }
     }
-    const IMPACT_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
-    let bfs_start = tokio::time::Instant::now();
-    let deadline = bfs_start + IMPACT_BUDGET;
     let mut callers: BTreeSet<Symbol> = BTreeSet::new();
-    let mut timed_out = false;
-    let check_budget = |incomplete: &mut Vec<Gap>| -> bool {
-        let elapsed = bfs_start.elapsed();
-        if elapsed < IMPACT_BUDGET {
-            return false;
-        }
-        let (elapsed_ms, budget_ms) =
-            (elapsed.as_millis() as u64, IMPACT_BUDGET.as_millis() as u64);
-        note(
-            incomplete,
-            Gap::Timeout {
-                elapsed_ms,
-                budget_ms,
-            },
-        );
-        true
-    };
     for (origin, origin_is_test) in &origins {
         if *origin_is_test {
             continue;
         }
-        if check_budget(&mut incomplete) {
+        if budget_expired(analysis_started, deadline, &mut incomplete) {
             break;
         }
         let mut seen: HashSet<(String, u32, u32)> = HashSet::from([key(origin)]);
         let mut queue: VecDeque<(Symbol, bool, usize)> =
             VecDeque::from([(origin.clone(), *origin_is_test, 0)]);
         while let Some((sym, is_test, level)) = queue.pop_front() {
-            if check_budget(&mut incomplete) {
+            if budget_expired(analysis_started, deadline, &mut incomplete) {
                 timed_out = true;
                 break;
             }
             if let std::collections::hash_map::Entry::Vacant(slot) = cache.entry(key(&sym)) {
                 let sym_abs = root.join(&sym.file);
-                let incoming = match session_pool.session_for_file(&sym_abs).await {
-                    Ok(sym_session) => {
+                let incoming = match within_deadline(
+                    deadline,
+                    session_pool.session_for_file(&sym_abs),
+                )
+                .await
+                {
+                    Ok(Ok(sym_session)) => {
                         let sym_lang = file_language(root, &sym.file).unwrap_or(&language);
                         incoming_calls(sym_session, root, sym_lang, &sym, Some(deadline)).await
                     }
-                    Err(e) => Incoming::Failed(format!("{e:#}")),
+                    Ok(Err(e)) => Incoming::Failed(format!("{e:#}")),
+                    Err(_) => {
+                        budget_expired(analysis_started, deadline, &mut incomplete);
+                        timed_out = true;
+                        break;
+                    }
                 };
                 slot.insert(incoming);
             }
-            if check_budget(&mut incomplete) {
+            if budget_expired(analysis_started, deadline, &mut incomplete) {
                 timed_out = true;
                 break;
             }
@@ -372,8 +277,22 @@ pub async fn analyze(
         }
     }
 
-    let signature_warnings =
-        check_signature_warnings(&mut session_pool, root, &changes, adjusted_signatures).await;
+    let signature_warnings = if timed_out {
+        Vec::new()
+    } else {
+        match within_deadline(
+            deadline,
+            check_signature_warnings(&mut session_pool, root, &changes, adjusted_signatures),
+        )
+        .await
+        {
+            Ok(warnings) => warnings,
+            Err(_) => {
+                budget_expired(analysis_started, deadline, &mut incomplete);
+                Vec::new()
+            }
+        }
+    };
 
     session_pool.close_all().await;
     let tests: Vec<Symbol> = tests.into_iter().collect();

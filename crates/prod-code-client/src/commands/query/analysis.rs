@@ -66,7 +66,10 @@ pub async fn run_impact(
     let started = std::time::Instant::now();
     let report = prod_code_mcp::impact::analyze(remote, &root, base, depth).await?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&prod_code_mcp::impact::bounded_json_value(&report))?
+        );
     } else {
         print!("{}", report.render());
         eprintln!(

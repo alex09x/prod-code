@@ -18,9 +18,13 @@
 //! `impact --ci` runs the whole suite (#434).
 
 pub mod analyze;
+mod budget;
 pub mod call_sites;
+mod changed;
 pub mod diff;
 pub mod incoming;
+mod index;
+mod output;
 pub mod pool;
 pub mod render;
 pub mod rust_attr;
@@ -36,6 +40,7 @@ mod tests;
 pub use analyze::analyze;
 pub use diff::changed_lines;
 pub use incoming::{suspects_for, unreadable};
+pub use output::{MAX_IMPACT_OUTPUT_ITEMS, bounded_json_value};
 pub use symbols::{is_scratch_path, one_based};
 pub use test_cmd::{
     file_language, looks_like_test, registration, test_command, test_command_for_tests, test_marker,

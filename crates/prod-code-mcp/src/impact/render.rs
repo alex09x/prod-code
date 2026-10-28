@@ -10,6 +10,7 @@
 
 use std::collections::BTreeSet;
 
+use super::output::{MAX_IMPACT_OUTPUT_ITEMS, append_omitted};
 use super::types::{CiDecision, CiRun, ImpactReport};
 
 impl ImpactReport {
@@ -242,16 +243,17 @@ impl ImpactReport {
         }
         if !self.changed.is_empty() {
             out.push_str("changed functions:\n");
-            for s in &self.changed {
+            for s in self.changed.iter().take(MAX_IMPACT_OUTPUT_ITEMS) {
                 out.push_str(&format!(
                     "  • {}  {}:{}:{}\n",
                     s.name, s.file, s.line, s.col
                 ));
             }
+            append_omitted(&mut out, self.changed.len(), "changed functions", "  ");
         }
         if !self.signature_warnings.is_empty() {
             out.push_str("signature warnings (unadjusted call sites before full compilation):\n");
-            for warn in &self.signature_warnings {
+            for warn in self.signature_warnings.iter().take(MAX_IMPACT_OUTPUT_ITEMS) {
                 out.push_str(&format!(
                     "  ⚠️  `{}` signature changed in {}:{}:{}\n",
                     warn.symbol.name, warn.symbol.file, warn.symbol.line, warn.symbol.col
@@ -267,7 +269,11 @@ impl ImpactReport {
                     "      unadjusted sibling call sites ({}):\n",
                     sibling_count
                 ));
-                for site in &warn.unadjusted_call_sites {
+                for site in warn
+                    .unadjusted_call_sites
+                    .iter()
+                    .take(MAX_IMPACT_OUTPUT_ITEMS)
+                {
                     let caller_str = match &site.caller {
                         Some(c) => format!(" in `{c}`"),
                         None => String::new(),
@@ -278,25 +284,39 @@ impl ImpactReport {
                         tag, site.file, site.line, site.col, caller_str
                     ));
                 }
+                append_omitted(
+                    &mut out,
+                    warn.unadjusted_call_sites.len(),
+                    "call sites",
+                    "        ",
+                );
             }
+            append_omitted(
+                &mut out,
+                self.signature_warnings.len(),
+                "signature warnings",
+                "  ",
+            );
         }
         if !self.callers.is_empty() {
             out.push_str("reached callers:\n");
-            for s in &self.callers {
+            for s in self.callers.iter().take(MAX_IMPACT_OUTPUT_ITEMS) {
                 out.push_str(&format!(
                     "  • {}  {}:{}:{}\n",
                     s.name, s.file, s.line, s.col
                 ));
             }
+            append_omitted(&mut out, self.callers.len(), "callers", "  ");
         }
         if !self.tests.is_empty() {
             out.push_str("affected tests:\n");
-            for s in &self.tests {
+            for s in self.tests.iter().take(MAX_IMPACT_OUTPUT_ITEMS) {
                 out.push_str(&format!(
                     "  • {}  {}:{}:{}\n",
                     s.name, s.file, s.line, s.col
                 ));
             }
+            append_omitted(&mut out, self.tests.len(), "tests", "  ");
         } else if unindexed {
             out.push_str("affected tests: unknown (no index); run the full suite\n");
         } else if !self.incomplete.is_empty() {
@@ -310,15 +330,27 @@ impl ImpactReport {
             out.push_str(
                 "incomplete analysis (tests beyond those listed may be affected; run the full suite):\n",
             );
-            for gap in &self.incomplete {
+            for gap in self.incomplete.iter().take(MAX_IMPACT_OUTPUT_ITEMS) {
                 out.push_str(&format!("  • {}\n", gap.describe()));
             }
+            append_omitted(
+                &mut out,
+                self.incomplete.len(),
+                "incomplete-analysis notes",
+                "  ",
+            );
         }
         if !self.unattributed_files.is_empty() {
             out.push_str(&format!(
                 "changes outside functions (run the full suite for these): {}\n",
-                self.unattributed_files.join(", ")
+                self.unattributed_files
+                    .iter()
+                    .take(MAX_IMPACT_OUTPUT_ITEMS)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
+            append_omitted(&mut out, self.unattributed_files.len(), "files", "  ");
         }
         // An untrusted selection is not offered as the command: the tests it found are listed
         // above, and what `--run` runs is the whole suite (#1471).
