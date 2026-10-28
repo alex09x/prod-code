@@ -9,9 +9,9 @@
  */
 
 use super::{HypothesisSpec, ShadowOutcome, run_shadow_once};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Sends the hypotheses, waits for their results, and ranks them. A Cargo check whose shadow
 /// fails only because a cached Rust `.rmeta` file is missing warms Cargo's target and retries.
@@ -47,12 +47,15 @@ pub async fn run_shadow(
         return Ok(first);
     }
 
+    let target_dir = metadata_target_dir(&first.server_workspace_root)?;
+    let retry_command = command_with_target_dir(&command, &target_dir);
+    let retry_env = environment_with_target_dir(&env, &target_dir);
     let warmup = crate::exec::run_remote(
         remote,
         root,
         subdir,
-        warmup_command(root, subdir, &command),
-        env.clone(),
+        warmup_command(root, subdir, &retry_command),
+        retry_env.clone(),
         timeout_secs,
         false,
         |_, _| {},
@@ -70,8 +73,8 @@ pub async fn run_shadow(
         root,
         subdir,
         specs,
-        command,
-        env,
+        retry_command,
+        retry_env,
         timeout_secs,
         parallel,
         tail_bytes,
@@ -92,10 +95,8 @@ pub async fn run_shadow(
     Ok(retry)
 }
 
-/// The warm-up runs in the node's persistent copy of the workspace, not in a shadow, so it must
-/// leave that copy as the checkout has it (#1443). With a `Cargo.lock` in the checkout, it runs
-/// `--locked` and cannot change it. Without one, Cargo would write one there that the checkout
-/// does not have: it is removed again after the warm-up.
+/// Runs Cargo in a disposable source copy, preserving reusable artifacts in a sibling target
+/// cache instead of letting Cargo or build scripts mutate the persistent workspace (#1443).
 fn warmup_command(root: &Path, subdir: Option<&str>, command: &[String]) -> Vec<String> {
     let start = subdir.map_or_else(|| root.to_path_buf(), |s| root.join(s));
     let locked = start
@@ -106,23 +107,94 @@ fn warmup_command(root: &Path, subdir: Option<&str>, command: &[String]) -> Vec<
         .iter()
         .position(|arg| arg == "check")
         .unwrap_or(command.len().saturating_sub(1));
-    if locked {
-        let mut out = command.to_vec();
-        if !out.iter().any(|arg| arg == "--locked" || arg == "--frozen") {
-            out.insert(check + 1, "--locked".to_string());
-        }
-        return out;
+    let mut cargo_command = command.to_vec();
+    if locked
+        && !cargo_command
+            .iter()
+            .any(|arg| arg == "--locked" || arg == "--frozen")
+    {
+        cargo_command.insert(check + 1, "--locked".to_string());
     }
     let mut out: Vec<String> = [
         "sh",
         "-c",
-        "\"$@\"; status=$?; manifest=$(cargo locate-project --workspace --message-format plain \
-         2>/dev/null) && rm -f \"$(dirname \"$manifest\")/Cargo.lock\"; exit $status",
+        "set -eu
+         manifest=$(cargo locate-project --workspace --message-format plain)
+         workspace=${manifest%/Cargo.toml}
+         workspace=$(cd \"$workspace\" && pwd -P)
+         current=$(pwd -P)
+         case \"$current\" in
+           \"$workspace\") relative= ;;
+           \"$workspace\"/*) relative=\"${current#\"$workspace\"}\" ;;
+           *) echo 'warm-up directory is outside the Cargo workspace' >&2; exit 2 ;;
+         esac
+         scratch=$(mktemp -d \"${TMPDIR:-/tmp}/prod-code-shadow-warmup.XXXXXX\")
+         trap 'rm -rf \"$scratch\"' EXIT HUP INT TERM
+         tar -C \"$workspace\" --exclude=./target --exclude=./.git -cf \"$scratch/source.tar\" .
+         mkdir \"$scratch/source\"
+         tar -xf \"$scratch/source.tar\" -C \"$scratch/source\"
+         rm -f \"$scratch/source.tar\"
+         cd \"$scratch/source$relative\"
+         \"$@\"",
         "sh",
     ]
     .map(str::to_string)
     .to_vec();
-    out.extend(command.iter().cloned());
+    out.extend(cargo_command);
+    out
+}
+
+fn metadata_target_dir(server_workspace_root: &str) -> Result<PathBuf> {
+    let workspace = Path::new(server_workspace_root);
+    anyhow::ensure!(
+        workspace.is_absolute(),
+        "gateway did not report an absolute workspace root for metadata warm-up"
+    );
+    let workspaces_dir = workspace
+        .parent()
+        .context("gateway workspace root has no parent directory")?;
+    let storage_root = workspaces_dir.parent().unwrap_or(workspaces_dir);
+    let name = workspace
+        .file_name()
+        .context("gateway workspace root has no directory name")?;
+    Ok(storage_root.join(".prod-code-shadow-targets").join(name))
+}
+
+fn command_with_target_dir(command: &[String], target_dir: &Path) -> Vec<String> {
+    let target_dir = target_dir.to_string_lossy().into_owned();
+    let mut out = command.to_vec();
+    if let Some(index) = out.iter().position(|arg| arg == "--target-dir")
+        && index + 1 < out.len()
+    {
+        out[index + 1] = target_dir;
+        return out;
+    }
+    if let Some(arg) = out.iter_mut().find(|arg| arg.starts_with("--target-dir=")) {
+        *arg = format!("--target-dir={target_dir}");
+        return out;
+    }
+    let check = out
+        .iter()
+        .position(|arg| arg == "check")
+        .unwrap_or(out.len().saturating_sub(1));
+    out.splice(
+        check + 1..check + 1,
+        ["--target-dir".to_string(), target_dir],
+    );
+    out
+}
+
+fn environment_with_target_dir(
+    env: &[(String, String)],
+    target_dir: &Path,
+) -> Vec<(String, String)> {
+    let target_dir = target_dir.to_string_lossy().into_owned();
+    let mut out = env.to_vec();
+    if let Some((_, value)) = out.iter_mut().find(|(name, _)| name == "CARGO_TARGET_DIR") {
+        *value = target_dir;
+    } else {
+        out.push(("CARGO_TARGET_DIR".to_string(), target_dir));
+    }
     out
 }
 
@@ -172,32 +244,93 @@ mod tests {
         ));
     }
 
-    /// #1443: the warm-up cannot leave a lock file the checkout does not have, nor change one
-    /// it has.
     #[test]
-    fn the_warmup_keeps_the_persistent_copy_as_the_checkout_has_it() {
+    fn metadata_target_cache_is_outside_the_workspace_tree() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("storage/workspaces/project");
+        let target = metadata_target_dir(workspace.to_str().unwrap()).unwrap();
+
+        assert_eq!(
+            target,
+            temp.path()
+                .join("storage/.prod-code-shadow-targets/project")
+        );
+        assert!(!target.starts_with(&workspace));
+    }
+
+    /// #1443: the warm-up runs on a disposable source copy and keeps Cargo output in a separate
+    /// reusable target cache.
+    #[test]
+    fn the_warmup_isolates_build_script_changes_on_success_and_failure() {
         let check = ["cargo", "+stable", "check", "--workspace"].map(str::to_string);
         let temp = tempfile::tempdir().unwrap();
-        let root = temp.path();
-        std::fs::create_dir_all(root.join("crates/a")).unwrap();
+        let root = temp.path().join("persistent-workspace");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"warmup_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\nbuild = \"build.rs\"\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/lib.rs"), "pub fn ready() {}\n").unwrap();
+        std::fs::write(
+            root.join("build.rs"),
+            "fn main() {\n    let dir = std::path::PathBuf::from(std::env::var_os(\"CARGO_MANIFEST_DIR\").unwrap());\n    std::fs::write(dir.join(\"build-script-side-effect.txt\"), \"written\").unwrap();\n    if std::env::var_os(\"FAIL_BUILD\").is_some() { panic!(\"controlled build failure\"); }\n}\n",
+        )
+        .unwrap();
 
-        let unlocked = warmup_command(root, Some("crates/a"), &check);
-        assert_eq!(&unlocked[..2], &["sh".to_string(), "-c".to_string()]);
+        let target_dir = temp.path().join("reusable-target");
+        let command = command_with_target_dir(&["cargo".into(), "check".into()], &target_dir);
+        assert!(command.contains(&target_dir.to_string_lossy().into_owned()));
+        let warmup = warmup_command(&root, None, &command);
+
+        let success = std::process::Command::new(&warmup[0])
+            .args(&warmup[1..])
+            .current_dir(&root)
+            .env("CARGO_TARGET_DIR", &target_dir)
+            .output()
+            .unwrap();
         assert!(
-            unlocked[2].contains("cargo locate-project --workspace"),
-            "{unlocked:?}"
+            success.status.success(),
+            "{}",
+            String::from_utf8_lossy(&success.stderr)
         );
-        assert!(unlocked[2].contains("rm -f"), "{unlocked:?}");
-        assert!(unlocked[2].contains("exit $status"), "{unlocked:?}");
-        assert_eq!(&unlocked[4..], &check);
+        assert!(!root.join("Cargo.lock").exists());
+        assert!(!root.join("build-script-side-effect.txt").exists());
+        assert!(target_dir.join("debug").exists());
 
-        // A lock at the workspace root, above the subdirectory.
+        let failing_root = temp.path().join("failing-workspace");
+        std::fs::create_dir_all(failing_root.join("src")).unwrap();
+        std::fs::write(
+            failing_root.join("Cargo.toml"),
+            "[package]\nname = \"warmup_failure\"\nversion = \"0.1.0\"\nedition = \"2021\"\nbuild = \"build.rs\"\n",
+        )
+        .unwrap();
+        std::fs::write(failing_root.join("src/lib.rs"), "pub fn ready() {}\n").unwrap();
+        std::fs::copy(root.join("build.rs"), failing_root.join("build.rs")).unwrap();
+        let failing = warmup_command(&failing_root, None, &command);
+        let failure = std::process::Command::new(&failing[0])
+            .args(&failing[1..])
+            .current_dir(&failing_root)
+            .env("CARGO_TARGET_DIR", &target_dir)
+            .env("FAIL_BUILD", "1")
+            .output()
+            .unwrap();
+        assert!(!failure.status.success());
+        assert!(!failing_root.join("Cargo.lock").exists());
+        assert!(!failing_root.join("build-script-side-effect.txt").exists());
+
+        // A lock at the root still makes the warm-up invocation immutable.
         std::fs::write(root.join("Cargo.lock"), "").unwrap();
-        assert_eq!(
-            warmup_command(root, Some("crates/a"), &check),
-            ["cargo", "+stable", "check", "--locked", "--workspace"].map(str::to_string)
+        assert!(
+            warmup_command(&root, Some("src"), &check)
+                .iter()
+                .any(|arg| arg == "--locked")
         );
         let frozen = ["cargo", "check", "--frozen"].map(str::to_string);
-        assert_eq!(warmup_command(root, None, &frozen), frozen);
+        assert!(
+            warmup_command(&root, None, &frozen)
+                .iter()
+                .any(|arg| arg == "--frozen")
+        );
     }
 }
