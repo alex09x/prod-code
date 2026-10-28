@@ -264,6 +264,7 @@ async fn session(
             client_host: None,
             purpose: None,
             redirect_count: 0,
+            refused_by: Vec::new(),
         }))
         .await
         .expect("handshake is sent");

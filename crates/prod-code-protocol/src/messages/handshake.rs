@@ -90,6 +90,9 @@ pub struct HandshakeRequest {
     /// Number of times this handshake has been transparently redirected across nodes (Roadmap 5.1).
     #[serde(default)]
     pub redirect_count: u32,
+    /// Gateway addresses (`host:port`) that already redirected this handshake attempt (#1643).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refused_by: Vec<String>,
 }
 
 /// Code of the diagnostic a gateway reports for a file the analyzer panicked on (#94): the file

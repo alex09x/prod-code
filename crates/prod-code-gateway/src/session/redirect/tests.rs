@@ -32,6 +32,7 @@ fn request(redirects: bool, redirect_count: u32) -> HandshakeRequest {
         client_host: None,
         purpose: None,
         redirect_count,
+        refused_by: Vec::new(),
     }
 }
 
@@ -264,6 +265,34 @@ async fn validation_and_rebalance_redirects_reach_only_clients_that_follow_them(
         let chosen = validation_redirect_target(&request(true, 0), &state, "rust", capacity).await;
         assert_eq!(chosen.as_deref(), expected, "{name}");
     }
+
+    // #1643: a second hop never sends the client back to a peer that already refused this
+    // handshake attempt, even when that peer has the largest admissible headroom.
+    let dir = tempfile::tempdir().unwrap();
+    let state = Arc::new(ServerState::new(dir.path().join("storage")));
+    state.absorb_gossip(sized("first:9400", 50, 100, &[])).await;
+    state
+        .absorb_gossip(sized("second:9400", 30, 100, &[]))
+        .await;
+    assert_eq!(
+        validation_redirect_target(&request(true, 0), &state, "rust", capacity)
+            .await
+            .as_deref(),
+        Some("first:9400")
+    );
+    let mut second_hop = request(true, 1);
+    second_hop.refused_by = vec!["first:9400".to_string()];
+    assert_eq!(
+        validation_redirect_target(&second_hop, &state, "rust", capacity)
+            .await
+            .as_deref(),
+        Some("second:9400")
+    );
+    second_hop.refused_by.push("second:9400".to_string());
+    assert_eq!(
+        validation_redirect_target(&second_hop, &state, "rust", capacity).await,
+        None
+    );
 
     let reason = Some("memory pressure".to_string());
     assert_eq!(

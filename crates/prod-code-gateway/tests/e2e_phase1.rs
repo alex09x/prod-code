@@ -205,6 +205,7 @@ async fn test_full_phase1_e2e_flow() {
                 client_host: None,
                 purpose: None,
                 redirect_count: 0,
+                refused_by: Vec::new(),
             }))
             .await
             .unwrap();
@@ -376,6 +377,7 @@ async fn unix_socket_local_transport_and_negotiated_capabilities_e2e() {
                 client_host: None,
                 purpose: None,
                 redirect_count: 0,
+                refused_by: Vec::new(),
             }))
             .await
             .unwrap();
@@ -463,6 +465,7 @@ async fn transparent_gateway_redirection_e2e() {
                 client_host: None,
                 purpose: None,
                 redirect_count,
+                refused_by: Vec::new(),
             }))
             .await
             .unwrap();

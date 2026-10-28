@@ -444,6 +444,7 @@ async fn validation_wait_cancellation_and_failed_response_release_every_owner() 
             client_host: None,
             purpose: Some(prod_code_protocol::PURPOSE_VALIDATION.to_string()),
             redirect_count: 0,
+            refused_by: Vec::new(),
         }))
         .await
         .unwrap();
@@ -500,6 +501,7 @@ async fn validation_wait_cancellation_and_failed_response_release_every_owner() 
             client_host: None,
             purpose: Some(prod_code_protocol::PURPOSE_VALIDATION.to_string()),
             redirect_count: 0,
+            refused_by: Vec::new(),
         }))
         .await
         .unwrap();
@@ -563,6 +565,7 @@ impl WireSession {
                 client_host: None,
                 purpose: None,
                 redirect_count: 0,
+                refused_by: Vec::new(),
             }))
             .await
             .unwrap();
@@ -767,6 +770,7 @@ async fn validation_under_memory_pressure_refuses_shared_generic_engine_fallback
             client_host: None,
             purpose: Some(prod_code_protocol::PURPOSE_VALIDATION.to_string()),
             redirect_count: 0,
+            refused_by: Vec::new(),
         }))
         .await
         .unwrap();
@@ -879,6 +883,7 @@ async fn validation_under_memory_pressure_redirects_to_available_cluster_peer() 
             client_host: None,
             purpose: Some(prod_code_protocol::PURPOSE_VALIDATION.to_string()),
             redirect_count: 0,
+            refused_by: Vec::new(),
         }))
         .await
         .unwrap();
@@ -1001,6 +1006,7 @@ async fn validation_under_memory_pressure_refuses_when_redirect_count_reached() 
             client_host: None,
             purpose: Some(prod_code_protocol::PURPOSE_VALIDATION.to_string()),
             redirect_count: 2,
+            refused_by: Vec::new(),
         }))
         .await
         .unwrap();
@@ -1108,6 +1114,7 @@ path = "src/lib.rs"
             client_host: None,
             purpose: None,
             redirect_count: 0,
+            refused_by: Vec::new(),
         }))
         .await
         .unwrap();
@@ -1273,6 +1280,7 @@ async fn read_file_request_in_active_session_pulls_large_artifact() {
             client_host: None,
             purpose: None,
             redirect_count: 0,
+            refused_by: Vec::new(),
         }))
         .await
         .unwrap();
@@ -1381,6 +1389,7 @@ async fn check_editor_rebalance_redirect(wait_for_subscription: bool) {
             client_host: None,
             purpose: Some(prod_code_protocol::PURPOSE_EDITOR.to_string()),
             redirect_count: 0,
+            refused_by: Vec::new(),
         }))
         .await
         .unwrap();
@@ -1483,6 +1492,7 @@ async fn an_editor_server_is_not_spawned_without_memory_for_it() {
             client_host: None,
             purpose: Some(prod_code_protocol::PURPOSE_EDITOR.to_string()),
             redirect_count: 0,
+            refused_by: Vec::new(),
         }))
         .await
         .unwrap();

@@ -34,6 +34,7 @@ fn test_codec_roundtrip() {
         client_host: None,
         purpose: None,
         redirect_count: 0,
+        refused_by: Vec::new(),
     });
 
     codec.encode(original.clone(), &mut buf).unwrap();
@@ -80,6 +81,7 @@ fn test_codec_encode_ref_roundtrip() {
         client_host: None,
         purpose: None,
         redirect_count: 0,
+        refused_by: Vec::new(),
     });
 
     codec.encode_ref(&original, &mut buf).unwrap();
@@ -236,6 +238,7 @@ fn test_codec_preserves_preexisting_bytes_and_appends() {
         client_host: None,
         purpose: None,
         redirect_count: 0,
+        refused_by: Vec::new(),
     });
 
     codec.encode_ref(&original, &mut buf).unwrap();
@@ -271,6 +274,7 @@ fn test_codec_oversized_frame_aborts_early_and_does_not_retain_capacity() {
         client_host: None,
         purpose: None,
         redirect_count: 0,
+        refused_by: Vec::new(),
     });
 
     let err = codec
@@ -308,6 +312,7 @@ fn test_codec_nul_marker_roundtrip() {
         client_host: None,
         purpose: None,
         redirect_count: 0,
+        refused_by: Vec::new(),
     });
 
     codec.encode(original.clone(), &mut buf).unwrap();
@@ -343,6 +348,7 @@ fn test_codec_decodes_trailing_nul_without_flag() {
         client_host: None,
         purpose: None,
         redirect_count: 0,
+        refused_by: Vec::new(),
     });
 
     enc_codec.encode(original.clone(), &mut buf).unwrap();

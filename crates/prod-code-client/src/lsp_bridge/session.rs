@@ -66,6 +66,7 @@ pub async fn open_editor_session(
 )> {
     let supported_versions = supported_protocol_versions();
     let mut redirect_count = initial_redirect_count;
+    let mut refused_by = Vec::new();
     loop {
         let stream = if redirect_count > 0 {
             connect_to_redirect_target(remote).await?
@@ -101,6 +102,7 @@ pub async fn open_editor_session(
                 client_host: Some(prod_code_protocol::client_host()),
                 purpose: Some(prod_code_protocol::PURPOSE_EDITOR.to_string()),
                 redirect_count,
+                refused_by: refused_by.clone(),
             }))
             .await?;
         let handshake_resp = match framed.next().await {
@@ -113,6 +115,7 @@ pub async fn open_editor_session(
                 if redirect_count > 3 {
                     anyhow::bail!("too many gateway redirects: {reason:?}");
                 }
+                refused_by.push(remote.to_string());
                 tracing::info!(%target_addr, ?reason, "received transparent redirect from gateway");
                 remote = resolve_redirect_target(&target_addr)
                     .with_context(|| format!("invalid redirect target address: {target_addr}"))?;

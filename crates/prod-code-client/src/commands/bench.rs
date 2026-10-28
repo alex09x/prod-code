@@ -97,6 +97,7 @@ pub async fn run_benchmark(
                 client_host: Some(prod_code_protocol::client_host()),
                 purpose: None,
                 redirect_count: 0,
+                refused_by: Vec::new(),
             });
 
             if framed.send(handshake_req).await.is_err() {

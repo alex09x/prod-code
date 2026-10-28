@@ -144,6 +144,7 @@ async fn connect_shared(
             client_host: None,
             purpose: None,
             redirect_count: 0,
+            refused_by: Vec::new(),
         }))
         .await
         .expect("send shared handshake");

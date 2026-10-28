@@ -327,6 +327,7 @@ async fn a_handshake_without_memory_for_its_engine_is_refused_for_capacity() {
                 client_host: None,
                 purpose: None,
                 redirect_count: 0,
+                refused_by: Vec::new(),
             },
         ))
         .await

@@ -90,6 +90,7 @@ impl LspSession {
             remote = routed;
         }
         let mut redirect_count = 0;
+        let mut refused_by = Vec::new();
         let (framed, handshake) = loop {
             let stream = prod_code_protocol::transport::connect(remote)
                 .await
@@ -133,6 +134,7 @@ impl LspSession {
                     client_host: Some(prod_code_protocol::client_host()),
                     purpose: purpose.map(str::to_string),
                     redirect_count,
+                    refused_by: refused_by.clone(),
                 }))
                 .await?;
             let handshake = match framed.next().await {
@@ -145,6 +147,7 @@ impl LspSession {
                     if redirect_count > 3 {
                         anyhow::bail!("too many gateway redirects: {reason:?}");
                     }
+                    refused_by.push(remote.to_string());
                     tracing::info!(%target_addr, ?reason, "received transparent redirect from gateway");
                     remote = crate::cluster::parse_remotes(&target_addr)?
                         .into_iter()

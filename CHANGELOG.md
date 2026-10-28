@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **A Redirected Validation Handshake Never Returns to a Node That Already Refused It** (`crates/prod-code-protocol`, `crates/prod-code-gateway`, `crates/prod-code-mcp`, `crates/prod-code-client`, #1643):
+  When a validation handshake is refused for capacity, `validation_redirect_target` redirects the client to a peer. The handshake carried only `redirect_count`, not the gateways that already redirected this attempt. If the second node also refused and the first node's gossiped headroom was the largest among remaining peers, the second hop sent the client back to the first node. `HandshakeRequest` now carries `refused_by: Vec<String>` (`#[serde(default, skip_serializing_if = "Vec::is_empty")]`, so older clients and gateways still interoperate). Clients following a `WireMessage::Redirect` append the redirecting gateway's address before reconnecting, and `validation_redirect_target` leaves out any peer listed in `refused_by`.
 - **A Command Run From a Subdirectory Is Placed by the Project It Will Run** (`crates/prod-code-client`, #1478, part 1):
   At startup, the client picks the node for a command by the project the command's paths name. It resolved a relative path against the checkout root, while the command itself resolves it against the current directory. Run from `tools/`, `prod-code check --path nested` was placed by `<root>/nested` but checked `tools/nested`, so a nested project of another language could land on a node without its engine. A relative path is now resolved against the current directory first, and against the root only when nothing is there.
 - **Paths and URIs Under a Windows Workspace Root Map to the Node's Copy and Back** (`crates/prod-code-protocol`, #1523):
