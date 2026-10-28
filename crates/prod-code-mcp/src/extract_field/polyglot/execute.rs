@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::extract_field::helpers::{display, is_ident, is_in_literal_or_comment, mentions};
-use crate::extract_field::polyglot::constructors::find_constructors;
+use crate::extract_field::polyglot::constructors::{find_constructors, find_go_constructors};
 use crate::extract_field::polyglot::expression_boundaries::{
     has_complete_expression_boundaries, requires_complete_expression_boundaries,
 };
@@ -262,18 +262,35 @@ pub async fn extract_polyglot(
     };
 
     let mut unmatched = Vec::new();
-    let constructors = find_constructors(
-        root,
-        file,
-        &text,
-        lang,
-        &owner,
-        name,
-        &init,
-        &mut edits,
-        &mut texts,
-        &mut unmatched,
-    );
+    let constructors = if lang == Language::Go {
+        find_go_constructors(
+            remote,
+            root,
+            file,
+            &text,
+            class_body_open,
+            &owner,
+            name,
+            &init,
+            &mut edits,
+            &mut texts,
+            &mut unmatched,
+        )
+        .await?
+    } else {
+        find_constructors(
+            root,
+            file,
+            &text,
+            lang,
+            &owner,
+            name,
+            &init,
+            &mut edits,
+            &mut texts,
+            &mut unmatched,
+        )
+    };
 
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
     for (path, mut file_edits) in edits {

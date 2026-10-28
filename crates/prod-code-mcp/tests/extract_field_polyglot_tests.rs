@@ -251,7 +251,7 @@ async fn test_extract_field_python_without_init() {
 }
 
 #[tokio::test]
-async fn test_extract_field_refuses_same_named_go_literal_in_another_package() {
+async fn test_extract_field_ignores_same_named_go_literal_in_another_package() {
     let ws = Workspace::new(&[
         ("Cargo.toml", CARGO_TOML),
         (
@@ -286,12 +286,17 @@ func makeStore() Store {
     let root = ws.root().to_path_buf();
     let store_file = root.join("store.go");
     let main_file = root.join("main.go");
-    let store_before = fs::read_to_string(&store_file).unwrap();
     let main_before = fs::read_to_string(&main_file).unwrap();
-    let gw = fake_gateway().await;
+    let main_definition = answers::locations(&main_file, &[(3, 6)]);
+    let gw = ScriptedGateway::start(move |method, _params| match method {
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        "textDocument/definition" => main_definition.clone(),
+        _ => serde_json::Value::Null,
+    })
+    .await;
 
     // Selection on `1024` in store.go at line 8, col 12 to line 8, col 16
-    let err = extract_polyglot(
+    let result = extract_polyglot(
         gw.addr(),
         &root,
         &store_file,
@@ -305,10 +310,10 @@ func makeStore() Store {
         false,
     )
     .await
-    .expect_err("an unrelated package's same-named Go literal must not be modified");
+    .expect("the selected type should still be extractable");
 
-    assert!(format!("{err:#}").contains("another package"), "{err:#}");
-    assert_eq!(fs::read_to_string(&store_file).unwrap(), store_before);
+    assert!(result.applied);
+    assert!(fs::read_to_string(&store_file).unwrap().contains("Cap int"));
     assert_eq!(fs::read_to_string(&main_file).unwrap(), main_before);
 }
 
