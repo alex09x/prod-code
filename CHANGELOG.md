@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## v0.3.44 — 2026-10-28
+
+### Fixed
+- **Feature-Gated Rust Path Modules Resolve Across Package Boundaries** (`crates/prod-code-engine-rust`, #1370): Rust workspace loading now includes existing local files named by direct or `cfg_attr`-wrapped `#[path]` attributes, including shared modules outside a Cargo package root. The same extra include paths are preserved across base and worktree manifest reloads, while paths resolving outside the workspace root remain excluded.
+- **Linux Gateway Bounds glibc Allocator Arenas** (`crates/prod-code-gateway`, #1590): Gateway startup caps glibc malloc arenas at four by default before the persistent VFS loader thread pool starts. Explicit `MALLOC_ARENA_MAX` and `GLIBC_TUNABLES` overrides are preserved; the existing post-unload `malloc_trim(0)` remains in place.
+
 ## v0.3.43 — 2026-10-28
 
 ### Fixed
