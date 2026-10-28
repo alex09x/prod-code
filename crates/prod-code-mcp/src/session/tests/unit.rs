@@ -55,6 +55,38 @@ async fn raw_session(reply: serde_json::Value) -> LspSession {
     }
 }
 
+async fn raw_session_disconnect(reason: &'static str) -> LspSession {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut peer = Framed::new(socket, ProdCodeCodec::new());
+        assert!(matches!(
+            peer.next().await.unwrap().unwrap(),
+            WireMessage::LspPayload(_)
+        ));
+        peer.send(WireMessage::Disconnect {
+            reason: reason.to_string(),
+        })
+        .await
+        .unwrap();
+    });
+    LspSession {
+        remote: addr,
+        framed: Framed::new(
+            AnyStream::connect(addr).await.unwrap(),
+            ProdCodeCodec::new(),
+        ),
+        root: PathBuf::new(),
+        opened: HashMap::new(),
+        next_id: 1,
+        engine: "test".to_string(),
+        engine_loaded: None,
+        refreshed: None,
+        index_gated: false,
+    }
+}
+
 #[tokio::test]
 async fn a_missing_result_is_an_actionable_method_error() {
     let mut session = raw_session(serde_json::json!({})).await;
@@ -97,6 +129,24 @@ async fn an_error_envelope_remains_an_error() {
         .unwrap_err()
         .to_string();
     assert_eq!(error, "textDocument/implementation failed: server refused");
+}
+
+#[tokio::test]
+async fn a_gateway_disconnect_is_a_retryable_connection_error() {
+    let mut session =
+        raw_session_disconnect(prod_code_protocol::WORKSPACE_MODEL_CHANGED_REASON).await;
+    let error = session
+        .request("textDocument/documentSymbol", serde_json::json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "gateway closed the session: {}",
+            prod_code_protocol::WORKSPACE_MODEL_CHANGED_REASON
+        )
+    );
+    assert!(is_connection_error(&error));
 }
 
 #[test]

@@ -132,6 +132,9 @@ impl LspSession {
                         reason.unwrap_or_default()
                     );
                 }
+                Ok(Some(Ok(WireMessage::Disconnect { reason }))) => {
+                    anyhow::bail!("gateway closed the session: {reason}");
+                }
                 Ok(Some(Ok(_))) => {}
                 Ok(Some(Err(e))) => anyhow::bail!("frame decode error: {e}"),
                 Ok(None) => anyhow::bail!("gateway closed the session"),

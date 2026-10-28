@@ -201,6 +201,14 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                 if result.get(NO_RESPONSE).and_then(|v| v.as_bool()) == Some(true) {
                     continue;
                 }
+                if let Some(reason) = result.get("disconnect").and_then(|v| v.as_str()) {
+                    framed
+                        .send(WireMessage::Disconnect {
+                            reason: reason.to_string(),
+                        })
+                        .await?;
+                    break;
+                }
                 if let Some(target_addr) = result.get("redirect").and_then(|v| v.as_str()) {
                     let reason = result
                         .get("reason")

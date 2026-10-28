@@ -59,11 +59,26 @@ async fn test_worktree_overlay_preserved_during_unload_while_active_lease_exists
         wt_lease.workspace().active_sessions.load(Ordering::Relaxed),
         1
     );
+    let mut invalidation = wt_lease.workspace().rebalance_tx.subscribe();
+    let mut shared_base_invalidation = base_ws.rebalance_tx.subscribe();
 
     // Unload the worktree workspace while lease is still held (e.g. manifest change during session)
     let unloaded = manager.unload_under(&wt_dir).await;
     assert_eq!(unloaded, 1);
     assert!(!manager.is_loaded(&wt_dir).await);
+    assert_eq!(
+        invalidation.recv().await.unwrap().1.as_deref(),
+        Some(prod_code_protocol::WORKSPACE_MODEL_CHANGED_REASON)
+    );
+    assert_eq!(
+        shared_base_invalidation.recv().await.unwrap().1.as_deref(),
+        Some(prod_code_protocol::WORKSPACE_MODEL_CHANGED_REASON)
+    );
+    assert!(wt_lease.workspace().has_stale_manifests());
+    assert!(
+        !base_ws.has_stale_manifests(),
+        "the base model is still current when only its worktree is unloaded"
+    );
 
     // CRITICAL: Overlay MUST remain attached and base pin preserved for extant lease
     assert!(

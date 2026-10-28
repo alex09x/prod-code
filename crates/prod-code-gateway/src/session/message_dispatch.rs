@@ -19,6 +19,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
+#[cfg(test)]
+mod tests;
+
 pub async fn on_client_message(
     client_msg_res: Option<std::result::Result<WireMessage, std::io::Error>>,
     out_tx: &SharedOutputSender,
@@ -27,6 +30,15 @@ pub async fn on_client_message(
     meta: &Arc<SessionMeta>,
     pending: &Arc<tokio::sync::Mutex<std::collections::HashMap<String, PendingRequest>>>,
 ) -> Flow {
+    if view.accounted.has_stale_manifests() {
+        let _ = out_tx
+            .send(WireMessage::Disconnect {
+                reason: prod_code_protocol::WORKSPACE_MODEL_CHANGED_REASON.to_string(),
+            })
+            .await;
+        return Flow::Stop;
+    }
+
     match client_msg_res {
         Some(Ok(WireMessage::Ping)) => {
             let _ = out_tx.send(WireMessage::Pong).await;
