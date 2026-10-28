@@ -18,17 +18,32 @@ use crate::parameter_object::Language;
 use anyhow::{Context, Result};
 
 fn is_go_function_signature(text: &str, at: usize) -> bool {
-    let start = text[..at]
-        .rfind(['{', '}', ';'])
-        .map_or(0, |index| index + 1);
-    text[start..at].match_indices("func").any(|(offset, _)| {
-        let word = start + offset;
-        let before = text[..word].chars().next_back();
-        let after = text[word + 4..].chars().next();
-        before.is_none_or(|character| !is_ident(character))
-            && after.is_some_and(|character| character.is_whitespace() || character == '(')
-            && !is_in_literal_or_comment(text, word, Language::Go)
-    })
+    let mut paren_depth = 0usize;
+    for (index, character) in text[..at].char_indices().rev() {
+        if !matches!(character, '(' | ')' | '{' | '}' | ';' | 'f') {
+            continue;
+        }
+        if is_in_literal_or_comment(text, index, Language::Go) {
+            continue;
+        }
+        match character {
+            ')' => paren_depth += 1,
+            '(' if paren_depth == 0 => return false,
+            '(' => paren_depth -= 1,
+            '{' | '}' | ';' if paren_depth == 0 => return false,
+            'f' if paren_depth == 0 && text[index..].starts_with("func") => {
+                let before = text[..index].chars().next_back();
+                let after = text[index + 4..].chars().next();
+                if before.is_none_or(|character| !is_ident(character))
+                    && after.is_some_and(|character| character.is_whitespace() || character == '(')
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 pub(super) fn go_constructor_insertion(

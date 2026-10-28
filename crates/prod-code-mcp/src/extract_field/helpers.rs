@@ -73,6 +73,49 @@ pub(crate) fn source_line(text: &str, at: usize) -> String {
         .to_string()
 }
 
+fn has_top_level_assignment(text: &str, lang: Language) -> bool {
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+    for (at, character) in text.char_indices() {
+        if is_in_literal_or_comment(text, at, lang) {
+            continue;
+        }
+        match character {
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            '=' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+pub(crate) fn javascript_class_member_header_start(text: &str, lang: Language) -> usize {
+    let member_start = text
+        .char_indices()
+        .rev()
+        .find(|(at, character)| {
+            matches!(character, ';' | '}') && !is_in_literal_or_comment(text, *at, lang)
+        })
+        .map_or(0, |(at, _)| at + 1);
+    let member_text = &text[member_start..];
+    if !has_top_level_assignment(member_text, lang) {
+        return member_start;
+    }
+    member_text
+        .char_indices()
+        .rev()
+        .find(|(at, character)| {
+            *character == '\n' && !is_in_literal_or_comment(member_text, *at, lang)
+        })
+        .map_or(member_start, |(at, _)| member_start + at + 1)
+}
+
 fn javascript_regex_end(text: &str, start: usize) -> Option<usize> {
     let mut at = start + 1;
     let mut in_character_class = false;
@@ -107,10 +150,10 @@ fn javascript_regex_end(text: &str, start: usize) -> Option<usize> {
     None
 }
 
-fn javascript_regex_contains(text: &str, target: usize) -> bool {
+fn javascript_literal_or_comment_contains(text: &str, target: usize) -> bool {
     let mut at = 0usize;
     let mut expression_can_start = true;
-    while at < text.len() {
+    while at < text.len() && at <= target {
         let character = text[at..].chars().next().unwrap();
         if character.is_whitespace() {
             at += character.len_utf8();
@@ -119,6 +162,7 @@ fn javascript_regex_contains(text: &str, target: usize) -> bool {
         if character == '/' {
             let next = text[at + 1..].chars().next();
             if next == Some('/') {
+                let start = at;
                 at += 2;
                 while at < text.len() {
                     let current = text[at..].chars().next().unwrap();
@@ -127,14 +171,21 @@ fn javascript_regex_contains(text: &str, target: usize) -> bool {
                     }
                     at += current.len_utf8();
                 }
+                if (start..at).contains(&target) {
+                    return true;
+                }
                 continue;
             }
             if next == Some('*') {
+                let start = at;
                 at += 2;
                 while at < text.len() && !text[at..].starts_with("*/") {
                     at += text[at..].chars().next().unwrap().len_utf8();
                 }
                 at = (at + 2).min(text.len());
+                if (start..at).contains(&target) {
+                    return true;
+                }
                 continue;
             }
             if expression_can_start && let Some(end) = javascript_regex_end(text, at) {
@@ -145,11 +196,15 @@ fn javascript_regex_contains(text: &str, target: usize) -> bool {
                 expression_can_start = false;
                 continue;
             }
+            if expression_can_start {
+                return true;
+            }
             at += character.len_utf8();
             expression_can_start = true;
             continue;
         }
         if matches!(character, '\'' | '"' | '`') {
+            let start = at;
             let delimiter = character;
             at += character.len_utf8();
             let mut escaped = false;
@@ -163,6 +218,9 @@ fn javascript_regex_contains(text: &str, target: usize) -> bool {
                 } else if current == delimiter {
                     break;
                 }
+            }
+            if (start..at).contains(&target) {
+                return true;
             }
             expression_can_start = false;
             continue;
@@ -214,6 +272,12 @@ fn javascript_regex_contains(text: &str, target: usize) -> bool {
             expression_can_start = false;
             continue;
         }
+        if matches!(character, '+' | '-') && text[at + 1..].starts_with(character) {
+            let operand_can_start = expression_can_start;
+            at += character.len_utf8() * 2;
+            expression_can_start = operand_can_start;
+            continue;
+        }
         expression_can_start = !matches!(character, ')' | ']' | '}' | '.');
         at += character.len_utf8();
     }
@@ -221,10 +285,8 @@ fn javascript_regex_contains(text: &str, target: usize) -> bool {
 }
 
 pub(crate) fn is_in_literal_or_comment(text: &str, at: usize, lang: Language) -> bool {
-    if matches!(lang, Language::JavaScript | Language::TypeScript)
-        && javascript_regex_contains(text, at)
-    {
-        return true;
+    if matches!(lang, Language::JavaScript | Language::TypeScript) {
+        return javascript_literal_or_comment_contains(text, at);
     }
     let mut chars = text[..at].chars().peekable();
     let mut quote = None;

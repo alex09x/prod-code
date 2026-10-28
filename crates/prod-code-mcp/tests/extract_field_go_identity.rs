@@ -25,6 +25,16 @@ func (s Store) Price() int {
 }
 
 func NewStore() Store { return Store{} }
+
+func Decode(raw interface{}) Store {
+    _ = raw
+    return Store{}
+}
+
+func DecodeStruct(raw struct{}) Store {
+    _ = raw
+    return Store{}
+}
 "#;
 const SHADOW: &str = r#"package api
 
@@ -120,7 +130,7 @@ async fn public_go_extract_field_uses_type_identity_for_all_constructor_sites() 
         ("otherlib/other.go", OTHERLIB),
         (
             "store_test.go",
-            "package api\nimport \"testing\"\nfunc TestValues(t *testing.T) { if Local() != 0 { t.Fatal(Local()) }; if NewStore().Magic != 7 { t.Fatal(NewStore()) } }\n",
+            "package api\nimport \"testing\"\nfunc TestValues(t *testing.T) { if Local() != 0 { t.Fatal(Local()) }; if NewStore().Magic != 7 { t.Fatal(NewStore()) }; if Decode(nil).Magic != 7 { t.Fatal(Decode(nil)) }; if DecodeStruct(struct{}{}).Magic != 7 { t.Fatal(DecodeStruct(struct{}{})) } }\n",
         ),
         (
             "consumer/consumer_test.go",
@@ -159,6 +169,19 @@ async fn public_go_extract_field_uses_type_identity_for_all_constructor_sites() 
     let otherlib = ws.read("otherlib/other.go");
     assert!(store.contains("Magic int"), "{store}");
     assert!(store.contains("Store{Magic: 7}"), "{store}");
+    assert!(
+        store.contains(
+            "func Decode(raw interface{}) Store {\n    _ = raw\n    return Store{Magic: 7}"
+        ),
+        "{store}"
+    );
+    assert!(!store.contains("Magic: 7,\n    _ = raw"), "{store}");
+    assert!(
+        store.contains(
+            "func DecodeStruct(raw struct{}) Store {\n    _ = raw\n    return Store{Magic: 7}"
+        ),
+        "{store}"
+    );
     assert!(consumer.contains("api.Store{Magic: 7}"), "{consumer}");
     assert_eq!(
         shadow, SHADOW,

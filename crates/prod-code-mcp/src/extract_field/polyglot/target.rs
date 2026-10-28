@@ -11,7 +11,9 @@
 use anyhow::{Context, Result};
 
 use super::target_python::discover_python_target;
-use crate::extract_field::helpers::is_ident;
+use crate::extract_field::helpers::{
+    is_ident, is_in_literal_or_comment, javascript_class_member_header_start,
+};
 use crate::extract_field::polyglot::parsers::{
     parse_params_cpp, parse_params_go, parse_params_swift, parse_params_ts,
 };
@@ -171,14 +173,28 @@ pub fn discover_target(
                 };
                 if b_open < from && to <= b_close {
                     let before_body = text[c_open + 1..b_open].trim_end();
-                    let method_header_start = before_body.rfind('}').map_or(0, |at| at + 1);
-                    let method_header = &before_body[method_header_start..];
-                    let last_paren = method_header.rfind(')').context("method has no `)`")?;
-                    let first_paren = method_header[..last_paren]
-                        .rfind('(')
-                        .context("method has no `(`")?;
-                    let p_slice = &method_header[first_paren + 1..last_paren];
-                    let head = method_header[..first_paren].trim_end();
+                    let last_paren = before_body
+                        .char_indices()
+                        .rev()
+                        .find(|(at, c)| {
+                            *c == ')' && !is_in_literal_or_comment(before_body, *at, lang)
+                        })
+                        .map(|(at, _)| at)
+                        .context("method has no `)`")?;
+                    let first_paren = before_body[..last_paren]
+                        .match_indices('(')
+                        .rev()
+                        .map(|(open, _)| open)
+                        .find(|open| {
+                            !is_in_literal_or_comment(before_body, *open, lang)
+                                && crate::parameter_object::matching_bracket(before_body, *open)
+                                    == Some(last_paren)
+                        })
+                        .context("method has no matching `(`")?;
+                    let header = &before_body[..first_paren];
+                    let method_header_start = javascript_class_member_header_start(header, lang);
+                    let p_slice = &before_body[first_paren + 1..last_paren];
+                    let head = header[method_header_start..].trim_end();
                     let m_name = head.split_whitespace().last().unwrap_or("").trim();
                     is_static_method = head.split_whitespace().any(|word| word == "static");
                     found_method = Some((
