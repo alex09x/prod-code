@@ -98,7 +98,18 @@ pub fn nested_method_header(header: &str) -> bool {
     let first_word = header.split_whitespace().next().unwrap_or_default();
     if matches!(
         first_word,
-        "if" | "for" | "while" | "switch" | "match" | "catch" | "with"
+        "if" | "else"
+            | "for"
+            | "while"
+            | "switch"
+            | "match"
+            | "catch"
+            | "with"
+            | "guard"
+            | "loop"
+            | "select"
+            | "case"
+            | "do"
     ) {
         return false;
     }
@@ -144,12 +155,53 @@ pub fn nested_method_header(header: &str) -> bool {
         .any(|qualifier| suffix.starts_with(qualifier))
 }
 
+fn control_flow_block_header(header: &str) -> bool {
+    let line = header
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or(header)
+        .trim_start();
+    let word = line
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .next()
+        .unwrap_or_default();
+    matches!(
+        word,
+        "if" | "else"
+            | "for"
+            | "while"
+            | "switch"
+            | "match"
+            | "catch"
+            | "with"
+            | "guard"
+            | "loop"
+            | "select"
+            | "case"
+            | "do"
+    )
+}
+
+fn match_block_header(header: &str) -> bool {
+    let header = header.trim();
+    header.starts_with("match ")
+        || header.starts_with("return match ")
+        || header.contains("= match ")
+        || header.contains("=> match ")
+}
+
 /// The `return` keywords that return from the function whose body is `inner`: not one inside a
 /// closure or an `async` block, where `return` returns from that instead.
 pub fn own_returns(inner: &str) -> Vec<usize> {
     let bytes = inner.as_bytes();
     let mut out = Vec::new();
-    let mut stack: Vec<bool> = Vec::new(); // true: a closure or async block
+    #[derive(Clone, Copy)]
+    struct Scope {
+        opaque: bool,
+        match_block: bool,
+    }
+    let mut stack: Vec<Scope> = Vec::new();
     let mut statement_start = 0usize;
     let mut paren_depth = 0usize;
     let mut bracket_depth = 0usize;
@@ -216,14 +268,18 @@ pub fn own_returns(inner: &str) -> Vec<usize> {
         }
         if c == b'{' {
             let header = inner[statement_start..i].trim_end();
+            let in_match_block = stack.iter().any(|scope| scope.match_block);
             // A closure, an `async` block or a nested `fn` has returns of its own.
             let opaque = header.ends_with("async")
                 || header.ends_with("async move")
                 || header.ends_with('|')
                 || (header.contains('|') && header.contains("->"))
-                || header.contains("=>")
-                || nested_method_header(header);
-            stack.push(opaque);
+                || (header.trim_end().ends_with("=>") && !in_match_block)
+                || (!control_flow_block_header(header) && nested_method_header(header));
+            stack.push(Scope {
+                opaque,
+                match_block: match_block_header(header),
+            });
             statement_start = i + 1;
             i += 1;
             continue;
@@ -240,7 +296,7 @@ pub fn own_returns(inner: &str) -> Vec<usize> {
         if inner[i..].starts_with("return")
             && !inner[..i].chars().next_back().is_some_and(is_ident)
             && !inner[i + 6..].chars().next().is_some_and(is_ident)
-            && !stack.iter().any(|opaque| *opaque)
+            && !stack.iter().any(|scope| scope.opaque)
             && !inner[..i].trim_end().ends_with('|')
         {
             out.push(i);

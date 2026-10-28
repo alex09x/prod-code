@@ -178,7 +178,9 @@ pub async fn wrap_rust_ext(
                 .context("the assist did not rewrite the declaring file")?;
             let now = match error {
                 Some(error) => {
-                    let sig_at = decl_text.find(&format!("fn {name}")).unwrap_or(0);
+                    // The assist changes text at or after this return type, leaving the selected
+                    // function name at its original offset even when another function shares it.
+                    let sig_at = start.min(decl_text.len());
                     let body_at = decl_text[sig_at..]
                         .find('{')
                         .map_or(decl_text.len(), |i| sig_at + i);

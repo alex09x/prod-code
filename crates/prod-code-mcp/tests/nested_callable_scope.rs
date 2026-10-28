@@ -65,6 +65,22 @@ async fn rust_gateway(symbols: Value) -> ScriptedGateway {
     .await
 }
 
+async fn rust_gateway_with_assist(
+    symbols: Value,
+    file: std::path::PathBuf,
+    original: String,
+    assisted: String,
+) -> ScriptedGateway {
+    ScriptedGateway::start(move |method, _| match method {
+        "textDocument/documentSymbol" => symbols.clone(),
+        "prodCode/applyAssist" => answers::whole_file(&file, &original, &assisted),
+        "textDocument/references" => Value::Array(Vec::new()),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => Value::Null,
+    })
+    .await
+}
+
 async fn apply(
     gateway: &ScriptedGateway,
     workspace: &Workspace,
@@ -261,4 +277,71 @@ fn return_ownership_skips_multiline_nested_callables_with_return_annotations() {
             "{body}"
         );
     }
+}
+
+#[test]
+fn return_ownership_keeps_control_flow_returns_in_the_outer_callable() {
+    for body in [
+        "\n  if ready { return 0; } else if valid() { return 1; } else { return 2; }\n  return 3;\n",
+        "\n  y := x + 1\n  if isValid(y) { return true }\n  return false\n",
+        "\n  let y = x + 1\n  if isValid(y) { return true }\n  return false\n",
+        "\n  const f = (x: number) => x + 1\n  if (ready) { return true; }\n  return false;\n",
+        "\n  if (items.some(x => x > 0)) { return true; }\n  return false;\n",
+        "\n  match value { Some(v) => { return v; }, None => { return 0; } }\n  return 2;\n",
+    ] {
+        let expected: Vec<_> = body.match_indices("return").map(|(at, _)| at).collect();
+        assert_eq!(
+            prod_code_mcp::invert_boolean::own_returns(body),
+            expected,
+            "{body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn rust_result_wrap_selects_same_line_nested_same_named_function() {
+    let source = "pub fn pick() -> u32 { fn pick() -> u32 { return 1; } return 2; }\n";
+    let nested_name_col = source.match_indices("fn pick").nth(1).unwrap().0 as u64 + 3;
+    let nested = rust_function_symbol("pick", 0, 0, nested_name_col, Vec::new());
+    let symbols = json!([rust_function_symbol("pick", 0, 0, 7, vec![nested])]);
+    let assisted =
+        "pub fn pick() -> u32 { fn pick() -> Result<u32, _> { return Ok(1); } return 2; }\n";
+    let workspace = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"nested-rust-result\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        ("selected.rs", source),
+    ]);
+    let gateway = rust_gateway_with_assist(
+        symbols,
+        workspace.path("selected.rs"),
+        source.to_string(),
+        assisted.to_string(),
+    )
+    .await;
+
+    apply(
+        &gateway,
+        &workspace,
+        "code_wrap_return",
+        json!({
+            "path": "selected.rs",
+            "symbol": "pick",
+            "line": 1,
+            "wrapper": "result",
+            "error": "anyhow::Error",
+            "apply": true,
+            "force": true,
+        }),
+    )
+    .await;
+    let written = workspace.read("selected.rs");
+
+    assert!(written.contains("pub fn pick() -> u32"), "{written}");
+    assert!(
+        written.contains("fn pick() -> Result<u32, anyhow::Error>"),
+        "{written}"
+    );
+    assert!(written.contains("return 2;"), "{written}");
 }

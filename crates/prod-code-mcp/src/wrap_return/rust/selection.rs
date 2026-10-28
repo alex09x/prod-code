@@ -42,7 +42,7 @@ pub(super) fn selected_function_name_position(
                 && line <= end as u32 + 1
             {
                 let span = end.saturating_sub(start) as u32;
-                if best.is_none_or(|(best_span, _, _)| span < best_span) {
+                if best.is_none_or(|(best_span, _, _)| span <= best_span) {
                     let position = node
                         .pointer("/selectionRange/start")
                         .or_else(|| range.get("start"));
