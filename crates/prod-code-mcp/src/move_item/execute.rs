@@ -61,7 +61,8 @@ pub async fn move_item(
     let from_module = from_owners[0].module.clone();
     let mut to_module = to_owners[0].module.clone();
     let mut new_module_parent = plan.new_module_parent.clone();
-    let target_text = plan.target_text.as_str();
+    let mut target_text = plan.target_text.clone();
+    let edition = rust_syntax::edition(&from_owners[0].root);
     anyhow::ensure!(
         from_module != to_module,
         "{} and {} are the same module",
@@ -86,27 +87,32 @@ pub async fn move_item(
     let enclosing_impl = crate::extract_field::impl_blocks(&source_text)
         .into_iter()
         .find(|(_, _, open, close)| *open < decl_offset && decl_offset < *close);
-    let mut verified_target_impl = None;
+    let mut target_impl_idx = None;
+    let mut target_owner_binding = None;
     if let Some((ref owner, impl_at, impl_open, _)) = enclosing_impl {
         let is_inherent = !source_text[impl_at..impl_open].contains(" for ");
-        if is_inherent && from_module.krate == to_module.krate && new_module_parent.is_none() {
-            verified_target_impl = budget
-                .run("resolving the target impl", async {
-                    Ok(super::item::verified_target_impl_index(
-                        remote,
-                        root,
-                        file,
-                        &source_text,
-                        (impl_at, impl_open),
-                        target,
-                        target_text,
-                        owner,
-                    )
-                    .await)
-                })
-                .await?;
+        if is_inherent && from_module.krate == to_module.krate {
+            let plan = super::target_impl::prepare_target_impl(
+                &budget,
+                remote,
+                root,
+                file,
+                &source_text,
+                (impl_at, impl_open),
+                target,
+                &target_text,
+                owner,
+                new_module_parent.is_some(),
+                &graph,
+                &to_owners,
+                edition,
+            )
+            .await?;
+            target_text = plan.text;
+            target_impl_idx = Some(plan.index);
+            target_owner_binding = Some(plan.owner_binding);
         }
-        if verified_target_impl.is_none() {
+        if target_impl_idx.is_none() {
             anyhow::bail!(
                 "`{name}` belongs to `impl {owner}`; move it to another type with \
                  `code_move_method` (`prod-code move-method <file> <line> <col>` with `--to-param \
@@ -128,17 +134,16 @@ pub async fn move_item(
              (`prod-code move-module <its file> --to <new file>`)"
         );
     }
-    let edition = rust_syntax::edition(&from_owners[0].root);
     rust_syntax::ensure_whole_lines(&source_text, decl_start, &name, edition)?;
     let start = rust_syntax::item_start(&source_text, decl_start, edition);
     let mut created = None;
     let mut extracted_inline_mod = false;
-    let (source_new, target_new, item, carried) =
+    let (source_new, mut target_new, item, mut carried) =
         if let Some((_, impl_at, impl_open, impl_close)) = enclosing_impl {
             move_inherent_method(
                 &source_text,
-                target_text,
-                verified_target_impl,
+                &target_text,
+                target_impl_idx,
                 (impl_at, impl_open, impl_close),
                 start,
                 decl_start,
@@ -162,7 +167,7 @@ pub async fn move_item(
                 move_to_child(
                     &source_text,
                     &item,
-                    target_text,
+                    &target_text,
                     from_owners[0].test_crate,
                     edition,
                 )?
@@ -171,11 +176,11 @@ pub async fn move_item(
                     .declaration
                     .as_ref()
                     .is_some_and(|(parent, _)| parent == file)
-            }) && has_use_super_glob(target_text)
+            }) && has_use_super_glob(&target_text)
             {
-                (target_text.to_string(), item, Vec::new())
+                (target_text.clone(), item, Vec::new())
             } else {
-                let (text, carried) = carry_imports(&source_text, &item, target_text);
+                let (text, carried) = carry_imports(&source_text, &item, &target_text);
                 (text, item, carried)
             };
             let target_new = if target_with_imports.trim().is_empty() {
@@ -190,6 +195,14 @@ pub async fn move_item(
             };
             (source_new, target_new, item, carried)
         };
+    if let Some(binding) = target_owner_binding {
+        let (text, note) =
+            super::target_impl::ensure_owner_binding(&target_new, &item, &binding, edition)?;
+        target_new = text;
+        if let Some(note) = note {
+            carried.push(note);
+        }
+    }
 
     // Ask before the text moves: afterwards the declaration is not where the analyzer left it.
     let refs = if extracted_inline_mod {

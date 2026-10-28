@@ -47,6 +47,7 @@ mod compiler_proposal;
 pub mod execution;
 mod validation_diff;
 mod validation_proposal;
+mod workspace_writer;
 pub use execution::*;
 pub(crate) async fn dispatch_tool(
     remote: SocketAddr,

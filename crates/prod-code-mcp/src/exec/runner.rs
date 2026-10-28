@@ -61,7 +61,62 @@ pub async fn run_remote_rooted(
     timeout_secs: u64,
     pull_changes: bool,
     on_root: impl FnOnce(&str),
+    on_output: impl FnMut(bool, &[u8]),
+) -> Result<RemoteOutcome> {
+    run_remote_rooted_inner(
+        remote,
+        root,
+        subdir,
+        command,
+        env,
+        timeout_secs,
+        pull_changes,
+        on_root,
+        on_output,
+        false,
+    )
+    .await
+}
+
+/// MCP serializes command writers separately, but permits readers until writeback.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_remote_for_tool(
+    remote: SocketAddr,
+    root: &Path,
+    subdir: Option<&str>,
+    command: Vec<String>,
+    env: Vec<(String, String)>,
+    timeout_secs: u64,
+    pull_changes: bool,
+    on_output: impl FnMut(bool, &[u8]),
+) -> Result<RemoteOutcome> {
+    run_remote_rooted_inner(
+        remote,
+        root,
+        subdir,
+        command,
+        env,
+        timeout_secs,
+        pull_changes,
+        |_| {},
+        on_output,
+        true,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_remote_rooted_inner(
+    remote: SocketAddr,
+    root: &Path,
+    subdir: Option<&str>,
+    command: Vec<String>,
+    env: Vec<(String, String)>,
+    timeout_secs: u64,
+    pull_changes: bool,
+    on_root: impl FnOnce(&str),
     mut on_output: impl FnMut(bool, &[u8]),
+    lock_writeback: bool,
 ) -> Result<RemoteOutcome> {
     anyhow::ensure!(!command.is_empty(), "empty command");
     let identity: WorkspaceIdentity = workspace_identity(root);
@@ -86,6 +141,9 @@ pub async fn run_remote_rooted(
         )
         .await?;
 
+    // Once writeback begins, keep readers out until the final result so multiple
+    // change frames cannot expose a partially applied set of files.
+    let mut writeback_guard = None;
     loop {
         match monitor.next(&mut framed, &mut on_output).await? {
             Some(Ok(WireMessage::ExecChunk(chunk))) => {
@@ -95,6 +153,13 @@ pub async fn run_remote_rooted(
             }
             Some(Ok(WireMessage::ExecChanges(changes))) => {
                 if pull_changes {
+                    if lock_writeback && writeback_guard.is_none() {
+                        writeback_guard = Some(
+                            crate::tools::execution::workspace_mutation_lock(root)
+                                .write_owned()
+                                .await,
+                        );
+                    }
                     writeback.apply(root, &remote.to_string(), changes.files)?;
                 }
             }

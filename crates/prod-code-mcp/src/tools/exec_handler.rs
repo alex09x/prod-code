@@ -145,7 +145,7 @@ async fn run_exec_command(
     let mut tail = crate::exec::TailBuffer::new(tail_bytes);
     let subdir = resolve_exec_subdir(workspace_root, args.get("cwd").and_then(|v| v.as_str()))?;
     let env = parse_exec_env(args)?;
-    let outcome = crate::exec::run_remote(
+    let outcome = crate::exec::runner::run_remote_for_tool(
         remote,
         workspace_root,
         subdir.as_deref(),

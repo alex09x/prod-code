@@ -26,6 +26,7 @@ pub(crate) mod ownership;
 mod plan;
 mod preamble;
 pub(crate) mod rust_syntax;
+mod target_impl;
 mod test_crate;
 #[cfg(test)]
 mod tests;
