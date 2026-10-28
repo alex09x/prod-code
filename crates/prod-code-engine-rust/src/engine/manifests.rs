@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::RustEngine;
-use super::load::{extensionless_target_roots, load_target_roots};
+use super::load::{extensionless_target_roots, load_target_roots, path_attribute_includes};
 use crate::config::ProdCodeConfig;
 use crate::vfs::normalize_vfs_path;
 
@@ -172,6 +172,10 @@ impl RustEngine {
                 .vfs
                 .write()
                 .map_err(|e| anyhow::anyhow!("VFS lock: {e}"))?;
+            ws.extra_includes
+                .extend(path_attribute_includes(&vfs, abs_root.as_path()));
+            ws.extra_includes.sort();
+            ws.extra_includes.dedup();
             load_target_roots(&mut self.worktrees, db, &mut vfs, &target_roots);
             self.worktrees.set_base(db, &mut vfs, ws);
         }

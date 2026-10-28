@@ -14,8 +14,10 @@ use anyhow::Result;
 use ra_ap_ide::AnalysisHost;
 use ra_ap_ide_db::{FxHashMap, RootDatabase};
 use ra_ap_load_cargo::{LoadCargoConfig, ProcMacroServerChoice, worktrees::Worktrees};
-use ra_ap_paths::AbsPathBuf;
+use ra_ap_paths::{AbsPath, AbsPathBuf};
 use ra_ap_project_model::{ProjectManifest, ProjectWorkspace, ProjectWorkspaceKind};
+use ra_ap_syntax::ast::HasAttrs;
+use ra_ap_syntax::{AstNode, AstToken, Edition, SourceFile, ast};
 use ra_ap_vfs::Vfs;
 use std::collections::HashMap;
 use std::path::Path;
@@ -58,6 +60,66 @@ pub(crate) fn load_target_roots(
     for root in roots {
         worktrees.reload_file(db, vfs, root);
     }
+}
+
+/// Add existing files named by top-level `#[path]` attributes to the workspace VFS.
+/// Cargo's ordinary directory scan omits shared files outside a package root even when the
+/// configured feature set makes the path module part of a local crate.
+pub(crate) fn path_attribute_includes(vfs: &Vfs, workspace_root: &AbsPath) -> Vec<AbsPathBuf> {
+    let mut includes = Vec::new();
+    for (_, vfs_path) in vfs.iter() {
+        let Some(path) = vfs_path.as_path() else {
+            continue;
+        };
+        if !path.starts_with(workspace_root) || !is_rust_source(Path::new(path.as_str())) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        if !text.contains("#[path") {
+            continue;
+        }
+
+        let source = SourceFile::parse(&text, Edition::Edition2021).tree();
+        for module in source.syntax().children().filter_map(ast::Module::cast) {
+            if module.item_list().is_some() {
+                continue;
+            }
+            let Some(attribute) = module
+                .attrs()
+                .find(|attribute| attribute.simple_name().as_deref() == Some("path"))
+            else {
+                continue;
+            };
+            let Some(relative) = attribute
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(|element| element.into_token())
+                .find_map(ast::String::cast)
+                .and_then(|literal| literal.value().ok().map(|value| value.into_owned()))
+            else {
+                continue;
+            };
+            let Some(parent) = path.parent() else {
+                continue;
+            };
+            let target = Path::new(parent.as_str()).join(relative);
+            let Ok(target) = std::fs::canonicalize(target) else {
+                continue;
+            };
+            if !target.starts_with(Path::new(workspace_root.as_str())) || !is_rust_source(&target) {
+                continue;
+            }
+            let Some(parent) = target.parent() else {
+                continue;
+            };
+            includes.push(AbsPathBuf::assert_utf8(parent.to_path_buf()));
+        }
+    }
+    includes.sort();
+    includes.dedup();
+    includes
 }
 
 /// Indicates that a requested proc-macro allocation could not be obtained.
@@ -229,9 +291,16 @@ impl RustEngine {
         let mut db = db;
         let mut vfs = vfs;
         let target_roots = extensionless_target_roots(worktrees.base());
+        let path_includes = path_attribute_includes(&vfs, abs_root.as_path());
+        let has_path_includes = !path_includes.is_empty();
+        let mut base = worktrees.base().clone();
+        base.extra_includes.extend(path_includes);
+        base.extra_includes.sort();
+        base.extra_includes.dedup();
         if !target_roots.is_empty() {
             load_target_roots(&mut worktrees, &mut db, &mut vfs, &target_roots);
-            let base = worktrees.base().clone();
+        }
+        if !target_roots.is_empty() || has_path_includes {
             worktrees.set_base(&mut db, &mut vfs, base);
         }
 
