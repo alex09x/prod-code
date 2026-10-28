@@ -254,6 +254,7 @@ fn the_whole_suite_runs_when_the_selection_cannot_be_trusted() {
         index: None,
         reaches: Vec::new(),
         incomplete: Vec::new(),
+        test_plan: None,
         signature_warnings: Vec::new(),
     };
     assert_eq!(report.full_suite_reason(), None);
@@ -348,6 +349,7 @@ fn an_untrusted_selection_is_not_the_command_and_foreign_tests_do_not_count_as_r
         }),
         reaches: Vec::new(),
         incomplete: Vec::new(),
+        test_plan: None,
         signature_warnings: Vec::new(),
     };
     let text = report.render();

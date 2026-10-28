@@ -245,6 +245,7 @@ fn fan_in_gap_describes_hub_and_full_suite_fallback() {
         index: None,
         reaches: vec![],
         incomplete: vec![gap],
+        test_plan: None,
         signature_warnings: vec![],
     };
     assert!(report.full_suite_reason().is_some());

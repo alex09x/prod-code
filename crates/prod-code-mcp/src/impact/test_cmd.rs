@@ -8,10 +8,8 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
-use super::render::shell_words;
 use super::rust_attr::rust_test_marker;
 use super::types::Symbol;
 
@@ -327,61 +325,5 @@ pub fn test_command_for_tests(
     tools: &crate::verify::ProjectTools,
     tests: &[Symbol],
 ) -> Option<Vec<String>> {
-    if tests.is_empty() {
-        return None;
-    }
-    let root_language = crate::sync::expected_engine(root);
-    let mut groups: BTreeMap<(String, String), Vec<Symbol>> = BTreeMap::new();
-    for test in tests {
-        let abs = root.join(&test.file);
-        let (subpath, mut language) = crate::sync::engine_project(root, &abs);
-        if let Some(own) = crate::sync::engine_for_file(&abs)
-            && language.as_deref() == root_language.as_deref()
-            && Some(own) != language.as_deref()
-        {
-            language = Some(own);
-        }
-        let language = language.unwrap_or(default_language).to_string();
-        let subpath = subpath.unwrap_or_default();
-        let mut test = test.clone();
-        if !subpath.is_empty() {
-            let project = Path::new(&subpath);
-            if let Ok(relative) = Path::new(&test.file).strip_prefix(project) {
-                test.file = relative.to_string_lossy().into_owned();
-            }
-        }
-        groups.entry((subpath, language)).or_default().push(test);
-    }
-
-    let single_root_project = groups.len() == 1
-        && groups
-            .keys()
-            .next()
-            .is_some_and(|(subpath, _)| subpath.is_empty());
-    let mut commands = Vec::with_capacity(groups.len());
-    for ((subpath, language), project_tests) in groups {
-        let project_tools = if subpath.is_empty() {
-            None
-        } else {
-            Some(crate::verify::detect_tools(&root.join(&subpath)))
-        };
-        let project_tools = project_tools.as_ref().unwrap_or(tools);
-        let command = test_command(&language, project_tools, &project_tests)?;
-        if single_root_project {
-            return Some(command);
-        }
-        let run = shell_words(&command);
-        let dir = if subpath.is_empty() {
-            ".".to_string()
-        } else {
-            subpath.clone()
-        };
-        commands.push(format!("(cd {} && {run})", shell_words(&[dir])));
-    }
-    Some(vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        commands.join(" && "),
-        "prod-code-impact".to_string(),
-    ])
+    super::test_plan::build_test_plan(root, default_language, tools, tests, &[]).selected
 }

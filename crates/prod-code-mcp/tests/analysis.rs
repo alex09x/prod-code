@@ -377,6 +377,7 @@ async fn impact_report_render_lists_every_section_and_quotes_the_run_command() {
         index: None,
         reaches: vec![],
         incomplete: vec![],
+        test_plan: None,
         signature_warnings: vec![],
     };
 
@@ -419,6 +420,7 @@ async fn impact_report_render_says_when_no_test_reaches_the_change() {
         index: None,
         reaches: vec![],
         incomplete: vec![],
+        test_plan: None,
         signature_warnings: vec![],
     };
 
@@ -449,6 +451,7 @@ async fn impact_report_says_when_the_index_could_not_be_built() {
         index: Some(build(ok)),
         reaches: vec![],
         incomplete: vec![],
+        test_plan: None,
         signature_warnings: vec![],
     };
 

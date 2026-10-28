@@ -27,6 +27,7 @@ pub mod rust_attr;
 pub mod signatures;
 pub mod symbols;
 pub mod test_cmd;
+mod test_plan;
 pub mod types;
 
 #[cfg(test)]

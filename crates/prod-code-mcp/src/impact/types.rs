@@ -74,6 +74,9 @@ pub struct ImpactReport {
     pub tests: Vec<Symbol>,
     /// Command that runs only the affected tests, when the language supports selection.
     pub test_command: Option<Vec<String>>,
+    /// Per-project execution plans and explicit scopes that could not be planned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_plan: Option<ImpactTestPlan>,
     /// Files whose changed lines lie outside any function (module-level code, manifests).
     pub unattributed_files: Vec<String>,
     /// How the analyzer's index was brought up to date first, when it had to be (Swift), and
@@ -168,10 +171,24 @@ pub struct CiDecision {
 pub enum CiRun {
     /// The language's whole test suite.
     WholeSuite,
+    /// A composed whole-suite command for all known affected projects.
+    PlannedSuite(Vec<String>),
+    /// A complete command cannot be planned for the named project scopes.
+    Unsupported,
     /// This command, which runs only the tests that reach the change.
     Selected(Vec<String>),
     /// Nothing: no function changed, or no test reaches one.
     Nothing,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ImpactTestPlan {
+    pub selected: Option<Vec<String>>,
+    pub selection_fallbacks: Vec<String>,
+    pub unsupported_selected: Vec<String>,
+    pub whole: Option<Vec<String>>,
+    pub whole_is_root_only: bool,
+    pub unsupported_whole: Vec<String>,
 }
 
 /// A test the walk from a changed function reached, and in how many calls.
