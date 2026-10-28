@@ -5383,6 +5383,7 @@ async fn code_exec_does_not_block_navigation_and_writes_back_changes() {
     let lib_for_lsp = lib.clone();
     let lsp: Answer = Arc::new(move |method, _| match method {
         "textDocument/definition" => answers::locations(&lib_for_lsp, &[(1, 8)]),
+        "textDocument/references" => answers::locations(&lib_for_lsp, &[(1, 8)]),
         _ => serde_json::Value::Null,
     });
     let changed = "pub fn after() {}\n";
@@ -5452,6 +5453,14 @@ async fn code_exec_does_not_block_navigation_and_writes_back_changes() {
     )
     .await
     .expect("the reader completes while the command is running");
+    let references = execute_tool(
+        remote,
+        &ws.root(),
+        "code_references",
+        serde_json::json!({ "path": "src/lib.rs", "line": 1, "character": 8 }),
+    )
+    .await
+    .expect("references complete while the command is running");
     let definition_elapsed = started.elapsed();
     let exec = exec_task
         .await
@@ -5468,6 +5477,8 @@ async fn code_exec_does_not_block_navigation_and_writes_back_changes() {
         "definition took {definition_elapsed:?} while code_exec was active"
     );
     assert!(!exec.is_error, "{}", text_of(&exec));
+    assert!(!definition.is_error, "{}", text_of(&definition));
+    assert!(!references.is_error, "{}", text_of(&references));
     assert!(
         text_of(&definition).contains("src/lib.rs:1:8"),
         "{}",
