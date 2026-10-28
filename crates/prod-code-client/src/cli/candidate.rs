@@ -9,7 +9,7 @@
  */
 
 use super::commands::Commands;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub fn command_path_tokens(command: Option<&Commands>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
@@ -133,9 +133,48 @@ pub fn command_path_tokens(command: Option<&Commands>) -> Vec<PathBuf> {
     paths
 }
 
+/// Where a command's placement is judged: the first file it names, else the first directory,
+/// else the current directory, all inside `root`; `root` when none is. A relative path is the
+/// one the command itself will use, from `cwd` (`check --path nested` in a subdirectory), and
+/// only else from `root`, so that the node chosen at startup serves the project the command
+/// runs (#1478).
+pub fn placement_hint(root: &Path, cwd: &Path, tokens: &[PathBuf]) -> PathBuf {
+    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let resolved = |p: &PathBuf| -> Vec<PathBuf> {
+        if p.is_absolute() {
+            vec![p.clone()]
+        } else {
+            vec![cwd.join(p), root.join(p)]
+        }
+    };
+    let inside = |candidate: &Path| {
+        std::fs::canonicalize(candidate)
+            .ok()
+            .filter(|c| c.starts_with(&canonical_root))
+    };
+    let file = tokens.iter().find_map(|p| {
+        resolved(p)
+            .into_iter()
+            .find(|c| c.is_file())
+            .and_then(|c| inside(&c))
+    });
+    let dir = || {
+        tokens.iter().find_map(|p| {
+            resolved(p)
+                .into_iter()
+                .find(|c| c.is_dir())
+                .and_then(|c| inside(&c))
+                .filter(|c| *c != canonical_root)
+        })
+    };
+    file.or_else(dir)
+        .or_else(|| inside(cwd))
+        .unwrap_or(canonical_root)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::command_path_tokens;
+    use super::{command_path_tokens, placement_hint};
     use crate::cli::Commands;
     use std::path::PathBuf;
 
@@ -163,5 +202,36 @@ mod tests {
             command_path_tokens(Some(&pull_cmd)).is_empty(),
             "pull paths must use the base workspace placement (#1087)"
         );
+    }
+
+    /// #1478: run from a subdirectory, `check --path nested` names the project under that
+    /// subdirectory, as the command itself resolves it, not one under the checkout root.
+    #[test]
+    fn a_relative_path_is_placed_from_where_the_command_runs() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        std::fs::create_dir_all(root.join("tools/nested")).unwrap();
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        std::fs::write(root.join("tools/main.rs"), "").unwrap();
+        let cwd = root.join("tools");
+        let nested = vec![PathBuf::from("nested")];
+        assert_eq!(
+            placement_hint(&root, &cwd, &nested),
+            root.join("tools/nested")
+        );
+        // From the root itself the same token is the root's `nested`.
+        assert_eq!(placement_hint(&root, &root, &nested), root.join("nested"));
+        // A file named relative to the root, which the subdirectory does not have, still counts.
+        let file = vec![PathBuf::from("tools/main.rs")];
+        assert_eq!(
+            placement_hint(&root, &cwd, &file),
+            root.join("tools/main.rs")
+        );
+        // Nothing named: the current directory; outside the checkout: the root.
+        assert_eq!(placement_hint(&root, &cwd, &[]), cwd);
+        let outside = tempfile::tempdir().unwrap();
+        assert_eq!(placement_hint(&root, outside.path(), &[]), root);
+        let elsewhere = vec![outside.path().to_path_buf()];
+        assert_eq!(placement_hint(&root, &cwd, &elsewhere), cwd);
     }
 }
