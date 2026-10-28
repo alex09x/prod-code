@@ -12,10 +12,11 @@
 
 use anyhow::Result;
 use ra_ap_ide::AnalysisHost;
-use ra_ap_ide_db::FxHashMap;
+use ra_ap_ide_db::{FxHashMap, RootDatabase};
 use ra_ap_load_cargo::{LoadCargoConfig, ProcMacroServerChoice, worktrees::Worktrees};
 use ra_ap_paths::AbsPathBuf;
-use ra_ap_project_model::{ProjectManifest, ProjectWorkspace};
+use ra_ap_project_model::{ProjectManifest, ProjectWorkspace, ProjectWorkspaceKind};
+use ra_ap_vfs::Vfs;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -25,6 +26,39 @@ use crate::config::{ProcMacroServerKind, ProdCodeConfig};
 use crate::load_budget;
 use crate::proc_macro_farm::{self, FarmMetrics};
 use crate::session_overlays::SessionOverlays;
+use crate::vfs::is_rust_source;
+
+/// Return existing Cargo target roots whose Rust source path is not selected by the VFS
+/// extension filter. Cargo metadata, rather than the filename, establishes Rust ownership.
+pub(crate) fn extensionless_target_roots(workspace: &ProjectWorkspace) -> Vec<AbsPathBuf> {
+    let ProjectWorkspaceKind::Cargo { cargo, .. } = &workspace.kind else {
+        return Vec::new();
+    };
+    let mut roots: Vec<_> = cargo
+        .packages()
+        .filter(|package| cargo[*package].is_local)
+        .flat_map(|package| cargo[package].targets.iter())
+        .map(|target| cargo[*target].root.clone())
+        .filter(|root| {
+            !is_rust_source(Path::new(root.as_str())) && Path::new(root.as_str()).is_file()
+        })
+        .collect();
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+/// Load Cargo-declared target roots excluded by the ordinary `.rs` VFS scan.
+pub(crate) fn load_target_roots(
+    worktrees: &mut Worktrees,
+    db: &mut RootDatabase,
+    vfs: &mut Vfs,
+    roots: &[AbsPathBuf],
+) {
+    for root in roots {
+        worktrees.reload_file(db, vfs, root);
+    }
+}
 
 /// Indicates that a requested proc-macro allocation could not be obtained.
 /// Gateway loaders must propagate this error instead of starting an unbounded fallback worker.
@@ -183,6 +217,16 @@ impl RustEngine {
 
         let (worktrees, db, vfs) = Worktrees::load(ws, &FxHashMap::default(), &load_config)
             .map_err(|e| anyhow::anyhow!("Failed to load cargo workspace: {e}"))?;
+
+        let mut worktrees = worktrees;
+        let mut db = db;
+        let mut vfs = vfs;
+        let target_roots = extensionless_target_roots(worktrees.base());
+        if !target_roots.is_empty() {
+            load_target_roots(&mut worktrees, &mut db, &mut vfs, &target_roots);
+            let base = worktrees.base().clone();
+            worktrees.set_base(&mut db, &mut vfs, base);
+        }
 
         let host = AnalysisHost::with_database(db);
         tracing::info!(?workspace_root, "Cargo workspace warm and ready in RAM");
