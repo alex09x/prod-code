@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Global Python Symbol Lookup Prioritizes Source Files** (`crates/prod-code-mcp`, #1743): When `workspace/symbol` omits an unqualified Python declaration, code lookup now scans executable source files before Markdown and configuration files, so large documentation trees cannot consume the bounded fallback's candidate limit first.
+
 ## v0.3.42 — 2026-10-28
 
 ### Added
