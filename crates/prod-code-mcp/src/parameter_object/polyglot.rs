@@ -15,8 +15,13 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use super::apply::{check_and_apply, display, read_referenced};
-use super::container::{dataclass_import, item_start_in, python_import_edit, top_level_line};
-use super::effects::js_constant;
+use super::container::{
+    body_open, body_span, dataclass_import, item_start_in, python_import_edit, top_level_line,
+};
+use super::js_defaults::{
+    after_directives, binding_declaration, ensure_contiguous_bundle, indentation_at,
+    parameter_pattern, preserve_callee_defaults, type_accepting_undefined,
+};
 use super::params::parse_params;
 use super::polyglot_callers::{collect_body_uses, rewrite_polyglot_callers};
 use super::rewrite::ident_uses;
@@ -94,6 +99,14 @@ pub(crate) async fn introduce_in(
         .map(|(i, _)| i)
         .collect();
     anyhow::ensure!(bundled.len() == params.len(), "a parameter was named twice");
+    let preserve_defaults = preserve_callee_defaults(language, &declared, &bundled);
+    if preserve_defaults {
+        anyhow::ensure!(
+            !bundled.iter().any(|index| declared[*index].name == binding),
+            "`{binding}` is also a bundled parameter of `{callee}`; preserving its default needs a distinct body binding"
+        );
+        ensure_contiguous_bundle(&callee, &declared, &bundled)?;
+    }
     for i in &bundled {
         anyhow::ensure!(
             declared[*i].kind == Kind::Plain,
@@ -111,20 +124,6 @@ pub(crate) async fn introduce_in(
             "`{}` is `inout`, and a field of the new type would be a copy of it",
             declared[*i].name
         );
-        // The callers write a JavaScript or TypeScript default into the object now. A constant
-        // means the same there; anything else runs in the function's scope, on every call,
-        // after the parameters before it are bound.
-        if matches!(language, Language::JavaScript | Language::TypeScript)
-            && let Some(default) = &declared[*i].default
-        {
-            anyhow::ensure!(
-                js_constant(default),
-                "`{}` defaults to `{default}`, which is evaluated in `{callee}` on every call; \
-                 written at the callers it could mean something else, so only a constant \
-                 default is bundled",
-                declared[*i].name
-            );
-        }
     }
 
     let mut fields = Vec::with_capacity(bundled.len());
@@ -136,6 +135,13 @@ pub(crate) async fn introduce_in(
             None if language == Language::JavaScript => None,
             None => hover_type(remote, root, file, &text, open + p.name_at, &p.name).await,
         };
+        let ty = ty.map(|ty| {
+            if language == Language::TypeScript && p.default.is_some() {
+                type_accepting_undefined(&ty)
+            } else {
+                ty
+            }
+        });
         fields.push(Field {
             name: p.name.clone(),
             ty,
@@ -146,7 +152,7 @@ pub(crate) async fn introduce_in(
                     Language::Python | Language::Swift | Language::JavaScript
                 )
             }),
-            optional: p.optional,
+            optional: p.optional || (language == Language::TypeScript && p.default.is_some()),
         });
     }
 
@@ -194,17 +200,40 @@ pub(crate) async fn introduce_in(
     let call_sites = callers.call_sites;
     let consumed = callers.consumed;
     let bare_callers = callers.bare_callers;
+    let has_body_uses = !uses.is_empty();
 
     for (n, used) in uses.into_iter().enumerate() {
         if !consumed[n] {
             edits.entry(file.to_path_buf()).or_default().push(used);
         }
     }
+    if preserve_defaults && has_body_uses {
+        let function_body = body_open(&text, close, language)
+            .context("the function body is needed to preserve its parameter defaults")?;
+        let body_end = body_span(&text, offset, close, language).1;
+        let insertion = after_directives(&text, function_body + 1, body_end);
+        edits.entry(file.to_path_buf()).or_default().push((
+            insertion,
+            0,
+            binding_declaration(
+                language,
+                binding,
+                name,
+                &declared,
+                &bundled,
+                &indentation_at(&text, insertion),
+            ),
+        ));
+    }
 
     // The declaration itself. A Swift parameter keeps the first bundled one's lack of a label,
     // and a default when every bundled one had a default, so that a call that passed none of
     // them still compiles unchanged.
-    let mut parameter = parameter_in(language, binding, name);
+    let mut parameter = if preserve_defaults {
+        parameter_pattern(language, name, &declared, &bundled)
+    } else {
+        parameter_in(language, binding, name)
+    };
     if language == Language::Swift {
         if bundled
             .first()

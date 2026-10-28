@@ -12,10 +12,9 @@ use super::binding::argument_value;
 use super::params::leading_ident;
 use super::types::{Language, Param};
 
-/// Whether a JavaScript expression is a constant, the same value wherever and whenever it is
-/// evaluated: a number, a string with no substitution, `true`, `false`, `null`, `void 0`, or an
-/// empty `[]` or `{}` (a new one either way). A default like that can be written at the call
-/// instead of in the function without meaning anything else.
+/// Whether a JavaScript expression is a closed literal with no references or calls: a number, a
+/// string with no substitution, `true`, `false`, `null`, `void 0`, or a fresh empty `[]` or `{}`.
+/// Argument reordering uses this to identify values that do not run code while they are evaluated.
 ///
 /// `undefined` is not one: it is a name, which a parameter or a variable can shadow. Nor is
 /// `1..x`, which reads a property of a number and is `undefined` when there is none.
