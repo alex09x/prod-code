@@ -16,7 +16,10 @@ use crate::move_item::{CargoTargetModule, cargo_target_module};
 use anyhow::{Context, Result};
 
 use super::items::impl_block;
-use super::rewrite::{add_import_at_inline_scope, inline_scope_at, relative_import_path, rewrite};
+use super::rewrite::{
+    add_import_at_inline_scope, inline_scope_at, inline_scope_id_at, inline_scope_open_by_id,
+    relative_import_path, rewrite,
+};
 use super::types::{Extracted, valid_ident};
 
 /// Extracts `trait {name}` from the methods `methods` of the inherent `impl` block at
@@ -109,11 +112,11 @@ pub async fn extract_trait_ext(
                 } else {
                     caller_at
                 };
-                let (_, scope_open) = inline_scope_at(&new_text, rewritten_at);
+                let scope_id = inline_scope_id_at(&new_text, rewritten_at);
                 pending_imports
                     .entry(file.to_path_buf())
                     .or_default()
-                    .insert((scope_open, format!("use {relative};")));
+                    .insert((scope_id, format!("use {relative};")));
                 continue;
             }
             let caller_target =
@@ -142,11 +145,11 @@ pub async fn extract_trait_ext(
             };
             let caller_at = crate::signature::offset_of(&current, ref_line, ref_col)
                 .context("a caller reference is outside its source text")?;
-            let (_, scope_open) = inline_scope_at(&current, caller_at);
+            let scope_id = inline_scope_id_at(&current, caller_at);
             pending_imports
                 .entry(path.clone())
                 .or_default()
-                .insert((scope_open, use_line));
+                .insert((scope_id, use_line));
             files.insert(path, current);
         }
     }
@@ -182,15 +185,18 @@ pub async fn extract_trait_ext(
                     target_module.push_str(&trait_inline_modules.join("::"));
                 }
                 let use_line = format!("use {target_module}::{name};");
-                let updated = if pending_imports.contains_key(&p) {
-                    t.clone()
-                } else {
-                    crate::move_item::add_import(&t, &use_line)
-                };
-                if updated != t && !imports.iter().any(|(imp_p, _)| imp_p == &p) {
-                    imports.push((p.clone(), use_line));
+                let has_root_import = pending_imports.get(&p).is_some_and(|planned| {
+                    planned
+                        .iter()
+                        .any(|(scope_id, line)| *scope_id == 0 && line == &use_line)
+                });
+                if !has_root_import {
+                    pending_imports
+                        .entry(p.clone())
+                        .or_default()
+                        .insert((0, use_line));
                 }
-                files.insert(p, updated);
+                files.insert(p, t);
             } else {
                 files.insert(p, t);
             }
@@ -202,7 +208,9 @@ pub async fn extract_trait_ext(
             continue;
         };
         let mut updated = current;
-        for (scope_open, use_line) in caller_imports.into_iter().rev() {
+        for (scope_id, use_line) in caller_imports.into_iter().rev() {
+            let scope_open = inline_scope_open_by_id(&updated, scope_id)
+                .context("cannot relocate a planned inline-module import after caller edits")?;
             let with_import = add_import_at_inline_scope(&updated, scope_open, &use_line);
             if with_import != updated {
                 imports.push((path.clone(), use_line));

@@ -146,6 +146,25 @@ fn inline_module_scopes(text: &str) -> Vec<InlineModuleScope> {
     mods
 }
 
+/// Stable identity for a caller's innermost inline module while text before it changes.
+pub fn inline_scope_id_at(text: &str, at: usize) -> usize {
+    inline_module_scopes(text)
+        .iter()
+        .rposition(|module| module.open < at && at < module.close)
+        .map_or(0, |index| index + 1)
+}
+
+/// Resolve an inline-scope identity after edits that preserve module declaration order.
+pub fn inline_scope_open_by_id(text: &str, scope_id: usize) -> Option<usize> {
+    if scope_id == 0 {
+        Some(0)
+    } else {
+        inline_module_scopes(text)
+            .get(scope_id - 1)
+            .map(|module| module.open)
+    }
+}
+
 pub fn inline_scope_at(text: &str, at: usize) -> (Vec<String>, usize) {
     let modules: Vec<_> = inline_module_scopes(text)
         .into_iter()
@@ -172,6 +191,10 @@ pub fn relative_import_path(
         return None;
     }
     let mut path = vec!["super".to_string(); caller_modules.len() - common];
+    if !caller_modules.is_empty() && caller_modules.len() == common && trait_modules.len() > common
+    {
+        path.push("self".to_string());
+    }
     path.extend(trait_modules[common..].iter().cloned());
     path.push(trait_name.to_string());
     Some(path.join("::"))
@@ -179,7 +202,40 @@ pub fn relative_import_path(
 
 pub fn add_import_at_inline_scope(text: &str, scope_open: usize, use_line: &str) -> String {
     if scope_open == 0 {
-        return crate::move_item::add_import(text, use_line);
+        let mut root_only = text.as_bytes().to_vec();
+        for module in inline_module_scopes(text) {
+            for byte in &mut root_only[module.open..=module.close] {
+                if *byte != b'\n' && *byte != b'\r' {
+                    *byte = b' ';
+                }
+            }
+        }
+        let code = lexical_code(text);
+        for (index, byte) in root_only.iter_mut().enumerate() {
+            if !code[index] && *byte != b'\n' && *byte != b'\r' {
+                *byte = b' ';
+            }
+        }
+        let root_only = String::from_utf8(root_only).expect("masking preserves UTF-8");
+        let updated = crate::move_item::add_import(&root_only, use_line);
+        if updated == root_only {
+            return text.to_string();
+        }
+        let Some(import_at) = updated.find(use_line) else {
+            return text.to_string();
+        };
+        let insert_at = updated[..import_at]
+            .rfind('\n')
+            .map_or(0, |newline| newline + 1);
+        let insert_end = updated[import_at..]
+            .find('\n')
+            .map_or(updated.len(), |newline| import_at + newline + 1);
+        let inserted = &updated[insert_at..insert_end];
+        let mut result = String::with_capacity(text.len() + inserted.len());
+        result.push_str(&text[..insert_at]);
+        result.push_str(inserted);
+        result.push_str(&text[insert_at..]);
+        return result;
     }
     let Some(close) = matching_close_brace(text, scope_open) else {
         return text.to_string();

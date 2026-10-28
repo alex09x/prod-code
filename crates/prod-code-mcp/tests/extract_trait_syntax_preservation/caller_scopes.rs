@@ -8,7 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use super::support::{run_mcp_tool_extract, scripted_gateway, workspace};
+use super::support::{compile_lib, run_mcp_tool_extract, scripted_gateway, workspace};
 use prod_code_testkit::answers;
 
 const LIB: &str = "pub struct Rect;\n\
@@ -32,6 +32,32 @@ fn main() {\n\
 
 const SAME_NAME_TEST: &str = "use shape_api::Rect;\n\
 pub fn test_caller() -> u32 { Rect.area() }\n";
+
+const MIGRATED_INLINE_CALLER: &str = "pub struct Rect;\n\
+impl Rect { pub fn area(&self) -> u32 { 1 } }\n\
+fn top(r: &Rect) -> u32 { r.area() }\n\
+mod child {\n\
+    use super::Rect;\n\
+    pub fn run(r: &Rect) -> u32 { r.area() }\n\
+}\n";
+
+const ANCESTOR_CALLER: &str = "mod outer {\n\
+    pub mod inner {\n\
+        pub struct Rect;\n\
+        impl Rect { pub fn area(&self) -> u32 { 1 } }\n\
+    }\n\
+    pub fn run(r: &inner::Rect) -> u32 { r.area() }\n\
+}\n";
+
+const EXTERNAL_MIGRATED_CALLERS: &str = "use shape_api::Rect;\n\
+fn top(r: &Rect) -> u32 { r.area() }\n\
+mod child {\n\
+    use shape_api::Rect;\n\
+    pub fn run(r: &Rect) -> u32 { r.area() }\n\
+}\n\
+fn main() { assert_eq!(top(&Rect), 1); assert_eq!(child::run(&Rect), 1); }\n";
+const EXTERNAL_MIGRATION_LIB: &str =
+    "pub struct Rect;\nimpl Rect { pub fn area(&self) -> u32 { 1 } }\n";
 
 const CARGO: &str = "[package]\n\
 name = \"shape-api\"\n\
@@ -196,6 +222,116 @@ pub async fn same_file_inline_module_and_example_targets_get_their_trait_imports
     assert!(
         cargo_test.status.success(),
         "generated trait imports did not compile:\n{}\n{}",
+        String::from_utf8_lossy(&cargo_test.stdout),
+        String::from_utf8_lossy(&cargo_test.stderr)
+    );
+}
+
+pub async fn migrated_caller_keeps_inline_scope_import_offsets_valid() {
+    let ws = workspace(&[("src/lib.rs", MIGRATED_INLINE_CALLER)]);
+    let lib = ws.path("src/lib.rs");
+    let refs = answers::locations(&lib, &[(3, 32), (6, 34)]);
+    let gateway = scripted_gateway(refs, answers::no_diagnostics()).await;
+
+    let result = run_mcp_tool_extract(
+        gateway.addr(),
+        &ws,
+        "src/lib.rs",
+        2,
+        24,
+        &["area"],
+        "Measure",
+        true,
+        true,
+        false,
+    )
+    .await
+    .expect("public extract with caller migration");
+
+    let source = ws.read("src/lib.rs");
+    assert!(result.contains("[applied]"), "{result}");
+    assert!(source.contains("fn top(r: &impl Measure)"), "{source}");
+    assert!(source.contains("pub fn run(r: &impl Measure)"), "{source}");
+    assert!(source.contains("use super::Measure;"), "{source}");
+    let compiled = compile_lib(&[("src/lib.rs", &source)], "src/lib.rs", &[]);
+    assert_eq!(compiled["exit"], 0, "{compiled}");
+}
+
+pub async fn ancestor_scope_import_uses_self_relative_path() {
+    let ws = workspace(&[("src/lib.rs", ANCESTOR_CALLER)]);
+    let lib = ws.path("src/lib.rs");
+    let refs = answers::locations(&lib, &[(6, 44)]);
+    let gateway = scripted_gateway(refs, answers::no_diagnostics()).await;
+
+    let result = run_mcp_tool_extract(
+        gateway.addr(),
+        &ws,
+        "src/lib.rs",
+        4,
+        31,
+        &["area"],
+        "Measure",
+        false,
+        true,
+        false,
+    )
+    .await
+    .expect("public extract from nested inline module");
+
+    let source = ws.read("src/lib.rs");
+    assert!(result.contains("[applied]"), "{result}");
+    assert!(source.contains("use self::inner::Measure;"), "{source}");
+    let compiled = compile_lib(&[("src/lib.rs", &source)], "src/lib.rs", &[]);
+    assert_eq!(compiled["exit"], 0, "{compiled}");
+}
+
+pub async fn migrated_external_callers_get_root_and_inline_imports() {
+    let ws = workspace(&[
+        ("src/lib.rs", EXTERNAL_MIGRATION_LIB),
+        ("examples/migrated.rs", EXTERNAL_MIGRATED_CALLERS),
+    ]);
+    let example = ws.path("examples/migrated.rs");
+    let refs = answers::locations(&example, &[(2, 32), (5, 38)]);
+    let gateway = scripted_gateway(refs, answers::no_diagnostics()).await;
+
+    let result = run_mcp_tool_extract(
+        gateway.addr(),
+        &ws,
+        "src/lib.rs",
+        2,
+        24,
+        &["area"],
+        "Measure",
+        true,
+        true,
+        false,
+    )
+    .await
+    .expect("public extraction with external caller migration");
+
+    let example_after = ws.read("examples/migrated.rs");
+    assert!(result.contains("[applied]"), "{result}");
+    assert!(
+        example_after.contains("fn top(r: &impl Measure)"),
+        "{example_after}"
+    );
+    assert!(
+        example_after.contains("pub fn run(r: &impl Measure)"),
+        "{example_after}"
+    );
+    assert_eq!(
+        example_after.matches("use shape_api::Measure;").count(),
+        2,
+        "the migrated root and child module both need the trait: {example_after}"
+    );
+    let cargo_test = std::process::Command::new("cargo")
+        .args(["test", "--example", "migrated"])
+        .current_dir(ws.root())
+        .output()
+        .expect("compile and run the migrated example");
+    assert!(
+        cargo_test.status.success(),
+        "migrated example did not compile and run:\n{}\n{}",
         String::from_utf8_lossy(&cargo_test.stdout),
         String::from_utf8_lossy(&cargo_test.stderr)
     );

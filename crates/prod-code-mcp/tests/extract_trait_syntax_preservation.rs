@@ -36,6 +36,9 @@ async fn recovered_parser_regressions() {
 #[tokio::test]
 async fn trait_extraction_preserves_inline_and_non_library_caller_scopes() {
     caller_scopes::same_file_inline_module_and_example_targets_get_their_trait_imports().await;
+    caller_scopes::migrated_caller_keeps_inline_scope_import_offsets_valid().await;
+    caller_scopes::ancestor_scope_import_uses_self_relative_path().await;
+    caller_scopes::migrated_external_callers_get_root_and_inline_imports().await;
 }
 
 #[path = "../src/extract_trait/tests.rs"]
