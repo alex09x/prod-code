@@ -9,6 +9,7 @@
  */
 
 use super::binding::{argument_value, keyword_arg};
+use super::js_defaults::needs_own_undefined;
 use super::params::leading_ident;
 use super::syntax::{close_in, is_ident_byte, walk_code};
 use super::type_render::literal_text;
@@ -59,9 +60,9 @@ pub fn rewritten_args(
 /// the first of them was, every other argument where it was.
 ///
 /// In Python the literal is passed the way that first argument was: by keyword when it was a
-/// keyword argument, since a positional argument cannot follow one. A bundled parameter the call
-/// left to its default is left out of the literal, where the field's default stands in for it;
-/// when the call passed none of them, the literal goes last, by keyword.
+/// keyword argument, since a positional argument cannot follow one. A bundled JavaScript or
+/// TypeScript parameter with a callee-side default stays out of the literal when omitted, so the
+/// destructured parameter applies its default.
 pub fn rewritten_call(
     args: &[String],
     bound: &[Option<usize>],
@@ -91,8 +92,7 @@ pub(crate) fn rewritten_call_with(
     binding: &str,
     literal: impl Fn(&[(String, String)]) -> String,
 ) -> String {
-    // TypeScript applies a default when the argument is `undefined` the way JavaScript does, and
-    // only a constant one gets this far in either.
+    // TypeScript applies a default when the argument is `undefined` the way JavaScript does.
     let js = matches!(language, Language::JavaScript | Language::TypeScript);
     // In the order the call wrote them, which is the order they are evaluated in: a Python
     // call may pass keywords in any order (#436). A field the call left out goes after them.
@@ -100,21 +100,20 @@ pub(crate) fn rewritten_call_with(
         .iter()
         .filter_map(|p| {
             let name = params[*p].name.clone();
-            // A JavaScript default stands in for `undefined`, passed or left out; the object
-            // carries it now, since the field has none. Only a constant gets this far.
-            let default = params[*p].default.clone().filter(|_| js);
             match bound.iter().position(|b| *b == Some(*p)) {
-                Some(a) if default.is_some() && args[a].trim() == "void 0" => {
-                    Some((a, (name, default?)))
-                }
                 Some(a) => Some((a, (name, argument_value(&args[a], language).to_string()))),
-                // Left out, a JavaScript parameter was `undefined`, and the field is too — an own
-                // one, so that `toString` does not read the one every object inherits. `void 0`
-                // is `undefined` wherever it is written; the name can be shadowed.
-                None if js => Some((
-                    usize::MAX,
-                    (name, default.unwrap_or_else(|| "void 0".to_string())),
-                )),
+                // Without an own `undefined` property, destructuring can read the inherited
+                // Object.prototype value and skip the default initializer.
+                None if js && params[*p].default.is_some() && needs_own_undefined(&name) => {
+                    Some((usize::MAX, (name, "void 0".to_string())))
+                }
+                // A callee-side parameter default runs for a missing field as well as for one
+                // whose argument evaluated to undefined. Preserve the omitted field so the
+                // destructured parameter applies the original default in the callee's scope.
+                None if js && params[*p].default.is_some() => None,
+                // A left-out non-defaulted JavaScript parameter was `undefined`, and the field is
+                // too — an own one, so that `toString` does not read the one every object inherits.
+                None if js => Some((usize::MAX, (name, "void 0".to_string()))),
                 None => None,
             }
         })

@@ -17,6 +17,7 @@ pub mod cpp_std;
 pub mod drop;
 pub mod effects;
 pub mod introduce;
+mod js_defaults;
 pub mod params;
 pub mod polyglot;
 pub mod polyglot_callers;

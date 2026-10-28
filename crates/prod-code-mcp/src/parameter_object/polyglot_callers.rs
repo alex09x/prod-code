@@ -17,7 +17,8 @@ use anyhow::{Context, Result};
 use super::apply::{display, unlisted};
 use super::binding::{bind_arguments, call_args_in};
 use super::container::{body_span, in_import, qualifier_before};
-use super::effects::{js_constant, reordered, reordered_arguments};
+use super::effects::{reordered, reordered_arguments};
+use super::js_defaults::preserve_callee_defaults;
 use super::params::entries;
 use super::rewrite::{called_name, ident_uses, object_shorthand, rewritten_call};
 use super::swift_shadow::{shadowed_literal_types, with_shadowed};
@@ -48,6 +49,7 @@ pub(crate) async fn collect_body_uses(
     callee: &str,
 ) -> Result<Vec<(usize, usize, String)>> {
     let body = body_span(text, offset, close, language);
+    let preserve_default_bindings = preserve_callee_defaults(language, declared, bundled);
     let mut uses: Vec<(usize, usize, String)> = Vec::new();
     for i in bundled {
         let p = &declared[*i];
@@ -75,12 +77,13 @@ pub(crate) async fn collect_body_uses(
                 continue;
             };
             if o <= body.0 || o >= body.1 {
-                // Another parameter's default reads this one, and would lose it. TypeScript's
-                // checker says so after the rewrite; in JavaScript nothing would.
+                // A parameter initializer cannot see the body object, and the default-preserving
+                // TypeScript path also refuses cross-parameter bindings whose writes would split.
                 anyhow::ensure!(
-                    language != Language::JavaScript || o == open + p.name_at,
+                    (language != Language::JavaScript && !preserve_default_bindings)
+                        || o == open + p.name_at,
                     "`{}` is read at {}:{rl}:{rc}, outside the body of `{callee}` (another \
-                     parameter's default); it would not be in scope as a field",
+                     parameter initializer); it cannot be kept in sync with the bundled field",
                     p.name,
                     display(root, file)
                 );
@@ -118,7 +121,7 @@ pub(crate) async fn collect_body_uses(
             } else {
                 format!("{binding}.{}", p.name)
             };
-            let replacement = if language == Language::JavaScript
+            let replacement = if matches!(language, Language::JavaScript | Language::TypeScript)
                 && object_shorthand(text, body.0, o, p.name.len())
             {
                 format!("{}: {field}", js_key(&p.name))
@@ -131,7 +134,7 @@ pub(crate) async fn collect_body_uses(
     uses.sort();
     uses.dedup();
 
-    if language == Language::JavaScript {
+    if language == Language::JavaScript || preserve_default_bindings {
         let line_of = |at: usize| crate::signature::position_at(text, at).map(|(line, _)| line);
         // `arguments` still counts and orders the arguments the call passed, which bundling
         // changes. A nested function has its own, but it is refused too rather than told apart.
@@ -143,9 +146,8 @@ pub(crate) async fn collect_body_uses(
                 line_of(*at)?
             );
         }
-        // A direct `eval(…)` reads the parameters by name from a string no reference reaches,
-        // and would find them gone (#1510). An indirect one (`obj.eval(…)`, `(0, eval)(…)`)
-        // runs in the global scope and sees no parameter.
+        // A direct `eval(…)` can read or write a parameter whose body references are rewritten;
+        // an indirect one runs in the global scope and sees no parameter (#1510).
         let direct_eval = ident_uses(text, body.0, body.1, "eval")
             .into_iter()
             .find(|at| {
@@ -294,33 +296,13 @@ pub(crate) async fn rewrite_polyglot_callers(
         } else {
             None
         };
-        if language == Language::JavaScript
+        if matches!(language, Language::JavaScript | Language::TypeScript)
             && let Some(spread) = args.iter().find(|a| a.starts_with("..."))
         {
             anyhow::bail!(
                 "`{callee}` is called with `{spread}` at {place}; which parameters a spread \
                  reaches is known only when the call runs, so it is not bundled"
             );
-        }
-        if matches!(language, Language::JavaScript | Language::TypeScript) {
-            // The object carries a default where the call left the parameter out or passed
-            // `undefined`, but a value that is `undefined` only at run time would get the
-            // default before and not after.
-            // A bundled parameter is never a rest one, so the argument at its position is its.
-            for p in bundled {
-                let (Some(default), Some(value)) = (&declared[*p].default, args.get(*p)) else {
-                    continue;
-                };
-                anyhow::ensure!(
-                    js_constant(value),
-                    "`{callee}` at {place} passes `{value}` as `{}`, which defaults to \
-                     `{default}`: if it is `undefined` when the call runs the default applies, \
-                     and in the object it would not. Pass a constant there (`void 0` for the \
-                     default), or leave `{}` out of the bundle",
-                    declared[*p].name,
-                    declared[*p].name
-                );
-            }
         }
         let Some(bound) = bind_arguments(&args, declared, language) else {
             unmatched.push(place);
