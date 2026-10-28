@@ -32,6 +32,8 @@ use tokio_util::codec::Framed;
 
 #[path = "cli/outline_paths.rs"]
 mod outline_paths;
+#[path = "cli/test_routing.rs"]
+mod test_routing;
 #[path = "cli/validate_baseline.rs"]
 mod validate_baseline;
 

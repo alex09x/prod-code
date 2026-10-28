@@ -56,6 +56,14 @@ pub async fn run_verify_with(
     extra_env: &[(String, String)],
     mut on_event: impl FnMut(RunEvent),
 ) -> Result<VerifyReport> {
+    let normalized_hint = project_hint.map(|hint| {
+        if hint.is_absolute() || hint.starts_with(root) {
+            hint.to_path_buf()
+        } else {
+            root.join(hint)
+        }
+    });
+    let project_hint = normalized_hint.as_deref();
     // A nested project of another language (a SwiftPM package in a Rust repository) is
     // verified in its own directory with its own tooling.
     let (subdir, language) = crate::sync::engine_project(root, project_hint.unwrap_or(root));
@@ -79,7 +87,18 @@ pub async fn run_verify_with(
         plan_command_with(&tools, language, kind, filter)?
     };
     if let Some(hint) = project_hint {
-        narrow_scope(&mut command, language, &project_dir, hint);
+        if language == "rust"
+            && kind == VerifyKind::Test
+            && (hint.is_file() || (!hint.exists() && hint.extension().is_some_and(|e| e == "rs")))
+        {
+            crate::verify::plan::rust_test_file::narrow_rust_test_file(
+                &mut command,
+                &project_dir,
+                hint,
+            )?;
+        } else {
+            narrow_scope(&mut command, language, &project_dir, hint);
+        }
     }
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();

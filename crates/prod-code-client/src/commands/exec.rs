@@ -56,6 +56,19 @@ pub async fn run_verify(
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
     let scope = verify_scope(&cwd, &root, args.path.as_deref())?;
+    // Preserve the spelling of a Rust test-file hint after containment validation so the
+    // planner can reject symlink aliases instead of silently selecting a different target.
+    let scope = if kind == VerifyKind::Test {
+        args.path
+            .as_deref()
+            .map(|path| cwd.join(path))
+            .filter(|path| {
+                path.is_file() && path.extension().is_some_and(|extension| extension == "rs")
+            })
+            .unwrap_or(scope)
+    } else {
+        scope
+    };
     let env = args
         .env
         .iter()
