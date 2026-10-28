@@ -71,8 +71,14 @@ fn check_runtime(ws: &Workspace, file: &str) -> bool {
 }
 
 async fn verify_aggregate_review_repairs(ws: &Workspace, failures: &mut Vec<String>) {
-    let _ = run(ws, "zig", &["c++", "--version"]);
-    let _ = run(ws, "g++", &["--version"]);
+    let cpp_available = std::process::Command::new("zig")
+        .args(["c++", "--version"])
+        .output()
+        .is_ok_and(|output| output.status.success())
+        && std::process::Command::new("g++")
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success());
     let py = "class Box:\n def __init__(self):\n  self.count = 0\n";
     let cpp = "class Box {\npublic:\n int count;\n};\n";
     let cpp_payload = "struct Payload {\n int value = 0;\n Payload() = default;\n Payload(int v) : value(v) {}\n Payload(const Payload&) = delete;\n Payload& operator=(const Payload&) = default;\n};\nclass Box {\npublic:\n Payload count;\n};\n";
@@ -184,6 +190,10 @@ async fn verify_aggregate_review_repairs(ws: &Workspace, failures: &mut Vec<Stri
         ),
     ];
     for (shape, owner, file, body) in cases {
+        if file == "main.cpp" && !cpp_available {
+            eprintln!("skipping {shape}: zig c++ and g++ are required");
+            continue;
+        }
         let (owner_file, anchor) = match file {
             "main.rs" => ("model.rs", "pub count:"),
             "main.cpp" => ("box.hpp", " count;"),
@@ -330,6 +340,13 @@ async fn rust_consuming_receiver_keeps_unconditional_rhs() {
             }
         }
     }
+    assert!(failures.is_empty(), "{failures:?}");
+}
+
+#[tokio::test]
+async fn aggregate_review_repairs() {
+    let ws = Workspace::new(&[]);
+    let mut failures = Vec::new();
     verify_aggregate_review_repairs(&ws, &mut failures).await;
     assert!(failures.is_empty(), "{failures:?}");
 }
