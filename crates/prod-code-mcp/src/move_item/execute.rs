@@ -14,7 +14,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use super::budget::{MoveBudget, document_symbols};
-use super::child::move_to_child;
+use super::child::{move_to_child, requires_parent_scope};
 use super::imports::{add_import, carry_imports, drop_import, has_use_super_glob, requalify};
 use super::item::{append_item, cut, display, move_inherent_method, offset_of, span_at};
 use super::module::extract_inline_module;
@@ -164,7 +164,15 @@ pub async fn move_item(
         } else {
             let (source_new, item) = cut(&source_text, start, decl_end);
             let (target_with_imports, item, carried) = if child {
-                move_to_child(&source_text, &item, &target_text, true, edition)?
+                let inherit_parent = requires_parent_scope(
+                    &source_new,
+                    &item,
+                    &symbols,
+                    decl_start,
+                    decl_end,
+                    from_owners[0].test_crate,
+                );
+                move_to_child(&source_text, &item, &target_text, inherit_parent, edition)?
             } else if to_owners.iter().any(|owner| {
                 owner
                     .declaration

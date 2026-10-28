@@ -8,7 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use super::imports::{add_import, carry_imports, has_use_super_glob};
+use super::imports::{add_import, carry_imports, has_use_super_glob, mentions, use_statements};
 use crate::fixture::builder::lexer::Source;
 use anyhow::Result;
 
@@ -127,6 +127,58 @@ pub(super) fn move_to_child(
         carried.push("added `use super::*;` to retain the parent scope".to_string());
     }
     Ok((text, item, carried))
+}
+
+pub(super) fn requires_parent_scope(
+    source: &str,
+    item: &str,
+    symbols: &serde_json::Value,
+    selected_start: u32,
+    selected_end: u32,
+    test_crate: bool,
+) -> bool {
+    if test_crate
+        || source
+            .lines()
+            .any(|line| line.trim_start().starts_with("#[macro_use"))
+        || use_statements(source)
+            .into_iter()
+            .any(|(start, end)| source[start..end].contains('*'))
+    {
+        return true;
+    }
+
+    fn references_parent(nodes: &[serde_json::Value], item: &str, start: u32, end: u32) -> bool {
+        nodes.iter().any(|node| {
+            let name = node.get("name").and_then(serde_json::Value::as_str);
+            let range = node.get("range").or_else(|| {
+                node.get("location")
+                    .and_then(|location| location.get("range"))
+            });
+            let outside_selected = range.is_some_and(|range| {
+                let declaration_start = range
+                    .pointer("/start/line")
+                    .and_then(serde_json::Value::as_u64)
+                    .map(|line| line as u32 + 1);
+                let declaration_end = range
+                    .pointer("/end/line")
+                    .and_then(serde_json::Value::as_u64)
+                    .map(|line| line as u32 + 1);
+                declaration_start
+                    .zip(declaration_end)
+                    .is_some_and(|(from, to)| to < start || from > end)
+            });
+            (outside_selected && name.is_some_and(|name| mentions(item, name)))
+                || node
+                    .get("children")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|children| references_parent(children, item, start, end))
+        })
+    }
+
+    symbols
+        .as_array()
+        .is_some_and(|nodes| references_parent(nodes, item, selected_start, selected_end))
 }
 
 #[cfg(test)]
