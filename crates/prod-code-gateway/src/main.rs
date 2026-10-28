@@ -42,11 +42,28 @@ fn main() -> Result<()> {
     {
         std::process::exit(prod_code_gateway::exec_shim::run(&args[2..]));
     }
-    serve()
+    serve(configure_glibc_malloc_arenas())
+}
+
+fn configure_glibc_malloc_arenas() -> Option<bool> {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        if std::env::var_os("MALLOC_ARENA_MAX").is_some()
+            || std::env::var_os("GLIBC_TUNABLES").is_some()
+        {
+            return None;
+        }
+        // SAFETY: this runs before the async runtime or the global Rayon worker pool starts.
+        Some(unsafe { libc::mallopt(libc::M_ARENA_MAX, 4) != 0 })
+    }
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+    {
+        None
+    }
 }
 
 #[tokio::main]
-async fn serve() -> Result<()> {
+async fn serve(arena_limit_applied: Option<bool>) -> Result<()> {
     ensure_blocking_stdio();
     tracing_subscriber::fmt()
         .with_ansi(std::io::stderr().is_terminal())
@@ -55,13 +72,21 @@ async fn serve() -> Result<()> {
                 .unwrap_or_else(|_| DEFAULT_LOG_FILTER.into()),
         )
         .init();
+    match arena_limit_applied {
+        Some(true) => tracing::info!(
+            max_arenas = 4,
+            "set the default glibc allocator arena limit"
+        ),
+        Some(false) => tracing::warn!("failed to set the glibc allocator arena limit"),
+        None => {}
+    }
     let cli = ServerCli::parse_with_config()?;
     prod_code_gateway::run(cli).await
 }
 
 #[cfg(test)]
 mod tests {
-    use super::DEFAULT_LOG_FILTER;
+    use super::{DEFAULT_LOG_FILTER, configure_glibc_malloc_arenas};
 
     #[test]
     fn the_default_filter_parses_and_keeps_the_analyzer_quiet() {
@@ -80,5 +105,17 @@ mod tests {
             !DEFAULT_LOG_FILTER.contains(' '),
             "no stray spaces from the line breaks"
         );
+    }
+
+    #[test]
+    fn the_glibc_arena_limit_respects_operator_overrides() {
+        let has_override = std::env::var_os("MALLOC_ARENA_MAX").is_some()
+            || std::env::var_os("GLIBC_TUNABLES").is_some();
+        let configured = configure_glibc_malloc_arenas();
+        if cfg!(all(target_os = "linux", target_env = "gnu")) && !has_override {
+            assert_eq!(configured, Some(true));
+        } else {
+            assert_eq!(configured, None);
+        }
     }
 }
