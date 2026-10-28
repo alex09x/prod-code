@@ -86,6 +86,7 @@ pub(crate) fn is_read_only_tool(tool_name: &str, args: &serde_json::Value) -> bo
         | "code_report_issue"
         | "code_test"
         | "code_benchmarks"
+        | "code_coverage"
         | "code_diagnose_failure" => true,
         "code_shadow_run" => args.get("apply").and_then(|v| v.as_bool()) != Some(true),
         "code_pull" => args.get("list").and_then(|v| v.as_bool()) == Some(true),

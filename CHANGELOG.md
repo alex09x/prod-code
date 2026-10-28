@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **Remote Rust Coverage Tool** (`crates/prod-code-mcp`, #1559): The new `code_coverage` MCP tool runs `cargo llvm-cov` on the remote build node with a selected toolchain and does not write remote changes back to the local workspace. It defaults to Cargo's package selection, `--no-report --lib`, and Rust 1.97.1; callers can select a package, the whole workspace, or another installed toolchain with `llvm-tools-preview`.
+
 ### Fixed
 - **Cargo Target Roots Without `.rs` Extensions Are Outlined as Rust** (`crates/prod-code-engine-rust`, #1498): A Cargo manifest can name a Rust source file with an extensionless or custom-extension path. Workspace load and manifest reload now add existing Cargo target roots to the Rust VFS and crate graph. Document outlines accept these manifest-owned files while refusing TOML, Markdown and unrelated files that happen to be in the VFS.
 - **Inherent Rust Methods Can Move Into a Sibling Module Without an Existing Impl** (`crates/prod-code-mcp`, #1702): `code_move` no longer refuses an inherent method or associated function just because the destination file has no `impl` block for its type. It resolves the type's defining module and creates a qualified impl in the sibling or new module; conflicting local type names and existing impls whose identity cannot be verified still refuse without writing.
