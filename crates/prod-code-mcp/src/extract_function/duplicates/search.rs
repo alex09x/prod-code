@@ -8,6 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 use crate::extract_function::tokens::{Token, tokens};
@@ -103,16 +104,24 @@ pub fn collect_copies(
     duplicates: bool,
     parameterize: bool,
     other_files: bool,
-) -> Vec<(PathBuf, String, Occurrence)> {
+) -> Result<Vec<(PathBuf, String, Occurrence)>> {
     let mut copies = Vec::new();
     if !duplicates {
-        return copies;
+        return Ok(copies);
     }
 
     for c in copies_of(selection, text, Some((start, end)), parameterize) {
         copies.push((file.to_path_buf(), text.to_string(), c));
     }
     if other_files {
+        let graph = crate::move_item::ownership::Graph::load(root, file)
+            .context("could not establish Cargo target membership for duplicate discovery")?;
+        let selected_owners = graph.owners(file, None)?;
+        anyhow::ensure!(
+            selected_owners.len() == 1,
+            "selected source belongs to multiple Cargo targets; refusing cross-file duplicate discovery"
+        );
+        let selected_target = selected_owners[0].identity.clone();
         let mut others = crate_sources(file);
         for s in crate::signature_polyglot::collect_workspace_sources(
             root,
@@ -123,6 +132,12 @@ pub fn collect_copies(
             }
         }
         for other in others {
+            let Ok(owners) = graph.owners(&other, None) else {
+                continue;
+            };
+            if owners.len() != 1 || owners[0].identity != selected_target {
+                continue;
+            }
             let Ok(other_text) = std::fs::read_to_string(&other) else {
                 continue;
             };
@@ -131,5 +146,5 @@ pub fn collect_copies(
             }
         }
     }
-    copies
+    Ok(copies)
 }

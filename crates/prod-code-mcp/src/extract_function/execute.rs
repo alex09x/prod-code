@@ -116,7 +116,7 @@ pub async fn extract_function(
         duplicates,
         parameterize,
         other_files,
-    );
+    )?;
 
     let mut varying: Vec<usize> = copies
         .iter()
