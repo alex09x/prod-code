@@ -13,9 +13,9 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::path::Path;
 
-use super::budget::{IMPACT_BUDGET, expired as budget_expired, within_deadline};
+use super::budget::{IMPACT_BUDGET, expired as budget_expired, record_timeout, within_deadline};
 use super::call_sites::check_signature_warnings;
-use super::changed::scan_changed_files;
+use super::changed::{ChangedScan, scan_changed_files};
 use super::diff::diff_hunks;
 use super::incoming::{Incoming, incoming_calls, note, test_name};
 use super::index::swift_index_build;
@@ -37,11 +37,13 @@ pub async fn analyze(
         .to_string();
     let tools = crate::verify::detect_tools(root);
     let changes = diff_hunks(root, base)?;
+    let mut incomplete = Vec::new();
     let mut timed_out = false;
     let index = if language == "swift" && !changes.is_empty() {
         match within_deadline(deadline, swift_index_build(remote, root)).await {
             Ok(index) => index,
             Err(_) => {
+                record_timeout(analysis_started, &mut incomplete);
                 timed_out = true;
                 None
             }
@@ -51,22 +53,26 @@ pub async fn analyze(
     };
     let mut session_pool = SessionPool::new(remote, root);
     let changed_files: Vec<String> = changes.keys().cloned().collect();
-    let scan = scan_changed_files(
-        root,
-        &language,
-        base,
-        &changes,
-        &mut session_pool,
-        analysis_started,
-        deadline,
-    )
-    .await?;
+    let scan = if timed_out {
+        ChangedScan::empty()
+    } else {
+        scan_changed_files(
+            root,
+            &language,
+            base,
+            &changes,
+            &mut session_pool,
+            analysis_started,
+            deadline,
+        )
+        .await?
+    };
     let changed = scan.changed;
     let unattributed = scan.unattributed;
     let adjusted_signatures = scan.adjusted_signatures;
-    let mut incomplete = scan.incomplete;
-    if timed_out {
-        budget_expired(analysis_started, deadline, &mut incomplete);
+    incomplete.extend(scan.incomplete);
+    if timed_out || scan.timed_out {
+        record_timeout(analysis_started, &mut incomplete);
     }
     timed_out |= scan.timed_out;
 
@@ -74,7 +80,8 @@ pub async fn analyze(
     let mut tests: BTreeSet<Symbol> = BTreeSet::new();
     let mut reaches: Vec<Reach> = Vec::new();
     let mut origins: Vec<(Symbol, bool)> = Vec::with_capacity(changed.len());
-    for sym in &changed {
+    let changed_for_origins: &[Symbol] = if timed_out { &[] } else { &changed };
+    for sym in changed_for_origins {
         let sym_file_lang = file_language(root, &sym.file).unwrap_or(&language);
         let is_test = match test_name(root, sym_file_lang, &sym.name, &sym.file, sym.line, false) {
             Ok(Some(name)) => {
@@ -125,7 +132,7 @@ pub async fn analyze(
                 Ok(Ok(session)) => Some(session),
                 Ok(Err(_)) => None,
                 Err(_) => {
-                    budget_expired(analysis_started, deadline, &mut incomplete);
+                    record_timeout(analysis_started, &mut incomplete);
                     timed_out = true;
                     None
                 }
@@ -149,7 +156,7 @@ pub async fn analyze(
                 }
                 let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
                 if remaining.is_zero() {
-                    budget_expired(analysis_started, deadline, &mut incomplete);
+                    record_timeout(analysis_started, &mut incomplete);
                     timed_out = true;
                     break;
                 }
@@ -163,7 +170,7 @@ pub async fn analyze(
                     Ok(Ok(session)) => session,
                     Ok(Err(_)) => break,
                     Err(_) => {
-                        budget_expired(analysis_started, deadline, &mut incomplete);
+                        record_timeout(analysis_started, &mut incomplete);
                         timed_out = true;
                         break;
                     }
@@ -176,10 +183,14 @@ pub async fn analyze(
     }
     let mut callers: BTreeSet<Symbol> = BTreeSet::new();
     for (origin, origin_is_test) in &origins {
+        if timed_out {
+            break;
+        }
         if *origin_is_test {
             continue;
         }
         if budget_expired(analysis_started, deadline, &mut incomplete) {
+            timed_out = true;
             break;
         }
         let mut seen: HashSet<(String, u32, u32)> = HashSet::from([key(origin)]);
@@ -204,7 +215,7 @@ pub async fn analyze(
                     }
                     Ok(Err(e)) => Incoming::Failed(format!("{e:#}")),
                     Err(_) => {
-                        budget_expired(analysis_started, deadline, &mut incomplete);
+                        record_timeout(analysis_started, &mut incomplete);
                         timed_out = true;
                         break;
                     }
@@ -288,13 +299,18 @@ pub async fn analyze(
         {
             Ok(warnings) => warnings,
             Err(_) => {
-                budget_expired(analysis_started, deadline, &mut incomplete);
+                record_timeout(analysis_started, &mut incomplete);
                 Vec::new()
             }
         }
     };
 
-    session_pool.close_all().await;
+    if within_deadline(deadline, session_pool.close_all())
+        .await
+        .is_err()
+    {
+        record_timeout(analysis_started, &mut incomplete);
+    }
     let tests: Vec<Symbol> = tests.into_iter().collect();
     let test_plan =
         super::test_plan::build_test_plan(root, &language, &tools, &tests, &changed_files);

@@ -43,12 +43,12 @@ pub fn bounded_json_value(report: &ImpactReport) -> Value {
         truncate_array(object, field, field, &mut truncated);
     }
     if let Some(Value::Array(warnings)) = object.get_mut("signature_warnings") {
-        for warning in warnings {
+        for (index, warning) in warnings.iter_mut().enumerate() {
             if let Some(warning) = warning.as_object_mut() {
                 truncate_array(
                     warning,
                     "unadjusted_call_sites",
-                    "signature_warnings[].unadjusted_call_sites",
+                    &format!("signature_warnings[{index}].unadjusted_call_sites"),
                     &mut truncated,
                 );
             }
@@ -56,10 +56,8 @@ pub fn bounded_json_value(report: &ImpactReport) -> Value {
     }
     if let Some(Value::Object(plan)) = object.get_mut("test_plan") {
         for field in [
-            "selected",
             "selection_fallbacks",
             "unsupported_selected",
-            "whole",
             "unsupported_whole",
         ] {
             truncate_array(plan, field, &format!("test_plan.{field}"), &mut truncated);
@@ -92,7 +90,7 @@ fn truncate_array(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::impact::types::Symbol;
+    use crate::impact::types::{CallSite, ImpactTestPlan, SignatureWarning, Symbol};
 
     fn symbol(index: usize) -> Symbol {
         Symbol {
@@ -100,6 +98,23 @@ mod tests {
             file: format!("src/caller_{index}.rs"),
             line: 1,
             col: 1,
+        }
+    }
+
+    fn signature_warning(index: usize) -> SignatureWarning {
+        SignatureWarning {
+            symbol: symbol(index),
+            old_signature: "fn f()".to_string(),
+            new_signature: "fn f(arg: u32)".to_string(),
+            unadjusted_call_sites: (0..60)
+                .map(|call| CallSite {
+                    file: format!("src/caller_{call}.rs"),
+                    line: 1,
+                    col: 1,
+                    caller: Some(format!("caller_{call}")),
+                    is_sibling: true,
+                })
+                .collect(),
         }
     }
 
@@ -136,5 +151,51 @@ mod tests {
             Some(MAX_IMPACT_OUTPUT_ITEMS as u64)
         );
         assert!(report.render().contains("35 more callers omitted"));
+    }
+
+    #[test]
+    fn json_output_keeps_test_command_argv_and_tracks_each_warning_truncation() {
+        let command: Vec<String> = (0..60).map(|index| format!("arg_{index}")).collect();
+        let report = ImpactReport {
+            language: "rust".to_string(),
+            base: "HEAD".to_string(),
+            changed_files: Vec::new(),
+            changed: Vec::new(),
+            callers: Vec::new(),
+            tests: Vec::new(),
+            test_command: Some(command.clone()),
+            test_plan: Some(ImpactTestPlan {
+                selected: Some(command.clone()),
+                selection_fallbacks: Vec::new(),
+                unsupported_selected: Vec::new(),
+                whole: Some(command.clone()),
+                whole_is_root_only: false,
+                unsupported_whole: Vec::new(),
+            }),
+            unattributed_files: Vec::new(),
+            index: None,
+            reaches: Vec::new(),
+            incomplete: Vec::new(),
+            signature_warnings: vec![signature_warning(0), signature_warning(1)],
+        };
+
+        let output = bounded_json_value(&report);
+        assert_eq!(output["test_command"].as_array().unwrap().len(), 60);
+        assert_eq!(
+            output["test_plan"]["selected"].as_array().unwrap().len(),
+            60
+        );
+        assert_eq!(output["test_plan"]["whole"].as_array().unwrap().len(), 60);
+        for index in 0..2 {
+            let key = format!("signature_warnings[{index}].unadjusted_call_sites");
+            assert_eq!(
+                output["output_truncated"][key.as_str()]["total"],
+                serde_json::json!(60)
+            );
+            assert_eq!(
+                output["output_truncated"][key.as_str()]["included"].as_u64(),
+                Some(MAX_IMPACT_OUTPUT_ITEMS as u64)
+            );
+        }
     }
 }

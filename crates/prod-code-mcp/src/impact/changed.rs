@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use url::Url;
 
-use super::budget::{expired as budget_expired, within_deadline};
+use super::budget::{expired as budget_expired, record_timeout, within_deadline};
 use super::diff::{Change, Hunk};
 use super::incoming::note;
 use super::pool::SessionPool;
@@ -28,6 +28,18 @@ pub(super) struct ChangedScan {
     pub(super) adjusted_signatures: Vec<(Symbol, String, String, u32, u32)>,
     pub(super) incomplete: Vec<Gap>,
     pub(super) timed_out: bool,
+}
+
+impl ChangedScan {
+    pub(super) fn empty() -> Self {
+        Self {
+            changed: Vec::new(),
+            unattributed: Vec::new(),
+            adjusted_signatures: Vec::new(),
+            incomplete: Vec::new(),
+            timed_out: false,
+        }
+    }
 }
 
 pub(super) async fn scan_changed_files(
@@ -102,7 +114,7 @@ pub(super) async fn scan_changed_files(
                 continue;
             }
             Err(_) => {
-                budget_expired(started_at, deadline, &mut incomplete);
+                record_timeout(started_at, &mut incomplete);
                 timed_out = true;
                 break;
             }
@@ -122,7 +134,7 @@ pub(super) async fn scan_changed_files(
         {
             Ok(result) => result,
             Err(_) => {
-                budget_expired(started_at, deadline, &mut incomplete);
+                record_timeout(started_at, &mut incomplete);
                 timed_out = true;
                 break;
             }

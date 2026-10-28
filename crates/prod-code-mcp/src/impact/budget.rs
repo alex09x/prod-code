@@ -16,11 +16,23 @@ pub(crate) async fn within_deadline<T>(
     deadline: tokio::time::Instant,
     future: impl std::future::Future<Output = T>,
 ) -> Result<T, tokio::time::error::Elapsed> {
-    tokio::time::timeout(
-        deadline.saturating_duration_since(tokio::time::Instant::now()),
-        future,
-    )
-    .await
+    tokio::time::timeout_at(deadline, future).await
+}
+
+pub(crate) fn record_timeout(started_at: tokio::time::Instant, incomplete: &mut Vec<Gap>) {
+    if incomplete
+        .iter()
+        .any(|gap| matches!(gap, Gap::Timeout { .. }))
+    {
+        return;
+    }
+    super::incoming::note(
+        incomplete,
+        Gap::Timeout {
+            elapsed_ms: started_at.elapsed().as_millis() as u64,
+            budget_ms: IMPACT_BUDGET.as_millis() as u64,
+        },
+    );
 }
 
 pub(crate) fn expired(
@@ -31,18 +43,7 @@ pub(crate) fn expired(
     if tokio::time::Instant::now() < deadline {
         return false;
     }
-    if !incomplete
-        .iter()
-        .any(|gap| matches!(gap, Gap::Timeout { .. }))
-    {
-        super::incoming::note(
-            incomplete,
-            Gap::Timeout {
-                elapsed_ms: started_at.elapsed().as_millis() as u64,
-                budget_ms: IMPACT_BUDGET.as_millis() as u64,
-            },
-        );
-    }
+    record_timeout(started_at, incomplete);
     true
 }
 
@@ -58,6 +59,17 @@ mod tests {
 
         assert!(expired(started_at, deadline, &mut incomplete));
         assert!(expired(started_at, deadline, &mut incomplete));
+        assert_eq!(incomplete.len(), 1);
+        assert!(matches!(incomplete[0], Gap::Timeout { .. }));
+    }
+
+    #[test]
+    fn timeout_from_an_expired_operation_is_recorded_even_before_the_clock_tick() {
+        let started_at = tokio::time::Instant::now();
+        let mut incomplete = Vec::new();
+
+        record_timeout(started_at, &mut incomplete);
+
         assert_eq!(incomplete.len(), 1);
         assert!(matches!(incomplete[0], Gap::Timeout { .. }));
     }
