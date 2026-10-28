@@ -53,6 +53,63 @@ fn a_file_that_is_not_rust_is_not_parsed_as_rust() {
 }
 
 #[test]
+fn manifest_declared_extensionless_rust_target_is_outlined() {
+    let temp = tempfile::tempdir().unwrap();
+    super::configure_test_workspace(temp.path());
+    std::fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"extensionless_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib\"\n",
+    )
+    .unwrap();
+    let src = temp.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    let target = src.join("lib");
+    std::fs::write(&target, "pub struct Extensionless;\npub fn visible() {}\n").unwrap();
+    let unrelated = src.join("notes");
+    std::fs::write(&unrelated, "ordinary text, not a Cargo target\n").unwrap();
+
+    let metadata = std::process::Command::new("cargo")
+        .args([
+            "metadata",
+            "--format-version",
+            "1",
+            "--no-deps",
+            "--manifest-path",
+        ])
+        .arg(temp.path().join("Cargo.toml"))
+        .output()
+        .unwrap();
+    assert!(
+        metadata.status.success(),
+        "the fixture manifest should be valid: {}",
+        String::from_utf8_lossy(&metadata.stderr)
+    );
+    let metadata: serde_json::Value = serde_json::from_slice(&metadata.stdout).unwrap();
+    assert!(
+        metadata["packages"][0]["targets"][0]["src_path"]
+            .as_str()
+            .is_some_and(|path| path.ends_with("src/lib")),
+        "Cargo should expose the extensionless lib target: {metadata}"
+    );
+
+    let mut engine = RustEngine::load(temp.path()).expect("Must load fixture");
+    engine
+        .reload_file(&target)
+        .expect("the Cargo target file is loaded into the VFS");
+    assert!(
+        engine.file_id_for_path(&target).is_some(),
+        "the manifest-referenced extensionless module should be in the Rust VFS"
+    );
+    let symbols = engine
+        .document_symbols(&target)
+        .expect("the manifest-declared Rust target has an outline");
+    assert!(symbols.iter().any(|symbol| symbol.name == "visible"));
+    assert!(engine.file_id_for_path(&unrelated).is_none());
+    let error = engine.document_symbols(&unrelated).unwrap_err();
+    assert!(error.to_string().contains("is not a Rust file"), "{error}");
+}
+
+#[test]
 fn test_rust_engine_direct_mutation() {
     let (temp, lib_path) = create_test_fixture();
     let mut engine = RustEngine::load(temp.path()).expect("Must load fixture");

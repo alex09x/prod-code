@@ -20,7 +20,7 @@ use std::path::Path;
 
 use super::RustEngineSnapshot;
 use crate::types::{DefinitionTarget, ReferenceTarget, SymbolTarget};
-use crate::vfs::{is_rust_source, offset_to_line_col};
+use crate::vfs::offset_to_line_col;
 
 impl RustEngineSnapshot {
     /// Retrieve symbol type, docs, and signature at (line, col).
@@ -172,12 +172,12 @@ impl RustEngineSnapshot {
     /// Generate outline / document symbols for a file.
     pub fn document_symbols(&self, path: &Path) -> Result<Vec<SymbolTarget>> {
         drop(self.analysis()?);
-        anyhow::ensure!(
-            is_rust_source(path),
-            "{} is not a Rust file, and no language server of this workspace outlines it",
-            path.display()
-        );
-        let file_id = self.require_file_id(path)?;
+        let file_id = self.file_id_for_path(path).ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} is not a Rust file, and no language server of this workspace outlines it",
+                path.display()
+            )
+        })?;
 
         let text = self.analysis()?.file_text(file_id)?;
         let config = FileStructureConfig {
