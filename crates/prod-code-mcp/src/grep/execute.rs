@@ -74,10 +74,36 @@ pub async fn run_grep(
         );
     }
 
+    let root = std::fs::canonicalize(root).context("workspace root cannot be resolved")?;
+    let search_path = std::fs::canonicalize(&search_path)
+        .with_context(|| format!("search path cannot be resolved: {}", search_path.display()))?;
+    if !search_path.starts_with(&root) {
+        bail!(
+            "search path is outside the workspace: {}",
+            search_path.display()
+        );
+    }
+
+    let mut attempted_local = false;
+    if search_path.is_file() {
+        attempted_local = true;
+        let root_owned = root.to_path_buf();
+        let path_owned = search_path.clone();
+        let opts_owned = opts.clone();
+        if let Some(report) = tokio::task::spawn_blocking(move || {
+            try_local_rg(&root_owned, &path_owned, &opts_owned, max_results, context)
+        })
+        .await
+        .context("grep worker task panicked")??
+        {
+            return Ok(report);
+        }
+    }
+
     if let Some(addr) = remote
-        && search_path.starts_with(root)
+        && search_path.starts_with(&root)
         && let Ok(Some(report)) =
-            try_remote_rg(addr, root, &search_path, opts, max_results, context).await
+            try_remote_rg(addr, &root, &search_path, opts, max_results, context).await
     {
         return Ok(report);
     }
@@ -85,8 +111,9 @@ pub async fn run_grep(
     let root_owned = root.to_path_buf();
     let opts_owned = opts.clone();
     tokio::task::spawn_blocking(move || {
-        if let Ok(Some(report)) =
-            try_local_rg(&root_owned, &search_path, &opts_owned, max_results, context)
+        if !attempted_local
+            && let Ok(Some(report)) =
+                try_local_rg(&root_owned, &search_path, &opts_owned, max_results, context)
         {
             return Ok(report);
         }
