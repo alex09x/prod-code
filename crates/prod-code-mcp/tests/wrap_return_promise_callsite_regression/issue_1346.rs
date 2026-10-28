@@ -243,6 +243,14 @@ async fn nested_local_commonjs_namespace_still_shadows_the_import() {
 }
 
 #[tokio::test]
+async fn a_local_destructuring_binding_shadows_the_import_at_its_declaration() {
+    let caller = "import { retry } from './selected.js';\nasync function run(local) { const { retry } = local; return retry(); }\n";
+    let (ws, result) = apply_fallback(&[("caller.js", caller)]).await;
+    assert!(result.is_ok(), "{}", result.unwrap_err());
+    assert_eq!(ws.read("caller.js"), caller);
+}
+
+#[tokio::test]
 async fn expression_arrow_parameter_binding_is_not_unmatched_call_evidence() {
     let caller = "import { retry } from './selected.js';\nconst callback = retry => retry();\nasync function run() { return retry(); }\n";
     let (ws, result) = apply_fallback(&[("caller.js", caller)]).await;

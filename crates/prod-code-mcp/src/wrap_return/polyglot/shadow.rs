@@ -110,7 +110,7 @@ use shadow_scope::{
     params_declare_name,
 };
 
-fn is_lexical_block(text: &str, open_pos: usize) -> bool {
+pub(super) fn is_lexical_block(text: &str, open_pos: usize) -> bool {
     let before = text[..open_pos].trim_end();
     if before.is_empty() {
         return true;
