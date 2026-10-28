@@ -9,6 +9,7 @@
  */
 
 pub mod apply;
+mod artifact_list;
 pub mod artifact_pull;
 pub(crate) mod artifact_target;
 pub(crate) mod base_updates;

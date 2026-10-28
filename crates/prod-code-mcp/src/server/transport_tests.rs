@@ -182,6 +182,11 @@ async fn workspace_mutation_lock_allows_concurrent_reads_and_serializes_mutation
         &serde_json::json!({"argv": ["cargo", "test"], "hypotheses": [], "apply": true})
     ));
     assert!(is_read_only_tool("code_lint", &serde_json::json!({})));
+    assert!(is_read_only_tool(
+        "code_pull",
+        &serde_json::json!({"list": true})
+    ));
+    assert!(!is_read_only_tool("code_pull", &serde_json::json!({})));
     assert!(!is_read_only_tool(
         "code_lint",
         &serde_json::json!({"fix": true})

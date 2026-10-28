@@ -61,6 +61,7 @@ pub async fn pull_remote_files_from(
                     base_workspace_name: Some(identity.name.clone()),
                     path: name.clone(),
                     offset,
+                    list_directory: false,
                 }))
                 .await?;
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);

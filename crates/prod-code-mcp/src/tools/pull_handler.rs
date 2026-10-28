@@ -37,6 +37,14 @@ pub(crate) async fn handle_pull(
             .context("remote must be a node address (HOST:PORT)")?,
         None => crate::exec::last_exec_node(root).unwrap_or(remote),
     };
+    if args.get("list").and_then(|v| v.as_bool()) == Some(true) {
+        anyhow::ensure!(
+            files.len() == 1,
+            "code_pull list requires exactly one directory"
+        );
+        let outcome = crate::sync::list_remote_artifacts_from(node, root, &files[0]).await?;
+        return Ok(McpToolCallResult::text(outcome.render()));
+    }
     let outcome = crate::sync::pull_remote_files_from(node, root, &files).await?;
     Ok(McpToolCallResult::text(format!(
         "Pulled {} file(s) from node {}, copy {}:\n{}",

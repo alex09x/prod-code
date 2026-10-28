@@ -14,12 +14,13 @@ pub fn utility_tools() -> Vec<McpTool> {
     vec![
         McpTool {
             name: "code_pull".to_string(),
-            description: "Retrieve checkout files, including ignored compiled artifacts, from the node used by the last code_exec. Preserves executable permissions. Transfers large files in bounded chunks without loading an analyzer. The result names the actual node and checkout copy. Use remote to override the last exec node; paths outside this checkout's copy are refused.".to_string(),
+            description: "Retrieve checkout files, including ignored compiled artifacts, from the node used by the last code_exec, or list one directory read-only with list=true. Preserves executable permissions. Transfers large files in bounded chunks without loading an analyzer. The result names the actual node and checkout copy. Use remote to override the last exec node; paths outside this checkout's copy are refused.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "files": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Checkout paths, e.g. target/release/my-program" },
-                    "remote": { "type": "string", "description": "Optional execution node address (HOST:PORT), as printed by code_exec" }
+                    "remote": { "type": "string", "description": "Optional execution node address (HOST:PORT), as printed by code_exec" },
+                    "list": { "type": "boolean", "description": "List one remote artifact directory without syncing or writing local files; results are bounded and may be incomplete." }
                 },
                 "required": ["files"]
             }),

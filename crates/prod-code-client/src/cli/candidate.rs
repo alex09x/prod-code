@@ -197,6 +197,7 @@ mod tests {
 
         let pull_cmd = Commands::Pull {
             files: vec![PathBuf::from("target/release/prod-code")],
+            list: false,
         };
         assert!(
             command_path_tokens(Some(&pull_cmd)).is_empty(),
