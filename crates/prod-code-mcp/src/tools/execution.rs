@@ -21,14 +21,18 @@ pub(crate) use super::workspace_writer::workspace_mutation_lock;
 use super::workspace_writer::{WorkspaceMutationGuard, workspace_writer_gate};
 use crate::protocol::McpToolCallResult;
 
+mod budgets;
 mod context;
 mod positions;
 mod symbol_resolution;
+use self::budgets::{
+    is_timeout_error, references_budget, references_busy_message,
+    references_subrequest_timeout_message,
+};
 use self::context::resolve_workspace_root;
 pub(crate) use self::context::routed_path;
 use self::context::{
     definition_budget, definition_busy_message, definition_subrequest_timeout_message,
-    is_timeout_error, references_budget, references_busy_message,
 };
 use positions::validate_position_arguments;
 use symbol_resolution::{
@@ -113,7 +117,13 @@ pub fn execute_tool<'a>(
     let budget = definition_budget(tool_name, &args);
     let reference_budget = references_budget(tool_name, &args);
     Box::pin(async move {
-        let run = execute_tool_inner(remote, &configured_workspace_root, tool_name, args);
+        let run = execute_tool_inner(
+            remote,
+            &configured_workspace_root,
+            tool_name,
+            args,
+            reference_budget,
+        );
         match budget {
             Some(budget) => match tokio::time::timeout_at(budget.deadline, run).await {
                 Ok(Ok(result)) => Ok(result),
@@ -123,17 +133,7 @@ pub fn execute_tool<'a>(
                 Ok(Err(error)) => Err(error),
                 Err(_) => Ok(McpToolCallResult::error(definition_busy_message(budget))),
             },
-            None => match reference_budget {
-                Some(budget) => match tokio::time::timeout_at(budget.deadline, run).await {
-                    Ok(Ok(result)) => Ok(result),
-                    Ok(Err(error)) if is_timeout_error(&error) => {
-                        Ok(McpToolCallResult::error(references_busy_message(budget)))
-                    }
-                    Ok(Err(error)) => Err(error),
-                    Err(_) => Ok(McpToolCallResult::error(references_busy_message(budget))),
-                },
-                None => run.await,
-            },
+            None => run.await,
         }
     })
 }
@@ -143,8 +143,10 @@ fn execute_tool_inner<'a>(
     configured_workspace_root: &'a Path,
     tool_name: &'a str,
     args: serde_json::Value,
+    reference_budget: Option<self::context::DefinitionBudget>,
 ) -> impl std::future::Future<Output = Result<McpToolCallResult>> + Send + 'a {
     Box::pin(async move {
+        let mut reference_budget = reference_budget;
         let mut args = args;
         let workspace_root =
             resolve_workspace_root(&configured_workspace_root, tool_name, &mut args)?;
@@ -183,7 +185,18 @@ fn execute_tool_inner<'a>(
             && !dirs.is_empty()
         {
             let dirs = dirs.clone();
-            return references_across(remote, workspace_root, args, &dirs).await;
+            let request = references_across(remote, workspace_root, args, &dirs);
+            return match reference_budget {
+                Some(budget) => match tokio::time::timeout_at(budget.deadline, request).await {
+                    Ok(Ok(result)) => Ok(result),
+                    Ok(Err(error)) if is_timeout_error(&error) => Ok(McpToolCallResult::error(
+                        references_subrequest_timeout_message(budget),
+                    )),
+                    Ok(Err(error)) => Err(error),
+                    Err(_) => Ok(McpToolCallResult::error(references_busy_message(budget))),
+                },
+                None => request.await,
+            };
         }
         let read_only = is_read_only_tool(tool_name, &args);
         let workspace_command = matches!(
@@ -244,23 +257,56 @@ fn execute_tool_inner<'a>(
             remote,
             workspace_root,
             routed_path(tool_name, initial_path.as_deref()),
-        )
-        .await?;
-
-        let args = match resolve_symbol_args(remote, workspace_root, tool_name, args).await? {
-            SymbolResolution::Dispatch(args) => args,
-            SymbolResolution::Respond(result) => return Ok(result),
+        );
+        let remote = match reference_budget {
+            Some(budget) => match tokio::time::timeout_at(budget.deadline, remote).await {
+                Ok(result) => result?,
+                Err(_) => return Ok(McpToolCallResult::error(references_busy_message(budget))),
+            },
+            None => remote.await?,
         };
+
+        let args =
+            match resolve_symbol_args(remote, workspace_root, tool_name, args, reference_budget)
+                .await?
+            {
+                SymbolResolution::Dispatch(args, budget) => {
+                    reference_budget = budget.or(reference_budget);
+                    args
+                }
+                SymbolResolution::Respond(result) => return Ok(result),
+            };
         // Resolved symbol positions obey the same contract, including a supplied selection end.
         validate_position_arguments(tool_name, &args)?;
         // A path in a nested project of another language goes to a node that serves it (#125).
+        let final_path = args
+            .get("path")
+            .and_then(|value| value.as_str())
+            .map(str::to_owned);
         let remote = crate::cluster::route_for_path(
             remote,
             workspace_root,
-            routed_path(tool_name, args.get("path").and_then(|v| v.as_str())),
-        )
-        .await?;
-        let result = Box::pin(dispatch_tool(remote, workspace_root, tool_name, args)).await;
+            routed_path(tool_name, final_path.as_deref()),
+        );
+        let remote = match reference_budget {
+            Some(budget) => match tokio::time::timeout_at(budget.deadline, remote).await {
+                Ok(result) => result?,
+                Err(_) => return Ok(McpToolCallResult::error(references_busy_message(budget))),
+            },
+            None => remote.await?,
+        };
+        let dispatch = dispatch_tool(remote, workspace_root, tool_name, args);
+        let result = match reference_budget {
+            Some(budget) => match tokio::time::timeout_at(budget.deadline, dispatch).await {
+                Ok(Ok(result)) => Ok(result),
+                Ok(Err(error)) if is_timeout_error(&error) => Ok(McpToolCallResult::error(
+                    references_subrequest_timeout_message(budget),
+                )),
+                Ok(Err(error)) => Err(error),
+                Err(_) => Ok(McpToolCallResult::error(references_busy_message(budget))),
+            },
+            None => dispatch.await,
+        };
         with_indexing_notes(result, workspace_root)
     })
 }

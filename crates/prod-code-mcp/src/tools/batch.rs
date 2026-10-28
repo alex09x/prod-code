@@ -205,7 +205,6 @@ mod budget_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
 
     #[tokio::test]
     async fn definition_timeout_batch_preserves_partial_results() {
@@ -337,62 +336,10 @@ mod tests {
 
     #[tokio::test]
     async fn multi_candidate_shared_budget_returns_partial_result_when_expired() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        std::fs::write(root.join("Package.swift"), "// swift-tools-version: 5.9\n").unwrap();
-        std::fs::create_dir_all(root.join("Sources")).unwrap();
-        std::fs::write(
-            root.join("Sources/A.swift"),
-            "struct Alpha {\n    func handleEvent() {}\n}\n",
-        )
-        .unwrap();
-        std::fs::write(
-            root.join("Sources/B.swift"),
-            "struct Beta {\n    func handleEvent() {}\n}\n",
-        )
-        .unwrap();
-
-        // Bind a TCP listener that accepts and holds the connection open so the first
-        // candidate's LSP query exhausts the shared 30ms budget.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let _server = tokio::spawn(async move {
-            let mut sockets = Vec::new();
-            while let Ok((stream, _)) = listener.accept().await {
-                sockets.push(stream);
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            }
-        });
-
-        let res = crate::tools::execute_tool(
-            addr,
-            root,
-            "code_references",
-            serde_json::json!({
-                "symbol": "handleEvent",
-                "budget_ms": 30
-            }),
-        )
-        .await
-        .unwrap();
-
-        let McpContentItem::Text { text } = &res.content[0];
-        assert!(
-            text.contains("`handleEvent` matched 2 candidates:"),
-            "expected multi-candidate header, got: {text}"
-        );
-        assert!(
-            text.contains("=== [1/2]"),
-            "expected candidate 1 section, got: {text}"
-        );
-        assert!(
-            text.contains("Partial result: shared server time budget")
-                || text.contains("returning partial multi-candidate result"),
-            "expected shared-budget partial result notice, got: {text}"
-        );
-        assert!(
-            !text.contains("=== [2/2]"),
-            "candidate 2 should be skipped once shared budget expired, got: {text}"
-        );
+        super::reference_deadline_tests::run().await;
     }
 }
+
+#[cfg(test)]
+#[path = "batch_reference_tests.rs"]
+mod reference_deadline_tests;
