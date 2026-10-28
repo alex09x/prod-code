@@ -29,12 +29,19 @@ async fn extract(
     main: &str,
     other: &str,
 ) -> (Workspace, prod_code_mcp::extract_function::Extracted) {
+    extract_selected(main, other, "rate * 10").await
+}
+
+async fn extract_selected(
+    main: &str,
+    other: &str,
+    selection: &str,
+) -> (Workspace, prod_code_mcp::extract_function::Extracted) {
     let workspace = Workspace::new(&[("main.ts", main), ("other.ts", other)]);
     workspace.commit();
     let file = workspace.path("main.ts");
-    let selected = "rate * 10";
-    let start = main.find(selected).expect("selection exists");
-    let end = start + selected.len();
+    let start = main.find(selection).expect("selection exists");
+    let end = start + selection.len();
     let (line, column) = line_col(main, start);
     let (end_line, end_column) = line_col(main, end);
     let gateway = ScriptedGateway::start(|method, _| match method {
@@ -122,5 +129,64 @@ async fn a_cross_file_only_literal_difference_is_parameterized() {
     assert_eq!(
         evaluate_helper(&workspace, main, "scale(2, 10), scale(3, 25)"),
         "20 75"
+    );
+}
+
+#[tokio::test]
+async fn exact_duplicate_copy_uses_the_original_literal_argument() {
+    let main = "export function invoice(rate: number) {\n    const first = rate * 10;\n    const exact = rate * 10;\n    const second = rate * 20;\n    return first + exact + second;\n}\n";
+    let other = "export function quote(rate: number) {\n    return rate * 10;\n}\n";
+    let (workspace, result) = extract(main, other).await;
+    let main = rewritten(&result, "main.ts");
+    let other = rewritten(&result, "other.ts");
+
+    assert!(main.matches("scale(rate, 10)").count() >= 2, "{main}");
+    assert!(main.contains("scale(rate, 20)"), "{main}");
+    assert!(other.contains("scale(rate, 10)"), "{other}");
+    assert_eq!(
+        evaluate_helper(
+            &workspace,
+            main,
+            "scale(2, 10), scale(2, 10), scale(2, 20), scale(3, 10)"
+        ),
+        "20 20 40 30"
+    );
+}
+
+#[tokio::test]
+async fn disjoint_literal_differences_keep_original_literals_at_other_positions() {
+    let main = "export function invoice(rate: number) {\n    const first = rate * 10 + 1;\n    const second = rate * 20 + 1;\n    return first + second;\n}\n";
+    let other = "export function quote(rate: number) {\n    return rate * 10 + 5;\n}\n";
+    let (workspace, result) = extract_selected(main, other, "rate * 10 + 1").await;
+    let main = rewritten(&result, "main.ts");
+    let other = rewritten(&result, "other.ts");
+
+    assert!(main.contains("scale(rate, 20, 1)"), "{main}");
+    assert!(other.contains("scale(rate, 10, 5)"), "{other}");
+    assert_eq!(
+        evaluate_helper(
+            &workspace,
+            main,
+            "scale(2, 10, 1), scale(2, 20, 1), scale(2, 10, 5)"
+        ),
+        "21 41 25"
+    );
+}
+
+#[tokio::test]
+async fn literal_parameter_names_do_not_collide_with_input_names() {
+    let main = "export function invoice(value: number) {\n    return value * 10;\n}\n";
+    let other = "export function quote(value: number) {\n    return value * 20;\n}\n";
+    let (workspace, result) = extract_selected(main, other, "value * 10").await;
+    let main = rewritten(&result, "main.ts");
+    let other = rewritten(&result, "other.ts");
+
+    assert!(main.contains("value_1: number"), "{main}");
+    assert!(main.contains("return value * value_1"), "{main}");
+    assert!(main.contains("scale(value, 10)"), "{main}");
+    assert!(other.contains("scale(value, 20)"), "{other}");
+    assert_eq!(
+        evaluate_helper(&workspace, main, "scale(2, 10), scale(2, 20)"),
+        "20 40"
     );
 }

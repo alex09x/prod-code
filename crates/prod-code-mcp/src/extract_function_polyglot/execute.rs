@@ -15,6 +15,7 @@ use anyhow::{Context, Result};
 
 use crate::extract_function::{Duplicate, Extracted};
 
+use super::arguments::{copy_args, fresh_literal_parameter_name};
 use super::codegen::{generate_call_replacement, generate_function_code};
 use super::duplicates::{find_duplicates_in_text, find_other_file_copies};
 use super::lang::{Language, display, is_ident, mentions};
@@ -102,11 +103,12 @@ pub async fn extract_function_polyglot(
         for (n, &tok_idx) in differing_token_indices.iter().enumerate() {
             if tok_idx < sel_tokens.len() {
                 let orig_lit = sel_tokens[tok_idx].text.clone();
-                let param_name = if differing_token_indices.len() == 1 {
-                    "value".to_string()
-                } else {
-                    format!("value{}", n + 1)
-                };
+                let param_name = fresh_literal_parameter_name(
+                    &inputs,
+                    &param_indices,
+                    n + 1,
+                    differing_token_indices.len(),
+                );
                 let ty = if orig_lit.starts_with('"') {
                     match lang {
                         Language::Zig => Some("[]const u8".into()),
@@ -223,23 +225,7 @@ pub async fn extract_function_polyglot(
         let dup_is_bol = text[..copy.start].ends_with('\n')
             || copy.start == 0
             || text[dup_line_start..copy.start].trim().is_empty();
-        let copy_args: Vec<String> = inputs
-            .iter()
-            .map(|p| {
-                if let Some((tok_idx, _, _)) =
-                    param_indices.iter().find(|(_, name, _)| name == &p.name)
-                {
-                    if let Some((_, copy_lit)) = copy.differs.iter().find(|(idx, _)| idx == tok_idx)
-                    {
-                        copy_lit.clone()
-                    } else {
-                        p.name.clone()
-                    }
-                } else {
-                    p.name.clone()
-                }
-            })
-            .collect();
+        let copy_args = copy_args(&inputs, &param_indices, &copy.differs);
         let mut dup_call = if dup_is_bol {
             generate_call_replacement(
                 name,
@@ -301,24 +287,7 @@ pub async fn extract_function_polyglot(
             let mut other_edits: Vec<(usize, usize, String)> = Vec::new();
             for copy in &other.copies {
                 let (dup_line, _) = crate::signature::position_at(&other.text, copy.start)?;
-                let copy_args: Vec<String> = inputs
-                    .iter()
-                    .map(|p| {
-                        if let Some((tok_idx, _, _)) =
-                            param_indices.iter().find(|(_, name, _)| name == &p.name)
-                        {
-                            if let Some((_, copy_lit)) =
-                                copy.differs.iter().find(|(idx, _)| idx == tok_idx)
-                            {
-                                copy_lit.clone()
-                            } else {
-                                p.name.clone()
-                            }
-                        } else {
-                            p.name.clone()
-                        }
-                    })
-                    .collect();
+                let copy_args = copy_args(&inputs, &param_indices, &copy.differs);
                 let dup_call = generate_call_replacement(
                     name,
                     &copy_args,
