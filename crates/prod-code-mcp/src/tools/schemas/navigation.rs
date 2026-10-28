@@ -141,6 +141,10 @@ pub fn navigation_tools() -> Vec<McpTool> {
                         "type": "integer",
                         "description": "Optional display truncation limit (default: 0 for all). Caps the number of reference lines rendered in the output text to keep agent context windows bounded for heavily-referenced symbols. Internal AST refactoring tools always receive the complete reference set."
                     },
+                    "budget_ms": {
+                        "type": "integer",
+                        "description": "Shared wall-clock budget for a single references request and scan (default: 45000 ms; capped at 50000 ms). Expiry returns a busy response. Multi-symbol batches keep their shared partial-result budget."
+                    },
                     "build_index": {
                         "type": "boolean",
                         "description": "Opt-in to building the package index (e.g. for SwiftPM checkouts) if cross-file references require a build; default false"
