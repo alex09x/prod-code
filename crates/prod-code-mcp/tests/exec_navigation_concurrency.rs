@@ -126,6 +126,27 @@ async fn definition_completes_while_exec_is_running() {
         ),
     )
     .await;
+    let definition = result
+        .expect("definition waited for the running exec")
+        .expect("definition should succeed");
+    assert!(!definition.is_error);
+    let McpContentItem::Text { text } = &definition.content[0];
+    assert!(text.contains("Definition:"), "{text}");
+    let references = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        execute_tool(
+            query_gateway.addr(),
+            &root,
+            "code_references",
+            serde_json::json!({"path":"src/lib.rs","line":1,"character":8}),
+        ),
+    )
+    .await
+    .expect("references waited for the running exec")
+    .expect("references should succeed");
+    assert!(!references.is_error);
+    let McpContentItem::Text { text } = &references.content[0];
+    assert!(text.contains("Found 1 reference(s)"), "{text}");
     let writer_root = root.clone();
     let mut second_writer = tokio::spawn(async move {
         execute_tool(
@@ -159,27 +180,6 @@ async fn definition_completes_while_exec_is_running() {
     let second_result = second_writer.await.unwrap();
     let rename_result = tokio::time::timeout(std::time::Duration::from_secs(10), rename).await;
     server.abort();
-    let definition = result
-        .expect("definition waited for the running exec")
-        .expect("definition should succeed");
-    assert!(!definition.is_error);
-    let McpContentItem::Text { text } = &definition.content[0];
-    assert!(text.contains("Definition:"), "{text}");
-    let references = tokio::time::timeout(
-        std::time::Duration::from_secs(3),
-        execute_tool(
-            query_gateway.addr(),
-            &root,
-            "code_references",
-            serde_json::json!({"path":"src/lib.rs","line":1,"character":8}),
-        ),
-    )
-    .await
-    .expect("references waited for the running exec")
-    .expect("references should succeed");
-    assert!(!references.is_error);
-    let McpContentItem::Text { text } = &references.content[0];
-    assert!(text.contains("Found 1 reference(s)"), "{text}");
     assert!(
         writer_waited,
         "another writer must wait until exec finishes"
