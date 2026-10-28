@@ -84,6 +84,9 @@ struct Script {
     exec_stdout: Vec<u8>,
     exec_stderr: Vec<u8>,
     exec_exit: Option<i32>,
+    /// Delays the mock command while other gateway connections continue to be served.
+    exec_delay: std::time::Duration,
+    exec_started: Arc<tokio::sync::Notify>,
     /// Files the command rewrote, sent back as the gateway does for a formatter.
     exec_changes: Vec<prod_code_protocol::FileDelta>,
     /// Sends `exec_changes` only for a command with this argument, the way a linter rewrites
@@ -110,6 +113,8 @@ impl Default for Script {
             exec_stdout: Vec::new(),
             exec_stderr: Vec::new(),
             exec_exit: Some(0),
+            exec_delay: std::time::Duration::ZERO,
+            exec_started: Arc::new(tokio::sync::Notify::new()),
             exec_changes: Vec::new(),
             exec_changes_only_for: None,
             sync_probe_requests: Arc::default(),
@@ -252,11 +257,15 @@ async fn serve_mock(socket: TcpStream, script: Script) -> anyhow::Result<()> {
                     .await?;
             }
             WireMessage::ExecRequest(req) => {
+                script.exec_started.notify_one();
                 script
                     .exec_env
                     .lock()
                     .unwrap()
                     .extend(req.env.iter().cloned());
+                if !script.exec_delay.is_zero() {
+                    tokio::time::sleep(script.exec_delay).await;
+                }
                 // In small pieces, as a long run's output arrives: a line can be split anywhere.
                 for piece in script.exec_stdout.chunks(7) {
                     framed
@@ -5365,6 +5374,106 @@ async fn code_exec_reports_the_exit_status_and_output_tail() {
     .expect("exec runs");
     assert!(signal_res.is_error);
     assert!(text_of(&signal_res).contains("killed by signal"));
+}
+
+#[tokio::test]
+async fn code_exec_does_not_block_navigation_and_writes_back_changes() {
+    let ws = rust_workspace("pub fn before() {}\n");
+    let lib = ws.path("src/lib.rs");
+    let lib_for_lsp = lib.clone();
+    let lsp: Answer = Arc::new(move |method, _| match method {
+        "textDocument/definition" => answers::locations(&lib_for_lsp, &[(1, 8)]),
+        _ => serde_json::Value::Null,
+    });
+    let changed = "pub fn after() {}\n";
+    let live_gateway = std::env::var("PROD_CODE_ISSUE1689_GATEWAY").ok();
+    let live = live_gateway.is_some();
+    let exec_started = Arc::new(tokio::sync::Notify::new());
+    let remote = if let Some(address) = live_gateway {
+        address.parse().expect("the live gateway address is valid")
+    } else {
+        mock_gateway(Script {
+            lsp,
+            exec_delay: std::time::Duration::from_millis(1200),
+            exec_started: Arc::clone(&exec_started),
+            exec_changes: vec![prod_code_protocol::FileDelta {
+                relative_path: "src/lib.rs".to_string(),
+                content: Some(changed.as_bytes().to_vec()),
+                is_executable: false,
+            }],
+            ..Script::default()
+        })
+        .await
+    };
+    let warm = execute_tool(
+        remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({ "path": "src/lib.rs", "line": 1, "character": 8 }),
+    )
+    .await
+    .expect("the analyzer can warm the fixture before the command starts");
+    assert!(!warm.is_error, "{}", text_of(&warm));
+    let exec_root = ws.root();
+    let argv = if live {
+        vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "sleep 3; printf 'pub fn after() {}\\n' > src/lib.rs".to_string(),
+        ]
+    } else {
+        vec!["sleep".to_string(), "1".to_string()]
+    };
+    let exec_task = tokio::spawn(async move {
+        execute_tool(
+            remote,
+            &exec_root,
+            "code_exec",
+            serde_json::json!({ "argv": argv }),
+        )
+        .await
+    });
+    if live {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    } else {
+        exec_started.notified().await;
+    }
+    assert!(
+        !exec_task.is_finished(),
+        "the command should still be active"
+    );
+
+    let started = std::time::Instant::now();
+    let definition = execute_tool(
+        remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({ "path": "src/lib.rs", "line": 1, "character": 8 }),
+    )
+    .await
+    .expect("the reader completes while the command is running");
+    let definition_elapsed = started.elapsed();
+    let exec = exec_task
+        .await
+        .expect("the command task joins")
+        .expect("the command returns normally");
+    let max_navigation_wait = if live {
+        std::time::Duration::from_secs(2)
+    } else {
+        std::time::Duration::from_millis(600)
+    };
+
+    assert!(
+        definition_elapsed < max_navigation_wait,
+        "definition took {definition_elapsed:?} while code_exec was active"
+    );
+    assert!(!exec.is_error, "{}", text_of(&exec));
+    assert!(
+        text_of(&definition).contains("src/lib.rs:1:8"),
+        "{}",
+        text_of(&definition)
+    );
+    assert_eq!(ws.read("src/lib.rs"), changed);
 }
 
 #[tokio::test]

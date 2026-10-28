@@ -10,6 +10,7 @@
 
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::Result;
 use futures_util::SinkExt;
@@ -63,10 +64,71 @@ pub async fn run_remote_rooted(
     on_root: impl FnOnce(&str),
     mut on_output: impl FnMut(bool, &[u8]),
 ) -> Result<RemoteOutcome> {
+    run_remote_rooted_inner(
+        remote,
+        root,
+        subdir,
+        command,
+        env,
+        timeout_secs,
+        pull_changes,
+        on_root,
+        &mut on_output,
+        None,
+    )
+    .await
+}
+
+/// Runs an MCP `code_exec` command with a read lock for its initial snapshot and a write lock
+/// only while applying returned file changes. The command itself does not hold the mutation lock.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_remote_for_code_exec(
+    remote: SocketAddr,
+    root: &Path,
+    subdir: Option<&str>,
+    command: Vec<String>,
+    env: Vec<(String, String)>,
+    timeout_secs: u64,
+    pull_changes: bool,
+    mut on_output: impl FnMut(bool, &[u8]),
+) -> Result<RemoteOutcome> {
+    run_remote_rooted_inner(
+        remote,
+        root,
+        subdir,
+        command,
+        env,
+        timeout_secs,
+        pull_changes,
+        |_| {},
+        &mut on_output,
+        Some(crate::tools::workspace_mutation_lock(root)),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_remote_rooted_inner(
+    remote: SocketAddr,
+    root: &Path,
+    subdir: Option<&str>,
+    command: Vec<String>,
+    env: Vec<(String, String)>,
+    timeout_secs: u64,
+    pull_changes: bool,
+    on_root: impl FnOnce(&str),
+    on_output: &mut impl FnMut(bool, &[u8]),
+    writeback_lock: Option<Arc<tokio::sync::RwLock<()>>>,
+) -> Result<RemoteOutcome> {
     anyhow::ensure!(!command.is_empty(), "empty command");
     let identity: WorkspaceIdentity = workspace_identity(root);
-    let mut writeback = Writeback::capture(root, pull_changes, rust_formatter(&command))?;
-    let (mut framed, server_root) = prepare_rooted(remote, root, &identity, &mut on_output).await?;
+    let mut writeback = if let Some(lock) = &writeback_lock {
+        let _guard = lock.read().await;
+        Writeback::capture(root, pull_changes, rust_formatter(&command))?
+    } else {
+        Writeback::capture(root, pull_changes, rust_formatter(&command))?
+    };
+    let (mut framed, server_root) = prepare_rooted(remote, root, &identity, on_output).await?;
     on_root(&server_root);
     let mut monitor = ExecMonitor::new(timeout_secs);
     monitor
@@ -87,7 +149,7 @@ pub async fn run_remote_rooted(
         .await?;
 
     loop {
-        match monitor.next(&mut framed, &mut on_output).await? {
+        match monitor.next(&mut framed, on_output).await? {
             Some(Ok(WireMessage::ExecChunk(chunk))) => {
                 if let Some(data) = chunk.data.as_deref() {
                     on_output(chunk.stderr, data);
@@ -95,7 +157,12 @@ pub async fn run_remote_rooted(
             }
             Some(Ok(WireMessage::ExecChanges(changes))) => {
                 if pull_changes {
-                    writeback.apply(root, &remote.to_string(), changes.files)?;
+                    if let Some(lock) = &writeback_lock {
+                        let _guard = lock.write().await;
+                        writeback.apply(root, &remote.to_string(), changes.files)?;
+                    } else {
+                        writeback.apply(root, &remote.to_string(), changes.files)?;
+                    }
                 }
             }
             Some(Ok(WireMessage::ExecExit(exit))) => {

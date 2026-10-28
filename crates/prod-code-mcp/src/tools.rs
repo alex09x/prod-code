@@ -45,6 +45,8 @@ pub use outline::{
 pub(crate) mod batch;
 mod compiler_proposal;
 pub mod execution;
+mod workspace_lock;
+pub(crate) use workspace_lock::{workspace_exec_lock, workspace_mutation_lock};
 mod validation_diff;
 mod validation_proposal;
 pub use execution::*;

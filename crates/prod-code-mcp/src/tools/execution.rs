@@ -20,6 +20,7 @@ use super::schemas::SYMBOL_ADDRESSABLE;
 use super::symbols::{
     DEFAULT_AMBIGUOUS_CANDIDATE_LIMIT, resolve_symbol, resolve_symbol_candidates,
 };
+use super::{workspace_exec_lock, workspace_mutation_lock};
 use crate::protocol::McpToolCallResult;
 
 mod positions;
@@ -50,25 +51,6 @@ pub(crate) fn checked_position_argument(value: &serde_json::Value, name: &str) -
                 u32::MAX
             )
         })
-}
-
-static WORKSPACE_MUTATION_LOCKS: std::sync::LazyLock<
-    std::sync::Mutex<
-        std::collections::HashMap<std::path::PathBuf, std::sync::Arc<tokio::sync::RwLock<()>>>,
-    >,
-> = std::sync::LazyLock::new(Default::default);
-
-pub(crate) fn workspace_mutation_lock(
-    workspace_root: &Path,
-) -> std::sync::Arc<tokio::sync::RwLock<()>> {
-    let key =
-        std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
-    WORKSPACE_MUTATION_LOCKS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .entry(key)
-        .or_insert_with(|| std::sync::Arc::new(tokio::sync::RwLock::new(())))
-        .clone()
 }
 
 /// Returns `true` when `tool_name` with `args` is guaranteed not to mutate workspace files on
@@ -174,11 +156,30 @@ pub fn execute_tool<'a>(
             let dirs = dirs.clone();
             return references_across(remote, workspace_root, args, &dirs).await;
         }
-        let lock = workspace_mutation_lock(workspace_root);
-        let _guard = if is_read_only_tool(tool_name, &args) {
-            WorkspaceMutationGuard::Read(lock.read_owned().await)
+        let read_only = is_read_only_tool(tool_name, &args);
+        let workspace_command = matches!(
+            tool_name,
+            "code_exec"
+                | "code_check"
+                | "code_lint"
+                | "code_test"
+                | "code_benchmarks"
+                | "code_diagnose_failure"
+        );
+        let _exec_guard = if !read_only || workspace_command {
+            Some(workspace_exec_lock(workspace_root).lock_owned().await)
         } else {
-            WorkspaceMutationGuard::Write(lock.write_owned().await)
+            None
+        };
+        let _guard = if tool_name == "code_exec" {
+            None
+        } else {
+            let lock = workspace_mutation_lock(workspace_root);
+            Some(if read_only {
+                WorkspaceMutationGuard::Read(lock.read_owned().await)
+            } else {
+                WorkspaceMutationGuard::Write(lock.write_owned().await)
+            })
         };
         // A pull names checkout-relative artifact paths that need not exist locally (#1145).
         if tool_name == "code_pull" {
