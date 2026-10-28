@@ -85,15 +85,20 @@ async fn run_cli() -> Result<()> {
     // The engine a query needs is that of the nearest project of the file it names (or of
     // the current directory): a SwiftPM package inside a Rust repository must land on a
     // macOS node even though the repository root is Rust.
-    let (cwd_subproject, cwd_engine) = cwd_root
-        .as_deref()
-        .map(|root| {
-            let tokens = command_path_tokens(cli.command.as_ref());
-            let cwd = env::current_dir().unwrap_or_else(|_| root.to_path_buf());
-            let hint = placement_hint(root, &cwd, &tokens);
-            prod_code_mcp::sync::engine_project(root, &hint)
-        })
-        .unwrap_or((None, None));
+    let (cwd_subproject, cwd_engine) = if matches!(cli.command, Some(Commands::Grep { .. })) {
+        // Text search needs a synced workspace, not the target file's language server.
+        (None, None)
+    } else {
+        cwd_root
+            .as_deref()
+            .map(|root| {
+                let tokens = command_path_tokens(cli.command.as_ref());
+                let cwd = env::current_dir().unwrap_or_else(|_| root.to_path_buf());
+                let hint = placement_hint(root, &cwd, &tokens);
+                prod_code_mcp::sync::engine_project(root, &hint)
+            })
+            .unwrap_or((None, None))
+    };
     // A nested project of another language is placed under its own key, so its node does not
     // displace the checkout's own placement and back again on the next query (#125).
     let placement_key = match (&cwd_subproject, cwd_engine) {

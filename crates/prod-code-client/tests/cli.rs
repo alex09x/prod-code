@@ -30,6 +30,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Framed;
 
+#[path = "cli/grep_routing.rs"]
+mod grep_routing;
 #[path = "cli/outline_paths.rs"]
 mod outline_paths;
 #[path = "cli/test_routing.rs"]
