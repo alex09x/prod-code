@@ -6194,6 +6194,11 @@ async fn inherent_method_moves_between_modules_of_same_type() {
     let ws = workspace();
     write(
         &ws,
+        "prod-code.toml",
+        "[rust]\nproc_macro_srv = \"disabled\"\n",
+    );
+    write(
+        &ws,
         "Cargo.toml",
         "[package]\nname = \"same_type_move\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
     );
