@@ -20,7 +20,7 @@ use std::path::Path;
 
 use super::RustEngineSnapshot;
 use crate::types::{DefinitionTarget, ReferenceTarget, SymbolTarget};
-use crate::vfs::offset_to_line_col;
+use crate::vfs::{is_rust_source, offset_to_line_col};
 
 impl RustEngineSnapshot {
     /// Retrieve symbol type, docs, and signature at (line, col).
@@ -178,6 +178,12 @@ impl RustEngineSnapshot {
                 path.display()
             )
         })?;
+        if !is_rust_source(path) && self.analysis()?.crates_for(file_id)?.is_empty() {
+            anyhow::bail!(
+                "{} is not a Rust file, and no language server of this workspace outlines it",
+                path.display()
+            );
+        }
 
         let text = self.analysis()?.file_text(file_id)?;
         let config = FileStructureConfig {

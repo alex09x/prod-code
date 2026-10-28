@@ -30,24 +30,34 @@ fn a_priming_job_infers_the_functions_of_its_files() {
     assert!(engine.diagnostics(&lib_path).is_ok());
 }
 
-/// A file that is not Rust is neither added to the database when a client opens it nor
-/// outlined as if it were (#247).
+/// A file that is not Rust is not outlined as Rust, whether it was loaded from disk or opened
+/// by a client (#247).
 #[test]
 fn a_file_that_is_not_rust_is_not_parsed_as_rust() {
     let (temp, _lib_path) = create_test_fixture();
-    let mut engine = RustEngine::load(temp.path()).expect("Must load fixture");
     let readme = temp.path().join("README.md");
     std::fs::write(&readme, "Pick an interface or a class and go.\n").unwrap();
+    let mut engine = RustEngine::load(temp.path()).expect("Must load fixture");
+    let manifest = temp.path().join("Cargo.toml");
+    assert!(engine.file_id_for_path(&manifest).is_some());
+    let manifest_error = engine.document_symbols(&manifest).unwrap_err();
+    assert!(
+        manifest_error.to_string().contains("is not a Rust file"),
+        "{manifest_error}"
+    );
+    let existing_readme_error = engine.document_symbols(&readme).unwrap_err();
+    assert!(
+        existing_readme_error
+            .to_string()
+            .contains("is not a Rust file"),
+        "{existing_readme_error}"
+    );
     engine
         .apply_file_change(
             &readme,
             "Pick an interface or a class and go.\n".to_string(),
         )
         .unwrap();
-    assert!(
-        engine.file_id_for_path(&readme).is_none(),
-        "the README stays out"
-    );
     let err = engine.document_symbols(&readme).unwrap_err();
     assert!(format!("{err}").contains("is not a Rust file"), "{err}");
 }
@@ -93,18 +103,37 @@ fn manifest_declared_extensionless_rust_target_is_outlined() {
     );
 
     let mut engine = RustEngine::load(temp.path()).expect("Must load fixture");
-    engine
-        .reload_file(&target)
-        .expect("the Cargo target file is loaded into the VFS");
     assert!(
         engine.file_id_for_path(&target).is_some(),
-        "the manifest-referenced extensionless module should be in the Rust VFS"
+        "the manifest-referenced extensionless module should be loaded during workspace load"
     );
     let symbols = engine
         .document_symbols(&target)
         .expect("the manifest-declared Rust target has an outline");
     assert!(symbols.iter().any(|symbol| symbol.name == "visible"));
-    assert!(engine.file_id_for_path(&unrelated).is_none());
+    std::fs::write(
+        &target,
+        "pub struct Extensionless;\npub fn visible() {}\npub fn after_reload() {}\n",
+    )
+    .unwrap();
+    engine
+        .reload_base()
+        .expect("manifest reload keeps the extensionless target in the crate graph");
+    let reloaded_symbols = engine
+        .document_symbols(&target)
+        .expect("the reloaded Cargo target still has an outline");
+    assert!(
+        reloaded_symbols
+            .iter()
+            .any(|symbol| symbol.name == "after_reload")
+    );
+    engine
+        .reload_file(&unrelated)
+        .expect("the unrelated file can be observed in the VFS");
+    assert!(
+        engine.file_id_for_path(&unrelated).is_some(),
+        "an unrelated file can exist in the VFS without being a Rust crate member"
+    );
     let error = engine.document_symbols(&unrelated).unwrap_err();
     assert!(error.to_string().contains("is not a Rust file"), "{error}");
 }
