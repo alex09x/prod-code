@@ -39,6 +39,18 @@ records what was run and what it showed.
 6. **Ship the knowledge with the code**: update `ROADMAP.md` when a phase item lands,
    `CHANGELOG.md` for user-visible changes, and the CLI/MCP help texts.
 
+Rust coverage on the Linux build node requires `llvm-tools-preview` for the selected Rust
+toolchain. The default 1.98.1 toolchain currently cannot install that component because its
+bundled LLVM library conflicts with the component package; the system LLVM tools are a different
+version and cannot read its profiles. Toolchain 1.97.1 is installed with the matching component.
+Run the MCP library coverage gate from its crate directory with:
+
+```sh
+RUSTUP_TOOLCHAIN=1.97.1 cargo llvm-cov --no-report --lib
+```
+
+Recheck the installed toolchain and component if the build-node toolchain changes.
+
 ## What counts as finished
 
 Before implementation, state the observable acceptance criteria in the issue: the supported
