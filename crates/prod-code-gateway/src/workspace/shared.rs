@@ -278,6 +278,23 @@ impl SharedWorkspace {
         false
     }
 
+    /// Marks this model unavailable and asks sessions that hold it to reconnect. Base workspaces
+    /// and linked worktrees share the rebalance channel, so receivers must verify their own
+    /// workspace is stale before retiring.
+    pub(crate) fn mark_unloaded(&self) {
+        if self.unloaded.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        if self.active_sessions.load(Ordering::SeqCst) > 0
+            || self.attached_worktrees.load(Ordering::SeqCst) > 0
+        {
+            let _ = self.rebalance_tx.send((
+                String::new(),
+                Some(prod_code_protocol::WORKSPACE_MODEL_CHANGED_REASON.to_string()),
+            ));
+        }
+    }
+
     /// Tells this workspace's language servers (gopls, or the generic server and the C/C++
     /// validation clangd once it runs) which files a sync created, rewrote or removed on disk,
     /// as `workspace/didChangeWatchedFiles` (#317). Paths outside the workspace root are left

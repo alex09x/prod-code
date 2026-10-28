@@ -135,6 +135,12 @@ pub async fn run_session_loop(
             rebalance_msg = rebalance_rx.recv() => {
                 match rebalance_msg {
                     Ok((target_addr, reason)) => {
+                        if reason.as_deref()
+                            == Some(prod_code_protocol::WORKSPACE_MODEL_CHANGED_REASON)
+                            && !workspace_model_change_applies(&view.accounted, reason.as_deref())
+                        {
+                            continue;
+                        }
                         tracing::info!(
                             session_id = meta.session_id,
                             target = %target_addr,
@@ -214,3 +220,15 @@ pub async fn run_session_loop(
     }
     session_result
 }
+
+fn workspace_model_change_applies(
+    accounted: &crate::workspace::shared::SharedWorkspace,
+    reason: Option<&str>,
+) -> bool {
+    reason == Some(prod_code_protocol::WORKSPACE_MODEL_CHANGED_REASON)
+        && accounted.has_stale_manifests()
+}
+
+#[cfg(test)]
+#[path = "loop_run_tests.rs"]
+mod tests;

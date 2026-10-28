@@ -9,5 +9,6 @@
  */
 
 mod integration;
+mod invalidation;
 mod lifecycle;
 mod unit;
