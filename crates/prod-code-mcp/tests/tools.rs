@@ -6205,12 +6205,14 @@ async fn inherent_method_moves_between_modules_of_same_type() {
     let lib_text = r#"pub mod model;
 pub mod operations;
 pub mod sibling;
+pub mod relative_import;
 pub mod conflict;
 pub mod conflicting_import;
 pub mod other;
 pub mod unverified;
 pub fn call_existing() -> u32 { model::Widget::moved_existing(5) }
 pub fn call_new() -> u32 { model::Widget::moved_new(7).count }
+pub fn call_relative() -> u32 { model::Widget::moved_relative().count }
 pub fn call_created() -> u32 { model::Widget::moved_created(9) }
 pub fn call_back() -> u32 { model::LocalWidget::moved_back() }
 #[cfg(test)]
@@ -6221,6 +6223,7 @@ mod tests {
         let value = model::Widget { count: 5 };
         assert_eq!(call_existing(), 6);
         assert_eq!(call_new(), 8);
+        assert_eq!(call_relative(), 19);
         assert_eq!(call_created(), 12);
         assert_eq!(call_back(), 11);
         assert_eq!(value.existing(), 5);
@@ -6236,12 +6239,17 @@ mod tests {
     let operations = write(
         &ws,
         "src/operations.rs",
-        "use crate::model::{LocalWidget, Widget};\npub fn existing_count(widget: &Widget) -> u32 { widget.count }\npub fn local_count(_: &LocalWidget) -> usize { 0 }\n\n/// Methods implemented outside the type's defining module.\n#[allow(dead_code)]\nimpl Widget {\n    pub fn moved_existing(value: u32) -> u32 { value + 1 }\n    pub fn moved_new(value: u32) -> Widget { Widget { count: value + 1 } }\n    pub fn moved_created(value: u32) -> u32 { value + 3 }\n    pub fn moved_conflicted() -> Widget { Widget { count: 17 } }\n}\n\nimpl LocalWidget {\n    pub fn moved_back() -> u32 { 11 }\n}\n",
+        "use crate::model::{LocalWidget, Widget};\npub fn existing_count(widget: &Widget) -> u32 { widget.count }\npub fn local_count(_: &LocalWidget) -> usize { 0 }\n\n/// Methods implemented outside the type's defining module.\n#[allow(dead_code)]\nimpl Widget {\n    pub fn moved_existing(value: u32) -> u32 { value + 1 }\n    pub fn moved_new(value: u32) -> Widget { Widget { count: value + 1 } }\n    pub fn moved_relative() -> Widget { Widget { count: 19 } }\n    pub fn moved_created(value: u32) -> u32 { value + 3 }\n    pub fn moved_conflicted() -> Widget { Widget { count: 17 } }\n}\n\nimpl LocalWidget {\n    pub fn moved_back() -> u32 { 11 }\n}\n",
     );
     write(
         &ws,
         "src/sibling.rs",
         "use super::model::{Marker, Widget as OtherWidget};\npub fn unrelated(value: &OtherWidget, marker: Marker) -> u32 { value.count + marker.0 }\n",
+    );
+    write(
+        &ws,
+        "src/relative_import.rs",
+        "use super::model::Widget;\npub fn unrelated(value: Widget) -> u32 { value.count }\n",
     );
     let conflict_source = "pub struct Widget;\n";
     write(&ws, "src/conflict.rs", conflict_source);
@@ -6304,6 +6312,7 @@ mod tests {
                             [
                                 "moved_existing",
                                 "moved_new",
+                                "moved_relative",
                                 "moved_created",
                                 "moved_back",
                                 "moved_conflicted",
@@ -6454,6 +6463,28 @@ mod tests {
         "{now_sibling}"
     );
     run_fixture("after-verified-target");
+
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_move",
+        serde_json::json!({ "path": "src/operations.rs", "line": line_of("moved_relative"), "character": 12, "to": "src/relative_import.rs", "apply": true }),
+    )
+    .await
+    .expect("public code_move reuses the existing relative owner import");
+    let text = text_of(&result);
+    let relative_import = ws.read("src/relative_import.rs");
+    assert!(!ws.read("src/operations.rs").contains("fn moved_relative"));
+    assert!(
+        relative_import.contains("impl crate::model::Widget"),
+        "{relative_import}; {text}"
+    );
+    assert_eq!(
+        relative_import.matches("use super::model::Widget;").count(),
+        1,
+        "{relative_import}"
+    );
+    run_fixture("after-relative-import");
 
     let result = execute_tool(
         remote,
