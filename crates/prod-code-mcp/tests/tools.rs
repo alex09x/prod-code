@@ -6187,6 +6187,123 @@ async fn move_method_makes_an_impl_when_the_type_has_none() {
     assert!(now.contains("    b.sum(&a)\n"), "{now}");
 }
 
+/// The public `code_move` operation can move an inherent method into a sibling module's impl of
+/// the same type without changing callers.
+#[tokio::test]
+async fn inherent_method_moves_between_modules_of_same_type() {
+    let ws = workspace();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"same_type_move\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    let lib_text = r#"pub mod model;
+pub mod sibling;
+pub fn call() -> u32 { model::Widget::moved(5) }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn methods_remain_available() {
+        let value = model::Widget { count: 5 };
+        assert_eq!(call(), 6);
+        assert_eq!(value.existing(), 5);
+        assert_eq!(value.sibling(), 7);
+    }
+}
+"#;
+    let lib = write(&ws, "src/lib.rs", lib_text);
+    let model = write(
+        &ws,
+        "src/model.rs",
+        "pub struct Widget { pub count: u32 }\n\nimpl Widget {\n    pub fn existing(&self) -> u32 { self.count }\n    pub fn moved(value: u32) -> u32 { value + 1 }\n}\n",
+    );
+    write(
+        &ws,
+        "src/sibling.rs",
+        "use crate::model::Widget;\n\nimpl Widget {\n    pub fn sibling(&self) -> u32 { self.count + 2 }\n}\n",
+    );
+    commit(&ws);
+
+    let artifact_dir = tempfile::tempdir().unwrap();
+    let baseline = std::process::Command::new("rustc")
+        .args(["--edition=2021", "--test"])
+        .arg(ws.path("src/lib.rs"))
+        .arg("-o")
+        .arg(artifact_dir.path().join("before"))
+        .output()
+        .unwrap();
+    assert!(
+        baseline.status.success(),
+        "baseline fixture must compile: {}",
+        String::from_utf8_lossy(&baseline.stderr)
+    );
+    let baseline_run = std::process::Command::new(artifact_dir.path().join("before"))
+        .output()
+        .unwrap();
+    assert!(
+        baseline_run.status.success(),
+        "baseline fixture must run: {}",
+        String::from_utf8_lossy(&baseline_run.stderr)
+    );
+
+    let source_for_lsp = model.clone();
+    let caller_for_lsp = lib.clone();
+    let lsp_answer = Arc::new(
+        move |method: &str, _params: &serde_json::Value| match method {
+            "textDocument/documentSymbol" => {
+                serde_json::json!([answers::document_symbol("moved", 6, 5, 5, 12)])
+            }
+            "textDocument/definition" => answers::locations(&source_for_lsp, &[(1, 12)]),
+            "textDocument/references" => answers::locations(&caller_for_lsp, &[]),
+            "textDocument/diagnostic" => answers::no_diagnostics(),
+            _ => serde_json::Value::Null,
+        },
+    );
+    let remote = match std::env::var("PROD_CODE_ISSUE1702_GATEWAY") {
+        Ok(address) => address.parse().expect("the live gateway address is valid"),
+        Err(_) => scripted_gateway(lsp_answer).await,
+    };
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_move",
+        serde_json::json!({ "path": "src/model.rs", "line": 5, "character": 12, "to": "src/sibling.rs", "apply": true }),
+    )
+    .await
+    .expect("public code_move runs");
+    let text = text_of(&result);
+    assert!(text.contains("moved"), "{text}");
+    let now = ws.read("src/model.rs");
+    assert!(!now.contains("fn moved"), "{now}");
+    let now_sibling = ws.read("src/sibling.rs");
+    assert!(
+        now_sibling.contains("pub fn moved(value: u32) -> u32"),
+        "{now_sibling}"
+    );
+    assert_eq!(ws.read("src/lib.rs"), lib_text);
+
+    let binary = artifact_dir.path().join("after");
+    let compile = std::process::Command::new("rustc")
+        .args(["--edition=2021", "--test"])
+        .arg(ws.path("src/lib.rs"))
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .unwrap();
+    assert!(
+        compile.status.success(),
+        "moved fixture must compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let run = std::process::Command::new(binary).output().unwrap();
+    assert!(
+        run.status.success(),
+        "moved fixture must run: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
 /// `code_move_method` needs to know where to: a parameter for a method, a type for an
 /// associated function, and exactly one of them.
 #[tokio::test]
