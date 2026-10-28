@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Explicit Remote Exec Does Not Require a Language Server** (`crates/prod-code-client`, #1744): A pinned `prod-code exec --remote` now selects the requested live gateway without requiring it to advertise the workspace's language server, while language-sensitive commands keep their existing routing.
+
 ## v0.3.42 — 2026-10-28
 
 ### Added

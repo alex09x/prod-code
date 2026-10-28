@@ -172,13 +172,19 @@ async fn run_cli() -> Result<()> {
     } else {
         None
     };
+    // A pinned shell command only needs a live gateway; its toolchain can be installed even when
+    // the node does not host the workspace's language server (for example, Cargo on macOS).
+    let engine_for_pick = match cli.command.as_ref() {
+        Some(Commands::Exec { .. }) if pinned => None,
+        _ => cwd_engine,
+    };
     let picked = if let Some(node) = artifact_node {
         Ok(node)
     } else {
         prod_code_mcp::cluster::pick_node(
             &remotes,
             &placement_key,
-            cwd_engine,
+            engine_for_pick,
             macos_cgo.as_ref().map(|_| "macos"),
         )
         .await
