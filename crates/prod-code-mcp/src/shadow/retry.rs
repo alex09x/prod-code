@@ -9,9 +9,9 @@
  */
 
 use super::{HypothesisSpec, ShadowOutcome, run_shadow_once};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Sends the hypotheses, waits for their results, and ranks them. A Cargo check whose shadow
 /// fails only because a cached Rust `.rmeta` file is missing warms Cargo's target and retries.
@@ -51,7 +51,7 @@ pub async fn run_shadow(
         remote,
         root,
         subdir,
-        warmup_command(root, subdir, &command),
+        warmup_command(root, subdir, &command, &env, &first.server_workspace_root)?,
         env.clone(),
         timeout_secs,
         false,
@@ -92,11 +92,21 @@ pub async fn run_shadow(
     Ok(retry)
 }
 
-/// The warm-up runs in the node's persistent copy of the workspace, not in a shadow, so it must
-/// leave that copy as the checkout has it (#1443). With a `Cargo.lock` in the checkout, it runs
-/// `--locked` and cannot change it. Without one, Cargo would write one there that the checkout
-/// does not have: it is removed again after the warm-up.
-fn warmup_command(root: &Path, subdir: Option<&str>, command: &[String]) -> Vec<String> {
+/// Runs Cargo in a disposable source copy, preserving reusable artifacts in a sibling target
+/// cache instead of letting Cargo or build scripts mutate the persistent workspace (#1443).
+fn warmup_command(
+    root: &Path,
+    subdir: Option<&str>,
+    command: &[String],
+    env: &[(String, String)],
+    server_workspace_root: &str,
+) -> Result<Vec<String>> {
+    let server_root = Path::new(server_workspace_root);
+    anyhow::ensure!(
+        server_root.is_absolute(),
+        "gateway did not report an absolute workspace root for metadata warm-up"
+    );
+    let server_cwd = server_root.join(subdir.unwrap_or_default());
     let start = subdir.map_or_else(|| root.to_path_buf(), |s| root.join(s));
     let locked = start
         .ancestors()
@@ -106,24 +116,125 @@ fn warmup_command(root: &Path, subdir: Option<&str>, command: &[String]) -> Vec<
         .iter()
         .position(|arg| arg == "check")
         .unwrap_or(command.len().saturating_sub(1));
-    if locked {
-        let mut out = command.to_vec();
-        if !out.iter().any(|arg| arg == "--locked" || arg == "--frozen") {
-            out.insert(check + 1, "--locked".to_string());
-        }
-        return out;
+    let mut cargo_command = command.to_vec();
+    if locked
+        && !cargo_command
+            .iter()
+            .any(|arg| arg == "--locked" || arg == "--frozen")
+    {
+        cargo_command.insert(check + 1, "--locked".to_string());
     }
+
+    for index in 0..cargo_command.len() {
+        if cargo_command[index] == "--manifest-path" && index + 1 < cargo_command.len() {
+            cargo_command[index + 1] =
+                copied_argument_path(&server_root, &server_cwd, &cargo_command[index + 1])?;
+        } else if let Some(manifest) = cargo_command[index].strip_prefix("--manifest-path=") {
+            cargo_command[index] = format!(
+                "--manifest-path={}",
+                copied_argument_path(&server_root, &server_cwd, manifest)?
+            );
+        }
+        if cargo_command[index] == "--target-dir" && index + 1 < cargo_command.len() {
+            cargo_command[index + 1] =
+                absolute_from_workspace(&server_cwd, &cargo_command[index + 1]);
+        } else if let Some(target) = cargo_command[index].strip_prefix("--target-dir=") {
+            cargo_command[index] = format!(
+                "--target-dir={}",
+                absolute_from_workspace(&server_cwd, target)
+            );
+        }
+    }
+
+    let has_target_override = env.iter().any(|(name, _)| name == "CARGO_TARGET_DIR")
+        || command
+            .iter()
+            .any(|arg| arg == "--target-dir" || arg.starts_with("--target-dir="));
     let mut out: Vec<String> = [
         "sh",
         "-c",
-        "\"$@\"; status=$?; manifest=$(cargo locate-project --workspace --message-format plain \
-         2>/dev/null) && rm -f \"$(dirname \"$manifest\")/Cargo.lock\"; exit $status",
+        "set -eu
+         workspace=$1
+         relative=$2
+         set_target_dir=$3
+         shift 3
+         workspace=$(cd \"$workspace\" && pwd -P)
+         current=$(pwd -P)
+         expected=\"$workspace${relative:+/$relative}\"
+         expected=$(cd \"$expected\" && pwd -P)
+         if [ \"$current\" != \"$expected\" ]; then
+           echo 'warm-up directory does not match the gateway workspace and subdirectory' >&2
+           exit 2
+         fi
+         if [ -n \"${CARGO_TARGET_DIR:-}\" ]; then
+           case \"$CARGO_TARGET_DIR\" in
+             /*) ;;
+             *) CARGO_TARGET_DIR=\"$current/$CARGO_TARGET_DIR\"; export CARGO_TARGET_DIR ;;
+           esac
+         elif [ \"$set_target_dir\" = yes ]; then
+           CARGO_TARGET_DIR=\"$workspace/target\"; export CARGO_TARGET_DIR
+         fi
+         scratch=$(mktemp -d \"${TMPDIR:-/tmp}/prod-code-shadow-warmup.XXXXXX\")
+         trap 'rm -rf \"$scratch\"' EXIT HUP INT TERM
+         tar -C \"$workspace\" --exclude=./target --exclude=./.git -cf \"$scratch/source.tar\" .
+         mkdir \"$scratch/source\"
+         tar -xf \"$scratch/source.tar\" -C \"$scratch/source\"
+         rm -f \"$scratch/source.tar\"
+         cd \"$scratch/source${relative:+/$relative}\"
+         \"$@\"",
         "sh",
     ]
     .map(str::to_string)
     .to_vec();
-    out.extend(command.iter().cloned());
-    out
+    out.push(server_workspace_root.to_string());
+    out.push(subdir.unwrap_or_default().to_string());
+    out.push(if has_target_override { "no" } else { "yes" }.to_string());
+    out.extend(cargo_command);
+    Ok(out)
+}
+
+fn copied_argument_path(workspace_root: &Path, cwd: &Path, path: &str) -> Result<String> {
+    let path = Path::new(path);
+    if !path.is_absolute() {
+        return Ok(path.to_string_lossy().into_owned());
+    }
+    let relative = path.strip_prefix(workspace_root).with_context(|| {
+        format!(
+            "cannot safely isolate metadata warm-up with manifest path {} outside the workspace",
+            path.display()
+        )
+    })?;
+    relative_path(cwd, &workspace_root.join(relative))
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+fn absolute_from_workspace(cwd: &Path, path: &str) -> String {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        path.to_string_lossy().into_owned()
+    } else {
+        cwd.join(path).to_string_lossy().into_owned()
+    }
+}
+
+fn relative_path(from: &Path, to: &Path) -> Result<PathBuf> {
+    let from: Vec<_> = from.components().collect();
+    let to: Vec<_> = to.components().collect();
+    anyhow::ensure!(
+        from.first() == to.first(),
+        "cannot map an absolute Cargo path into the isolated workspace"
+    );
+    let common = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    let mut relative = PathBuf::new();
+    for component in &from[common..] {
+        if matches!(component, std::path::Component::Normal(_)) {
+            relative.push("..");
+        }
+    }
+    for component in &to[common..] {
+        relative.push(component.as_os_str());
+    }
+    Ok(relative)
 }
 
 fn needs_dependency_metadata_warmup(command: &[String], output: &str) -> bool {
@@ -146,58 +257,4 @@ fn needs_dependency_metadata_warmup(command: &[String], output: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_missing_rmeta_files_from_cargo_check_trigger_a_warmup() {
-        let cargo_check = vec!["/usr/bin/cargo".to_string(), "check".to_string()];
-        let cargo_toolchain_check = vec![
-            "cargo".to_string(),
-            "+stable".to_string(),
-            "check".to_string(),
-        ];
-        let cargo_test = vec!["cargo".to_string(), "test".to_string()];
-        let missing =
-            "error: extern location for serde does not exist: target/debug/deps/libserde-abc.rmeta";
-        assert!(needs_dependency_metadata_warmup(&cargo_check, missing));
-        assert!(needs_dependency_metadata_warmup(
-            &cargo_toolchain_check,
-            missing
-        ));
-        assert!(!needs_dependency_metadata_warmup(&cargo_test, missing));
-        assert!(!needs_dependency_metadata_warmup(
-            &cargo_check,
-            "error: could not write target/debug/deps/libserde.rmeta: No space left on device"
-        ));
-    }
-
-    /// #1443: the warm-up cannot leave a lock file the checkout does not have, nor change one
-    /// it has.
-    #[test]
-    fn the_warmup_keeps_the_persistent_copy_as_the_checkout_has_it() {
-        let check = ["cargo", "+stable", "check", "--workspace"].map(str::to_string);
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path();
-        std::fs::create_dir_all(root.join("crates/a")).unwrap();
-
-        let unlocked = warmup_command(root, Some("crates/a"), &check);
-        assert_eq!(&unlocked[..2], &["sh".to_string(), "-c".to_string()]);
-        assert!(
-            unlocked[2].contains("cargo locate-project --workspace"),
-            "{unlocked:?}"
-        );
-        assert!(unlocked[2].contains("rm -f"), "{unlocked:?}");
-        assert!(unlocked[2].contains("exit $status"), "{unlocked:?}");
-        assert_eq!(&unlocked[4..], &check);
-
-        // A lock at the workspace root, above the subdirectory.
-        std::fs::write(root.join("Cargo.lock"), "").unwrap();
-        assert_eq!(
-            warmup_command(root, Some("crates/a"), &check),
-            ["cargo", "+stable", "check", "--locked", "--workspace"].map(str::to_string)
-        );
-        let frozen = ["cargo", "check", "--frozen"].map(str::to_string);
-        assert_eq!(warmup_command(root, None, &frozen), frozen);
-    }
-}
+mod tests;
