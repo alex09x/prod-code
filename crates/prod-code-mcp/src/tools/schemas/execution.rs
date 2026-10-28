@@ -14,7 +14,7 @@ pub fn execution_tools() -> Vec<McpTool> {
     vec![
         McpTool {
             name: "code_exec".to_string(),
-            description: "Run a build, test, lint or format command on the remote gateway inside this workspace's server copy (warm per-worktree caches, 32-core server). The checkout is synced first; files the command changes (formatters, generators, lockfiles) are written back. Returns the exit code and the tail of the combined output."
+            description: "Run a build, test, lint or format command on the remote gateway inside this workspace's server copy (warm per-worktree caches, 32-core server). The checkout is synced first; files the command changes (formatters, generators, lockfiles) are written back. Returns the exit code and the tail of the combined output. Pass `workspace` to target another Git worktree of this repository."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -40,7 +40,8 @@ pub fn execution_tools() -> Vec<McpTool> {
                         "type": "integer",
                         "description": "How much of the output tail to return (default 16384)"
                     },
-                    "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Environment variables for the command, e.g. {\"RUST_BACKTRACE\": \"1\"}" }
+                    "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Environment variables for the command, e.g. {\"RUST_BACKTRACE\": \"1\"}" },
+                    "workspace": { "type": "string", "description": "Absolute path to another Git worktree of this repository; runs in and syncs that checkout. Defaults to the MCP server's configured workspace." }
                 }
             }),
         },
@@ -104,7 +105,7 @@ pub fn execution_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_test".to_string(),
-            description: "Run tests on the remote gateway (cargo test / go test -json / pytest / vitest / …), optionally filtered by test name, and return pass/fail counts plus the output of each failed test. `path` narrows the run to the Cargo crate, Go package tree or pytest directory/file containing it."
+            description: "Run tests on the remote gateway (cargo test / go test -json / pytest / vitest / …), optionally filtered by test name, and return pass/fail counts plus the output of each failed test. `path` narrows the run to the Cargo crate, Go package tree or pytest directory/file containing it. A filtered Rust run matching zero tests returns an error. Pass `workspace` to target another Git worktree of this repository."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -112,7 +113,8 @@ pub fn execution_tools() -> Vec<McpTool> {
                     "filter": { "type": "string", "description": "Test name filter (cargo test TESTNAME / go test -run)" },
                     "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Environment variables for the command, e.g. {\"RUST_BACKTRACE\": \"1\"}" },
                     "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" },
-                    "path": { "type": "string", "description": "Narrow the run: a file or directory inside the project (runs only its Cargo crate / Go package tree / pytest path), a crate name (`prod-code-gateway`), or a nested project. A Rust integration-test file selects its target; another Rust file selects its Cargo package. Unsupported or ambiguous integration-test files are refused rather than widened to the workspace." }
+                    "path": { "type": "string", "description": "Narrow the run: a file or directory inside the project (runs only its Cargo crate / Go package tree / pytest path), a crate name (`prod-code-gateway`), or a nested project. A Rust integration-test file selects its target; another Rust file selects its Cargo package. Unsupported or ambiguous integration-test files are refused rather than widened to the workspace." },
+                    "workspace": { "type": "string", "description": "Absolute path to another Git worktree of this repository; runs and syncs tests from that checkout. Defaults to the MCP server's configured workspace." }
                 }
             }),
         },
