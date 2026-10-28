@@ -13,8 +13,7 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-use crate::signature::call_sites::call_sites;
-use crate::signature::effects::{effect_hazards, param_facts};
+use crate::signature::effects::ensure_reorder_is_safe;
 use crate::signature::modifiers::{
     check_dropped_parameters, in_async_fn, with_async, with_return_type, with_visibility,
 };
@@ -148,18 +147,20 @@ pub async fn change_with(
     // does not compile, which the author then sees; it does not write one that compiles and
     // quietly runs differently.
     if order_changed {
-        let calls = call_sites(root, &refs)?;
-        let facts = param_facts(remote, root, file, &text, open, close, &declared).await;
-        let hazards = effect_hazards(&name, &declared, &facts, receiver.is_some(), &args, &calls);
-        anyhow::ensure!(
-            hazards.is_empty(),
-            "the new parameter list would change what the program does, or it cannot be shown \
-             that it does not; nothing was written, and `force` does not override this:\n  {}\n\
-             bind such an argument to a local of the parameter's own type before the call \
-             (`let v: T = …;`) and pass the local, keep owned parameters and references in their \
-             order, or remove them in a step of their own",
-            hazards.join("\n  ")
-        );
+        ensure_reorder_is_safe(
+            remote,
+            root,
+            file,
+            &text,
+            open,
+            close,
+            &name,
+            &declared,
+            receiver.is_some(),
+            &args,
+            &refs,
+        )
+        .await?;
     }
 
     // Call sites first, while the declaration still has the arity the rule matches.

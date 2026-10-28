@@ -2,7 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+- **Remote Rust Coverage Tool** (`crates/prod-code-mcp`, #1559): The new `code_coverage` MCP tool runs `cargo llvm-cov` on the remote build node with a selected toolchain and does not write remote changes back to the local workspace. It defaults to Cargo's package selection, `--no-report --lib`, and Rust 1.97.1; callers can select a package, the whole workspace, or another installed toolchain with `llvm-tools-preview`.
+
 ### Fixed
+- **Rust Signature Changes Respect Async Boundaries and Built-in Macro Tokens** (`crates/prod-code-mcp`, #1504, parts 1 and 3): Async checks now use the nearest async block, closure or function and stop at intervening synchronous callables. Reorder proof preserves token boundaries and punctuation jointness inside macros. A parameter reorder may treat `stringify!` as effect-free only when rust-analyzer confirms the built-in `core::macros::builtin` binding; a same-named user macro remains conservatively refused.
+- **Cargo Target Roots Without `.rs` Extensions Are Outlined as Rust** (`crates/prod-code-engine-rust`, #1498): A Cargo manifest can name a Rust source file with an extensionless or custom-extension path. Workspace load and manifest reload now add existing Cargo target roots to the Rust VFS and crate graph. Document outlines accept these manifest-owned files while refusing TOML, Markdown and unrelated files that happen to be in the VFS.
 - **Inherent Rust Methods Can Move Into a Sibling Module Without an Existing Impl** (`crates/prod-code-mcp`, #1702): `code_move` no longer refuses an inherent method or associated function just because the destination file has no `impl` block for its type. It resolves the type's defining module and creates a qualified impl in the sibling or new module; conflicting local type names and existing impls whose identity cannot be verified still refuse without writing.
 - **`code_definition` Reads Bodies from Local Git Worktrees of the Same Repository** (`crates/prod-code-mcp`, #1361): When rust-analyzer returns a definition URI in another local worktree, the MCP tool now reads that file from the local filesystem if its Git common directory matches the requested checkout. Other external sources still use the gateway reader; symlink targets are not treated as sibling worktree files.
 - **A Redirected Validation Handshake Never Returns to a Node That Already Refused It** (`crates/prod-code-protocol`, `crates/prod-code-gateway`, `crates/prod-code-mcp`, `crates/prod-code-client`, #1643):

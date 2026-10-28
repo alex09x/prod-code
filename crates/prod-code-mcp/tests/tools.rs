@@ -5368,6 +5368,77 @@ async fn code_exec_reports_the_exit_status_and_output_tail() {
 }
 
 #[tokio::test]
+async fn code_coverage_runs_on_the_remote_with_llvm_tools_toolchain() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"coverage-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        (
+            "src/lib.rs",
+            "#[cfg(test)] mod tests { #[test] fn covered() { assert!(true); } }\n",
+        ),
+    ]);
+    ws.commit();
+    let (remote, seen_env) = match std::env::var("PROD_CODE_COVERAGE_GATEWAY") {
+        Ok(address) => (
+            address.parse().expect("the live gateway address is valid"),
+            None,
+        ),
+        Err(_) => {
+            let script = Script {
+                exec_stdout: b"test result: ok. 1 passed; 0 failed\n".to_vec(),
+                exec_exit: Some(0),
+                exec_changes: vec![prod_code_protocol::FileDelta {
+                    relative_path: "src/lib.rs".to_string(),
+                    content: Some(b"pub fn remote_change() {}\n".to_vec()),
+                    is_executable: false,
+                }],
+                ..Script::default()
+            };
+            let seen_env = script.exec_env.clone();
+            (mock_gateway(script).await, Some(seen_env))
+        }
+    };
+    assert!(
+        prod_code_mcp::tools::list_tools()
+            .iter()
+            .any(|tool| tool.name == "code_coverage"),
+        "code_coverage should be publicly advertised"
+    );
+    let exec_schema = prod_code_mcp::tools::list_tools()
+        .into_iter()
+        .find(|tool| tool.name == "code_exec")
+        .expect("code_exec is advertised");
+    assert!(exec_schema.input_schema["properties"]["env"].is_object());
+    let result = execute_tool(remote, &ws.root(), "code_coverage", serde_json::json!({}))
+        .await
+        .expect("coverage tool runs remotely");
+    assert!(!result.is_error);
+    let text = text_of(&result);
+    assert!(
+        text.contains("$ cargo llvm-cov --no-report --lib"),
+        "{text}"
+    );
+    assert!(text.contains("1 passed; 0 failed"), "{text}");
+    assert_eq!(
+        std::fs::read_to_string(ws.root().join("src/lib.rs"))
+            .expect("local source remains readable"),
+        "#[cfg(test)] mod tests { #[test] fn covered() { assert!(true); } }\n",
+        "read-only coverage must not write remote files back to the workspace"
+    );
+    if let Some(seen_env) = seen_env {
+        assert!(
+            seen_env
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(key, value)| { key == "RUSTUP_TOOLCHAIN" && value == "1.97.1" })
+        );
+    }
+}
+
+#[tokio::test]
 async fn code_exec_rejects_nonexistent_or_outside_cwd() {
     let ws = rust_workspace("pub fn a() {}\n");
     let remote = mock_gateway(Script::default()).await;
