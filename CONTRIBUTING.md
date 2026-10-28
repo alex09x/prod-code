@@ -42,14 +42,12 @@ records what was run and what it showed.
 Rust coverage on the Linux build node requires `llvm-tools-preview` for the selected Rust
 toolchain. The default 1.98.1 toolchain currently cannot install that component because its
 bundled LLVM library conflicts with the component package; the system LLVM tools are a different
-version and cannot read its profiles. Toolchain 1.97.1 is installed with the matching component.
-Run the MCP library coverage gate from its crate directory with:
-
-```sh
-RUSTUP_TOOLCHAIN=1.97.1 cargo llvm-cov --no-report --lib
-```
-
-Recheck the installed toolchain and component if the build-node toolchain changes.
+version and cannot read its profiles. Use the MCP `code_coverage` tool to run `cargo llvm-cov`
+on the remote build node. It defaults to `prod-code-mcp --no-report --lib` and Rust 1.97.1;
+the selected build node must have `llvm-tools-preview` installed for that toolchain. Set
+`package` for another crate, `workspace: true` for the workspace, or `toolchain` to another
+installed compatible toolchain. Recheck the installed toolchain and component if node placement
+or build-node toolchains change.
 
 ## What counts as finished
 

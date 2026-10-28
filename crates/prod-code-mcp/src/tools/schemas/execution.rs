@@ -44,6 +44,22 @@ pub fn execution_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_coverage".to_string(),
+            description: "Run cargo llvm-cov on the remote build node using a Rust toolchain that has the matching llvm-tools-preview component. Defaults to the prod-code-mcp package, --no-report --lib, and toolchain 1.97.1. No command runs on the local machine."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "package": { "type": "string", "description": "Cargo package to cover (default: prod-code-mcp); omit when workspace is true" },
+                    "workspace": { "type": "boolean", "description": "Cover the whole Cargo workspace instead of one package (default false)" },
+                    "args": { "type": "array", "items": { "type": "string" }, "description": "Additional cargo llvm-cov arguments (default: --no-report --lib)" },
+                    "toolchain": { "type": "string", "description": "Rust toolchain with llvm-tools-preview installed (default: 1.97.1)" },
+                    "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" },
+                    "tail_bytes": { "type": "integer", "description": "How much of the output tail to return (default 16384)" }
+                }
+            }),
+        },
+        McpTool {
             name: "code_check".to_string(),
             description: "Compile-check the whole workspace on the remote gateway (cargo check / go build) and return structured compiler errors and warnings with file:line:col. Nothing runs on the local machine. `fix: true` (Rust) applies every fix the compiler marks machine-applicable to the checkout in one edit, then checks again and reports what was fixed, what was skipped and why, and what is left."
                 .to_string(),

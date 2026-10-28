@@ -92,6 +92,29 @@ pub(crate) fn parse_exec_argv(args: &serde_json::Value) -> Result<Vec<String>> {
     }
 }
 
+fn parse_exec_env(args: &serde_json::Value) -> Result<Vec<(String, String)>> {
+    let mut env =
+        std::collections::BTreeMap::from([("CARGO_TERM_COLOR".to_string(), "never".to_string())]);
+    match args.get("env") {
+        None | Some(serde_json::Value::Null) => {}
+        Some(serde_json::Value::Object(values)) => {
+            for (key, value) in values {
+                anyhow::ensure!(
+                    !key.is_empty() && !key.contains(['=', '\0']),
+                    "env key must be a non-empty environment variable name"
+                );
+                let value = value
+                    .as_str()
+                    .with_context(|| format!("env `{key}` must be a string, got {value}"))?;
+                anyhow::ensure!(!value.contains('\0'), "env `{key}` contains a null byte");
+                env.insert(key.clone(), value.to_string());
+            }
+        }
+        Some(other) => anyhow::bail!("env must be an object of strings, got {other}"),
+    }
+    Ok(env.into_iter().collect())
+}
+
 pub(crate) async fn handle_exec(
     remote: SocketAddr,
     workspace_root: &Path,
@@ -112,12 +135,13 @@ pub(crate) async fn handle_exec(
         .min(MAX_EXEC_TAIL_BYTES);
     let mut tail = crate::exec::TailBuffer::new(tail_bytes);
     let subdir = resolve_exec_subdir(workspace_root, args.get("cwd").and_then(|v| v.as_str()))?;
+    let env = parse_exec_env(args)?;
     let outcome = crate::exec::run_remote(
         remote,
         workspace_root,
         subdir.as_deref(),
         argv.clone(),
-        vec![("CARGO_TERM_COLOR".to_string(), "never".to_string())],
+        env,
         timeout_secs,
         true,
         |_, data| tail.push(data),
@@ -178,4 +202,59 @@ pub(crate) async fn handle_exec(
             McpToolCallResult::error(text)
         },
     )
+}
+
+const DEFAULT_COVERAGE_TOOLCHAIN: &str = "1.97.1";
+
+pub(crate) async fn handle_coverage(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let workspace = args
+        .get("workspace")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let package = args.get("package").and_then(serde_json::Value::as_str);
+    anyhow::ensure!(
+        !workspace || package.is_none(),
+        "choose either a package or `workspace: true`, not both"
+    );
+    let mut argv = vec!["cargo".to_string(), "llvm-cov".to_string()];
+    if workspace {
+        argv.push("--workspace".to_string());
+    } else {
+        let package = package.unwrap_or("prod-code-mcp");
+        anyhow::ensure!(!package.trim().is_empty(), "package must not be empty");
+        argv.extend(["-p".to_string(), package.to_string()]);
+    }
+    let extra_args = match args.get("args") {
+        None => vec!["--no-report".to_string(), "--lib".to_string()],
+        Some(serde_json::Value::Array(values)) => values
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_string)
+                    .with_context(|| format!("coverage arg must be a string, got {value}"))
+            })
+            .collect::<Result<Vec<_>>>()?,
+        Some(other) => anyhow::bail!("args must be an array of strings, got {other}"),
+    };
+    argv.extend(extra_args);
+    let toolchain = args
+        .get("toolchain")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(DEFAULT_COVERAGE_TOOLCHAIN);
+    anyhow::ensure!(
+        !toolchain.trim().is_empty() && !toolchain.contains('\0'),
+        "toolchain must be a non-empty Rust toolchain name"
+    );
+    let exec_args = serde_json::json!({
+        "argv": argv,
+        "timeout_secs": args.get("timeout_secs").and_then(serde_json::Value::as_u64).unwrap_or(3600),
+        "tail_bytes": args.get("tail_bytes").and_then(serde_json::Value::as_u64).unwrap_or(16 * 1024),
+        "env": { "RUSTUP_TOOLCHAIN": toolchain },
+    });
+    handle_exec(remote, workspace_root, &exec_args).await
 }
