@@ -6307,6 +6307,360 @@ async fn move_method_makes_an_impl_when_the_type_has_none() {
     assert!(now.contains("    b.sum(&a)\n"), "{now}");
 }
 
+/// The public `code_move` operation can move an inherent method into a sibling module's impl of
+/// the same type without changing callers.
+#[tokio::test]
+async fn inherent_method_moves_between_modules_of_same_type() {
+    let ws = workspace();
+    write(
+        &ws,
+        "prod-code.toml",
+        "[rust]\nproc_macro_srv = \"disabled\"\n",
+    );
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"same_type_move\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    let lib_text = r#"pub mod model;
+pub mod operations;
+pub mod sibling;
+pub mod relative_import;
+pub mod conflict;
+pub mod conflicting_import;
+pub mod other;
+pub mod unverified;
+pub fn call_existing() -> u32 { model::Widget::moved_existing(5) }
+pub fn call_new() -> u32 { model::Widget::moved_new(7).count }
+pub fn call_relative() -> u32 { model::Widget::moved_relative().count }
+pub fn call_created() -> u32 { model::Widget::moved_created(9) }
+pub fn call_back() -> u32 { model::LocalWidget::moved_back() }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn methods_remain_available() {
+        let value = model::Widget { count: 5 };
+        assert_eq!(call_existing(), 6);
+        assert_eq!(call_new(), 8);
+        assert_eq!(call_relative(), 19);
+        assert_eq!(call_created(), 12);
+        assert_eq!(call_back(), 11);
+        assert_eq!(value.existing(), 5);
+    }
+}
+"#;
+    let lib = write(&ws, "src/lib.rs", lib_text);
+    let model = write(
+        &ws,
+        "src/model.rs",
+        "pub struct Widget { pub count: u32 }\npub struct Marker(pub u32);\npub struct LocalWidget;\n\nimpl Widget {\n    pub fn existing(&self) -> u32 { self.count }\n}\n",
+    );
+    let operations = write(
+        &ws,
+        "src/operations.rs",
+        "use crate::model::{LocalWidget, Widget};\npub fn existing_count(widget: &Widget) -> u32 { widget.count }\npub fn local_count(_: &LocalWidget) -> usize { 0 }\n\n/// Methods implemented outside the type's defining module.\n#[allow(dead_code)]\nimpl Widget {\n    pub fn moved_existing(value: u32) -> u32 { value + 1 }\n    pub fn moved_new(value: u32) -> Widget { Widget { count: value + 1 } }\n    pub fn moved_relative() -> Widget { Widget { count: 19 } }\n    pub fn moved_created(value: u32) -> u32 { value + 3 }\n    pub fn moved_conflicted() -> Widget { Widget { count: 17 } }\n}\n\nimpl LocalWidget {\n    pub fn moved_back() -> u32 { 11 }\n}\n",
+    );
+    write(
+        &ws,
+        "src/sibling.rs",
+        "use super::model::{Marker, Widget as OtherWidget};\npub fn unrelated(value: &OtherWidget, marker: Marker) -> u32 { value.count + marker.0 }\n",
+    );
+    write(
+        &ws,
+        "src/relative_import.rs",
+        "use super::model::Widget;\npub fn unrelated(value: Widget) -> u32 { value.count }\n",
+    );
+    let conflict_source = "pub struct Widget;\n";
+    write(&ws, "src/conflict.rs", conflict_source);
+    let other = write(&ws, "src/other.rs", "pub struct Widget;\n");
+    let unverified_source = "use crate::other::Widget;\nimpl Widget { pub fn unrelated() {} }\n";
+    write(&ws, "src/unverified.rs", unverified_source);
+    let conflicting_import_source =
+        "use crate::other::Widget;\npub fn keep(value: Widget) -> Widget { value }\n";
+    write(&ws, "src/conflicting_import.rs", conflicting_import_source);
+    commit(&ws);
+
+    let artifact_dir = tempfile::tempdir().unwrap();
+    let run_fixture = |name: &str| {
+        let binary = artifact_dir.path().join(name);
+        let compile = std::process::Command::new("rustc")
+            .args(["--edition=2021", "--test"])
+            .arg(ws.path("src/lib.rs"))
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .unwrap();
+        assert!(
+            compile.status.success(),
+            "fixture {name} must compile: {}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = std::process::Command::new(binary).output().unwrap();
+        assert!(
+            run.status.success(),
+            "fixture {name} must run: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    };
+    run_fixture("before");
+    let line_of = |name: &str| {
+        ws.read("src/operations.rs")
+            .lines()
+            .position(|line| line.contains(&format!("fn {name}")))
+            .expect("the selected associated function is in the source") as u64
+            + 1
+    };
+
+    let source_for_lsp = model.clone();
+    let other_for_lsp = other.clone();
+    let caller_for_lsp = lib.clone();
+    let source_path_for_symbols = operations.clone();
+    let lsp_answer = Arc::new(
+        move |method: &str, params: &serde_json::Value| match method {
+            "textDocument/documentSymbol" => {
+                let uri = params
+                    .pointer("/textDocument/uri")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                if uri.ends_with("operations.rs") {
+                    let source = std::fs::read_to_string(&source_path_for_symbols).unwrap();
+                    let symbols = source
+                        .lines()
+                        .enumerate()
+                        .filter_map(|(index, line)| {
+                            [
+                                "moved_existing",
+                                "moved_new",
+                                "moved_relative",
+                                "moved_created",
+                                "moved_back",
+                                "moved_conflicted",
+                            ]
+                            .iter()
+                            .find(|name| line.contains(&format!("fn {name}")))
+                            .map(|name| {
+                                answers::document_symbol(
+                                    name,
+                                    6,
+                                    index as u32 + 1,
+                                    index as u32 + 1,
+                                    12,
+                                )
+                            })
+                        })
+                        .collect();
+                    serde_json::Value::Array(symbols)
+                } else if uri.ends_with("conflict.rs") {
+                    serde_json::json!([answers::document_symbol("Widget", 23, 1, 1, 12)])
+                } else {
+                    serde_json::json!([answers::document_symbol("unrelated", 12, 1, 1, 12)])
+                }
+            }
+            "textDocument/definition" => {
+                let uri = params
+                    .pointer("/textDocument/uri")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                if uri.ends_with("unverified.rs") {
+                    answers::locations(&other_for_lsp, &[(1, 12)])
+                } else {
+                    answers::locations(&source_for_lsp, &[(1, 12)])
+                }
+            }
+            "textDocument/references" => answers::locations(&caller_for_lsp, &[]),
+            "textDocument/diagnostic" => answers::no_diagnostics(),
+            _ => serde_json::Value::Null,
+        },
+    );
+    let remote = match std::env::var("PROD_CODE_ISSUE1702_GATEWAY") {
+        Ok(address) => address.parse().expect("the live gateway address is valid"),
+        Err(_) => scripted_gateway(lsp_answer).await,
+    };
+
+    let source_before_refusals = ws.read("src/operations.rs");
+    let imported_conflict = execute_tool(
+        remote,
+        &ws.root(),
+        "code_move",
+        serde_json::json!({ "path": "src/operations.rs", "line": line_of("moved_conflicted"), "character": 12, "to": "src/conflicting_import.rs", "apply": true }),
+    )
+    .await;
+    let imported_conflict_error = imported_conflict
+        .map(|result| text_of(&result))
+        .unwrap_or_else(|error| format!("{error:#}"));
+    assert!(
+        imported_conflict_error.contains("target already binds `Widget`"),
+        "{imported_conflict_error}"
+    );
+    assert_eq!(ws.read("src/operations.rs"), source_before_refusals);
+    assert_eq!(
+        ws.read("src/conflicting_import.rs"),
+        conflicting_import_source
+    );
+    let conflict = execute_tool(
+        remote,
+        &ws.root(),
+        "code_move",
+        serde_json::json!({ "path": "src/operations.rs", "line": line_of("moved_existing"), "character": 12, "to": "src/conflict.rs", "apply": true, "force": true }),
+    )
+    .await;
+    let conflict_error = conflict
+        .map(|result| text_of(&result))
+        .unwrap_or_else(|error| format!("{error:#}"));
+    assert!(
+        conflict_error.contains("target declares a type named `Widget`"),
+        "{conflict_error}"
+    );
+    let unverified = execute_tool(
+        remote,
+        &ws.root(),
+        "code_move",
+        serde_json::json!({ "path": "src/operations.rs", "line": line_of("moved_existing"), "character": 12, "to": "src/unverified.rs", "apply": true, "force": true }),
+    )
+    .await;
+    let unverified_error = unverified
+        .map(|result| text_of(&result))
+        .unwrap_or_else(|error| format!("{error:#}"));
+    assert!(
+        unverified_error.contains("target contains an inherent impl for `Widget`"),
+        "{unverified_error}"
+    );
+    assert_eq!(ws.read("src/operations.rs"), source_before_refusals);
+    assert_eq!(ws.read("src/conflict.rs"), conflict_source);
+    assert_eq!(ws.read("src/unverified.rs"), unverified_source);
+
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_move",
+        serde_json::json!({ "path": "src/operations.rs", "line": line_of("moved_existing"), "character": 12, "to": "src/sibling.rs", "apply": true }),
+    )
+    .await
+    .expect("public code_move runs");
+    let text = text_of(&result);
+    let now = ws.read("src/operations.rs");
+    assert!(!now.contains("fn moved_existing"), "{now}; {text}");
+    let now_sibling = ws.read("src/sibling.rs");
+    assert!(
+        now_sibling.contains("impl crate::model::Widget"),
+        "{now_sibling}; {text}"
+    );
+    assert!(
+        now_sibling.contains("pub fn moved_existing(value: u32) -> u32"),
+        "{now_sibling}"
+    );
+    assert!(
+        now_sibling.contains("use super::model::{Marker, Widget as OtherWidget};"),
+        "{now_sibling}"
+    );
+    assert_eq!(ws.read("src/lib.rs"), lib_text);
+    run_fixture("after-existing-target");
+
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_move",
+        serde_json::json!({ "path": "src/operations.rs", "line": line_of("moved_new"), "character": 12, "to": "src/sibling.rs", "apply": true }),
+    )
+    .await
+    .unwrap_or_else(|error| {
+        panic!(
+            "public code_move reuses a verified target impl: {error:#}; source was:\n{}",
+            ws.read("src/operations.rs")
+        )
+    });
+    let text = text_of(&result);
+    let now = ws.read("src/operations.rs");
+    assert!(!now.contains("fn moved_new"), "{now}; {text}");
+    let now_sibling = ws.read("src/sibling.rs");
+    assert!(
+        now_sibling.contains("pub fn moved_new(value: u32) -> Widget"),
+        "{now_sibling}"
+    );
+    assert!(
+        now_sibling.contains("use crate::model::Widget;"),
+        "{now_sibling}"
+    );
+    run_fixture("after-verified-target");
+
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_move",
+        serde_json::json!({ "path": "src/operations.rs", "line": line_of("moved_relative"), "character": 12, "to": "src/relative_import.rs", "apply": true }),
+    )
+    .await
+    .expect("public code_move reuses the existing relative owner import");
+    let text = text_of(&result);
+    let relative_import = ws.read("src/relative_import.rs");
+    assert!(!ws.read("src/operations.rs").contains("fn moved_relative"));
+    assert!(
+        relative_import.contains("impl crate::model::Widget"),
+        "{relative_import}; {text}"
+    );
+    assert_eq!(
+        relative_import.matches("use super::model::Widget;").count(),
+        1,
+        "{relative_import}"
+    );
+    run_fixture("after-relative-import");
+
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_move",
+        serde_json::json!({ "path": "src/operations.rs", "line": line_of("moved_back"), "character": 12, "to": "src/model.rs", "apply": true }),
+    )
+    .await
+    .expect("public code_move returns an associated function to its owner module");
+    let text = text_of(&result);
+    let now = ws.read("src/operations.rs");
+    assert!(!now.contains("fn moved_back"), "{now}; {text}");
+    let now_model = ws.read("src/model.rs");
+    assert!(
+        now_model.contains("impl crate::model::LocalWidget"),
+        "{now_model}"
+    );
+    assert!(
+        now_model.contains("pub fn moved_back() -> u32"),
+        "{now_model}"
+    );
+    assert!(
+        !now_model.contains("use crate::model::LocalWidget;"),
+        "{now_model}"
+    );
+    run_fixture("after-owner-target");
+
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_move",
+        serde_json::json!({ "path": "src/operations.rs", "line": line_of("moved_created"), "character": 12, "to": "src/new_sibling.rs", "apply": true }),
+    )
+    .await
+    .expect("public code_move creates a sibling module");
+    let text = text_of(&result);
+    let now = ws.read("src/operations.rs");
+    assert!(!now.contains("fn moved_created"), "{now}; {text}");
+    let new_sibling = ws.read("src/new_sibling.rs");
+    assert!(
+        new_sibling.contains("impl crate::model::Widget"),
+        "{new_sibling}; {text}"
+    );
+    assert!(
+        new_sibling.contains("pub fn moved_created(value: u32) -> u32"),
+        "{new_sibling}"
+    );
+    assert!(
+        !new_sibling.contains("use crate::model::Widget;"),
+        "{new_sibling}"
+    );
+    assert!(ws.read("src/lib.rs").contains("pub mod new_sibling;"));
+
+    run_fixture("after-new-target");
+}
+
 /// `code_move_method` needs to know where to: a parameter for a method, a type for an
 /// associated function, and exactly one of them.
 #[tokio::test]

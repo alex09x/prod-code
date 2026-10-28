@@ -20,7 +20,9 @@ use super::schemas::SYMBOL_ADDRESSABLE;
 use super::symbols::{
     DEFAULT_AMBIGUOUS_CANDIDATE_LIMIT, resolve_symbol, resolve_symbol_candidates,
 };
-use super::{workspace_exec_lock, workspace_mutation_lock};
+use super::workspace_exec_lock;
+pub(crate) use super::workspace_writer::workspace_mutation_lock;
+use super::workspace_writer::{WorkspaceMutationGuard, workspace_writer_gate};
 use crate::protocol::McpToolCallResult;
 
 mod positions;
@@ -93,11 +95,6 @@ pub(crate) fn is_read_only_tool(tool_name: &str, args: &serde_json::Value) -> bo
     }
 }
 
-enum WorkspaceMutationGuard {
-    Read(#[allow(dead_code)] tokio::sync::OwnedRwLockReadGuard<()>),
-    Write(#[allow(dead_code)] tokio::sync::OwnedRwLockWriteGuard<()>),
-}
-
 /// A `verify` mode is `compile` or absent. A typo such as `compiler` used to read as "no
 /// compiler gate" and let an apply write unchecked (#1453); it is refused before planning.
 /// `code_generate_fixture` takes a boolean `verify`, which is left to its handler.
@@ -164,6 +161,7 @@ pub fn execute_tool<'a>(
                 | "code_lint"
                 | "code_test"
                 | "code_benchmarks"
+                | "code_coverage"
                 | "code_diagnose_failure"
         );
         let _exec_guard = if !read_only || workspace_command {
@@ -171,15 +169,20 @@ pub fn execute_tool<'a>(
         } else {
             None
         };
-        let _guard = if tool_name == "code_exec" {
+        // Commands may write back files, so serialize them with other writers even while
+        // readers proceed during the remote execution phase.
+        let _writer = if read_only {
             None
         } else {
-            let lock = workspace_mutation_lock(workspace_root);
-            Some(if read_only {
-                WorkspaceMutationGuard::Read(lock.read_owned().await)
-            } else {
-                WorkspaceMutationGuard::Write(lock.write_owned().await)
-            })
+            Some(workspace_writer_gate(workspace_root).lock_owned().await)
+        };
+        let lock = workspace_mutation_lock(workspace_root);
+        let _guard = if tool_name == "code_exec" {
+            None // its writeback takes this lock only while applying changes
+        } else if read_only {
+            Some(WorkspaceMutationGuard::Read(lock.read_owned().await))
+        } else {
+            Some(WorkspaceMutationGuard::Write(lock.write_owned().await))
         };
         // A pull names checkout-relative artifact paths that need not exist locally (#1145).
         if tool_name == "code_pull" {

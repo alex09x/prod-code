@@ -10,7 +10,6 @@
 
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::Arc;
 
 use anyhow::Result;
 use futures_util::SinkExt;
@@ -62,7 +61,7 @@ pub async fn run_remote_rooted(
     timeout_secs: u64,
     pull_changes: bool,
     on_root: impl FnOnce(&str),
-    mut on_output: impl FnMut(bool, &[u8]),
+    on_output: impl FnMut(bool, &[u8]),
 ) -> Result<RemoteOutcome> {
     run_remote_rooted_inner(
         remote,
@@ -73,16 +72,15 @@ pub async fn run_remote_rooted(
         timeout_secs,
         pull_changes,
         on_root,
-        &mut on_output,
-        None,
+        on_output,
+        false,
     )
     .await
 }
 
-/// Runs an MCP `code_exec` command with a read lock for its initial snapshot and a write lock
-/// only while applying returned file changes. The command itself does not hold the mutation lock.
+/// MCP serializes command writers separately, but permits readers until writeback.
 #[allow(clippy::too_many_arguments)]
-pub async fn run_remote_for_code_exec(
+pub(crate) async fn run_remote_for_tool(
     remote: SocketAddr,
     root: &Path,
     subdir: Option<&str>,
@@ -90,7 +88,7 @@ pub async fn run_remote_for_code_exec(
     env: Vec<(String, String)>,
     timeout_secs: u64,
     pull_changes: bool,
-    mut on_output: impl FnMut(bool, &[u8]),
+    on_output: impl FnMut(bool, &[u8]),
 ) -> Result<RemoteOutcome> {
     run_remote_rooted_inner(
         remote,
@@ -101,8 +99,8 @@ pub async fn run_remote_for_code_exec(
         timeout_secs,
         pull_changes,
         |_| {},
-        &mut on_output,
-        Some(crate::tools::workspace_mutation_lock(root)),
+        on_output,
+        true,
     )
     .await
 }
@@ -117,18 +115,13 @@ async fn run_remote_rooted_inner(
     timeout_secs: u64,
     pull_changes: bool,
     on_root: impl FnOnce(&str),
-    on_output: &mut impl FnMut(bool, &[u8]),
-    writeback_lock: Option<Arc<tokio::sync::RwLock<()>>>,
+    mut on_output: impl FnMut(bool, &[u8]),
+    lock_writeback: bool,
 ) -> Result<RemoteOutcome> {
     anyhow::ensure!(!command.is_empty(), "empty command");
     let identity: WorkspaceIdentity = workspace_identity(root);
-    let mut writeback = if let Some(lock) = &writeback_lock {
-        let _guard = lock.read().await;
-        Writeback::capture(root, pull_changes, rust_formatter(&command))?
-    } else {
-        Writeback::capture(root, pull_changes, rust_formatter(&command))?
-    };
-    let (mut framed, server_root) = prepare_rooted(remote, root, &identity, on_output).await?;
+    let mut writeback = Writeback::capture(root, pull_changes, rust_formatter(&command))?;
+    let (mut framed, server_root) = prepare_rooted(remote, root, &identity, &mut on_output).await?;
     on_root(&server_root);
     let mut monitor = ExecMonitor::new(timeout_secs);
     monitor
@@ -148,8 +141,11 @@ async fn run_remote_rooted_inner(
         )
         .await?;
 
+    // Once writeback begins, keep readers out until the final result so multiple
+    // change frames cannot expose a partially applied set of files.
+    let mut writeback_guard = None;
     loop {
-        match monitor.next(&mut framed, on_output).await? {
+        match monitor.next(&mut framed, &mut on_output).await? {
             Some(Ok(WireMessage::ExecChunk(chunk))) => {
                 if let Some(data) = chunk.data.as_deref() {
                     on_output(chunk.stderr, data);
@@ -157,12 +153,14 @@ async fn run_remote_rooted_inner(
             }
             Some(Ok(WireMessage::ExecChanges(changes))) => {
                 if pull_changes {
-                    if let Some(lock) = &writeback_lock {
-                        let _guard = lock.write().await;
-                        writeback.apply(root, &remote.to_string(), changes.files)?;
-                    } else {
-                        writeback.apply(root, &remote.to_string(), changes.files)?;
+                    if lock_writeback && writeback_guard.is_none() {
+                        writeback_guard = Some(
+                            crate::tools::execution::workspace_mutation_lock(root)
+                                .write_owned()
+                                .await,
+                        );
                     }
+                    writeback.apply(root, &remote.to_string(), changes.files)?;
                 }
             }
             Some(Ok(WireMessage::ExecExit(exit))) => {

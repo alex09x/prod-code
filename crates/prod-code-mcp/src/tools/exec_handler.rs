@@ -112,7 +112,7 @@ pub(crate) async fn handle_exec(
         .min(MAX_EXEC_TAIL_BYTES);
     let mut tail = crate::exec::TailBuffer::new(tail_bytes);
     let subdir = resolve_exec_subdir(workspace_root, args.get("cwd").and_then(|v| v.as_str()))?;
-    let outcome = crate::exec::run_remote_for_code_exec(
+    let outcome = crate::exec::runner::run_remote_for_tool(
         remote,
         workspace_root,
         subdir.as_deref(),

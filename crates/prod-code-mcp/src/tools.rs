@@ -45,11 +45,11 @@ pub use outline::{
 pub(crate) mod batch;
 mod compiler_proposal;
 pub mod execution;
-mod workspace_lock;
-pub(crate) use workspace_lock::{workspace_exec_lock, workspace_mutation_lock};
 mod validation_diff;
 mod validation_proposal;
+mod workspace_writer;
 pub use execution::*;
+pub(crate) use workspace_writer::workspace_exec_lock;
 pub(crate) async fn dispatch_tool(
     remote: SocketAddr,
     root: &Path,
