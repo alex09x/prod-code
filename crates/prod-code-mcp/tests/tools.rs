@@ -5487,6 +5487,106 @@ async fn code_exec_does_not_block_navigation_and_writes_back_changes() {
     assert_eq!(ws.read("src/lib.rs"), changed);
 }
 #[tokio::test]
+async fn code_grep_single_file_searches_locally_before_remote_exec() {
+    let rg = std::process::Command::new("rg").arg("--version").output();
+    assert!(
+        rg.is_ok_and(|output| output.status.success()),
+        "ripgrep is available on the build node"
+    );
+    let ws = workspace();
+    write(&ws, "src/lib.rs", "pub fn present() {}\n");
+    commit(&ws);
+    let exec_started = Arc::new(tokio::sync::Notify::new());
+    let remote = mock_gateway(Script {
+        exec_delay: std::time::Duration::from_secs(2),
+        exec_started: Arc::clone(&exec_started),
+        ..Script::default()
+    })
+    .await;
+
+    let started = std::time::Instant::now();
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_grep",
+        serde_json::json!({
+            "pattern": "absent-canary-token",
+            "path": "src/lib.rs",
+            "fixed_strings": true
+        }),
+    )
+    .await
+    .expect("single-file grep succeeds");
+    let elapsed = started.elapsed();
+
+    assert!(!result.is_error, "{}", text_of(&result));
+    assert!(text_of(&result).contains("No matches found"));
+    assert!(
+        elapsed < std::time::Duration::from_secs(1),
+        "single-file grep took {elapsed:?}"
+    );
+    let matches = execute_tool(
+        remote,
+        &ws.root(),
+        "code_grep",
+        serde_json::json!({
+            "pattern": "present",
+            "path": "src/lib.rs",
+            "fixed_strings": true
+        }),
+    )
+    .await
+    .expect("single-file grep returns matches");
+    assert!(!matches.is_error, "{}", text_of(&matches));
+    assert!(
+        text_of(&matches).contains("src/lib.rs:1:"),
+        "{}",
+        text_of(&matches)
+    );
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            exec_started.notified()
+        )
+        .await
+        .is_err(),
+        "a local single-file search should not start a remote exec"
+    );
+}
+
+#[tokio::test]
+async fn code_grep_rejects_paths_outside_the_workspace() {
+    let ws = workspace();
+    commit(&ws);
+    let outside_dir = tempfile::tempdir_in(ws.root().parent().expect("workspace parent"))
+        .expect("outside directory is created beside the workspace");
+    let outside_file = outside_dir.path().join("secret.txt");
+    std::fs::write(&outside_file, "outside-canary-token\n").expect("outside file is written");
+    let outside_dir_name = outside_dir
+        .path()
+        .file_name()
+        .expect("temporary directory has a name")
+        .to_string_lossy();
+    let traversal = format!("../{outside_dir_name}/secret.txt");
+    let remote = mock_gateway(Script::default()).await;
+
+    for path in [traversal, outside_file.to_string_lossy().into_owned()] {
+        let error = execute_tool(
+            remote,
+            &ws.root(),
+            "code_grep",
+            serde_json::json!({ "pattern": "outside-canary-token", "path": path }),
+        )
+        .await
+        .expect_err("outside paths are refused before searching");
+        assert!(
+            error.to_string().contains("outside the workspace"),
+            "{error}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn code_coverage_runs_on_the_remote_with_llvm_tools_toolchain() {
     let ws = Workspace::new(&[
         (
@@ -8353,6 +8453,90 @@ async fn code_definition_body_returns_symbol_body_without_dropping_connection() 
     assert!(text.contains("Definition:"), "{text}");
     assert!(text.contains("pub struct Overlay {"), "{text}");
     assert!(text.contains("pub active: bool,"), "{text}");
+}
+
+#[tokio::test]
+async fn code_definition_reads_body_from_another_local_git_worktree() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"worktree_body\"\nversion = \"0.1.0\"\n",
+        ),
+        ("src/lib.rs", "pub struct Overlay { pub active: bool }\n"),
+    ]);
+    ws.commit();
+    let sibling_parent = tempfile::tempdir().unwrap();
+    let sibling_root = sibling_parent.path().join("sibling");
+    let add = std::process::Command::new("git")
+        .args(["worktree", "add", "--detach"])
+        .arg(&sibling_root)
+        .arg("HEAD")
+        .current_dir(ws.root())
+        .output()
+        .unwrap();
+    assert!(
+        add.status.success(),
+        "creating the sibling git worktree failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let sibling_source = sibling_root.join("src/lib.rs");
+    std::fs::write(
+        &sibling_source,
+        "/// Body read from the sibling checkout.\npub struct Overlay {\n    pub sibling: u32,\n}\n",
+    )
+    .unwrap();
+    let uri = url::Url::from_file_path(&sibling_source)
+        .unwrap()
+        .to_string();
+    let uri_for_symbol = uri.clone();
+    let sibling_source_for_definition = sibling_source.clone();
+    let lsp: Answer = Arc::new(move |method, _| match method {
+        "workspace/symbol" => serde_json::json!([{
+            "name": "Overlay",
+            "kind": 23,
+            "location": {
+                "uri": uri_for_symbol,
+                "range": { "start": { "line": 1, "character": 11 }, "end": { "line": 1, "character": 18 } }
+            }
+        }]),
+        "textDocument/definition" => answers::locations(&sibling_source_for_definition, &[(2, 12)]),
+        "textDocument/documentSymbol" => serde_json::json!([]),
+        _ => serde_json::Value::Null,
+    });
+    let remote = mock_gateway(Script {
+        lsp,
+        read_file: None,
+        ..Script::default()
+    })
+    .await;
+
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({ "symbol": "Overlay", "path": "src/lib.rs", "body": true }),
+    )
+    .await
+    .expect("definition lookup returns a body from the sibling worktree");
+    let text = text_of(&result);
+    assert!(
+        text.contains("Body read from the sibling checkout"),
+        "{text}"
+    );
+    assert!(text.contains("pub sibling: u32"), "{text}");
+    assert!(!text.contains("pub active: bool"), "{text}");
+
+    let remove = std::process::Command::new("git")
+        .args(["worktree", "remove", "--force"])
+        .arg(&sibling_root)
+        .current_dir(ws.root())
+        .output()
+        .unwrap();
+    assert!(
+        remove.status.success(),
+        "removing the sibling git worktree failed: {}",
+        String::from_utf8_lossy(&remove.stderr)
+    );
 }
 
 #[tokio::test]
