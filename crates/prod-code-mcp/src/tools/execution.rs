@@ -29,6 +29,10 @@ mod context;
 mod positions;
 use self::context::resolve_workspace_root;
 pub(crate) use self::context::routed_path;
+use self::context::{
+    definition_budget, definition_busy_message, definition_subrequest_timeout_message,
+    is_timeout_error,
+};
 use positions::validate_position_arguments;
 
 fn is_multi_candidate_navigation_tool(tool_name: &str) -> bool {
@@ -56,7 +60,6 @@ pub(crate) fn checked_position_argument(value: &serde_json::Value, name: &str) -
             )
         })
 }
-
 /// Returns `true` when `tool_name` with `args` is guaranteed not to mutate workspace files on
 /// disk and can safely execute concurrently with other read-only tool calls.
 pub(crate) fn is_read_only_tool(tool_name: &str, args: &serde_json::Value) -> bool {
@@ -120,6 +123,29 @@ pub fn execute_tool<'a>(
     args: serde_json::Value,
 ) -> impl std::future::Future<Output = Result<McpToolCallResult>> + Send + 'a {
     let configured_workspace_root = workspace_root.to_path_buf();
+    let budget = definition_budget(tool_name, &args);
+    Box::pin(async move {
+        let run = execute_tool_inner(remote, &configured_workspace_root, tool_name, args);
+        match budget {
+            Some(budget) => match tokio::time::timeout_at(budget.deadline, run).await {
+                Ok(Ok(result)) => Ok(result),
+                Ok(Err(error)) if is_timeout_error(&error) => Ok(McpToolCallResult::error(
+                    definition_subrequest_timeout_message(budget),
+                )),
+                Ok(Err(error)) => Err(error),
+                Err(_) => Ok(McpToolCallResult::error(definition_busy_message(budget))),
+            },
+            None => run.await,
+        }
+    })
+}
+
+fn execute_tool_inner<'a>(
+    remote: SocketAddr,
+    configured_workspace_root: &'a Path,
+    tool_name: &'a str,
+    args: serde_json::Value,
+) -> impl std::future::Future<Output = Result<McpToolCallResult>> + Send + 'a {
     Box::pin(async move {
         let mut args = args;
         let workspace_root =
