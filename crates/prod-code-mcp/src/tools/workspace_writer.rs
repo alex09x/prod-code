@@ -16,6 +16,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 struct WorkspaceLocks {
     mutation: Arc<tokio::sync::RwLock<()>>,
     writer: Arc<tokio::sync::Mutex<()>>,
+    exec: Arc<tokio::sync::Mutex<()>>,
 }
 
 static LOCKS: LazyLock<Mutex<HashMap<PathBuf, WorkspaceLocks>>> = LazyLock::new(Default::default);
@@ -37,6 +38,11 @@ fn workspace_locks(root: &Path) -> WorkspaceLocks {
 
 pub(super) fn workspace_writer_gate(root: &Path) -> Arc<tokio::sync::Mutex<()>> {
     workspace_locks(root).writer
+}
+
+/// Serializes commands that share a remote workspace copy without blocking analyzer reads.
+pub(crate) fn workspace_exec_lock(root: &Path) -> Arc<tokio::sync::Mutex<()>> {
+    workspace_locks(root).exec
 }
 
 pub(crate) fn workspace_mutation_lock(root: &Path) -> Arc<tokio::sync::RwLock<()>> {

@@ -49,6 +49,7 @@ mod validation_diff;
 mod validation_proposal;
 mod workspace_writer;
 pub use execution::*;
+pub(crate) use workspace_writer::workspace_exec_lock;
 pub(crate) async fn dispatch_tool(
     remote: SocketAddr,
     root: &Path,

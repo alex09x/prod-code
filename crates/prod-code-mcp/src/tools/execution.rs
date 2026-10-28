@@ -20,6 +20,7 @@ use super::schemas::SYMBOL_ADDRESSABLE;
 use super::symbols::{
     DEFAULT_AMBIGUOUS_CANDIDATE_LIMIT, resolve_symbol, resolve_symbol_candidates,
 };
+use super::workspace_exec_lock;
 pub(crate) use super::workspace_writer::workspace_mutation_lock;
 use super::workspace_writer::{WorkspaceMutationGuard, workspace_writer_gate};
 use crate::protocol::McpToolCallResult;
@@ -154,6 +155,21 @@ pub fn execute_tool<'a>(
             return references_across(remote, workspace_root, args, &dirs).await;
         }
         let read_only = is_read_only_tool(tool_name, &args);
+        let workspace_command = matches!(
+            tool_name,
+            "code_exec"
+                | "code_check"
+                | "code_lint"
+                | "code_test"
+                | "code_benchmarks"
+                | "code_coverage"
+                | "code_diagnose_failure"
+        );
+        let _exec_guard = if !read_only || workspace_command {
+            Some(workspace_exec_lock(workspace_root).lock_owned().await)
+        } else {
+            None
+        };
         // Commands may write back files, so serialize them with other writers even while
         // readers proceed during the remote execution phase.
         let _writer = if read_only {
