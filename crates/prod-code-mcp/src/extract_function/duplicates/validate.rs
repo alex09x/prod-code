@@ -182,7 +182,7 @@ pub(crate) async fn process_and_validate_duplicates_with_ownership(
                 owners.len() == 1
                     && owners[0].identity == ownership.selected.identity
                     && owners[0].module.krate == ownership.selected.module.krate
-                    && ownership.selected.condition.implies(&owners[0].condition),
+                    && owners[0].condition.implies(&ownership.selected.condition),
                 "duplicate at {shown}:{line} has ambiguous Cargo or module ownership"
             );
         }

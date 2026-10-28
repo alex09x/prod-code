@@ -197,7 +197,7 @@ async fn explicit_library_target_outside_src_preserves_same_target_duplicates() 
 }
 
 #[tokio::test]
-async fn cfg_selected_duplicate_includes_unconditional_candidate() {
+async fn cfg_selected_duplicate_skips_unconditional_candidate() {
     let manifest = "[package]\nname = \"cfg-selected\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[features]\nselected = []\n";
     let workspace = Workspace::new(&[
         ("Cargo.toml", manifest),
@@ -208,13 +208,13 @@ async fn cfg_selected_duplicate_includes_unconditional_candidate() {
     let copies = cross_file_copies(&workspace, "src/selected.rs", SELECTED_SOURCE);
 
     assert!(
-        copies.contains(&workspace.path("src/common.rs")),
+        !copies.contains(&workspace.path("src/common.rs")),
         "{copies:?}"
     );
 }
 
 #[tokio::test]
-async fn unconditional_selected_duplicate_skips_cfg_candidate() {
+async fn unconditional_selected_duplicate_includes_cfg_candidate() {
     let manifest = "[package]\nname = \"cfg-candidate\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[features]\ncandidate = []\n";
     let workspace = Workspace::new(&[
         ("Cargo.toml", manifest),
@@ -225,7 +225,7 @@ async fn unconditional_selected_duplicate_skips_cfg_candidate() {
     let copies = cross_file_copies(&workspace, "src/selected.rs", SELECTED_SOURCE);
 
     assert!(
-        !copies.contains(&workspace.path("src/common.rs")),
+        copies.contains(&workspace.path("src/common.rs")),
         "{copies:?}"
     );
 }

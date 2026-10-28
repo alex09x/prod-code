@@ -173,7 +173,7 @@ pub(crate) fn collect_copies_with_ownership(
             };
             if owners.len() != 1
                 || owners[0].identity != selected.identity
-                || !selected.condition.implies(&owners[0].condition)
+                || !owners[0].condition.implies(&selected.condition)
             {
                 continue;
             }
