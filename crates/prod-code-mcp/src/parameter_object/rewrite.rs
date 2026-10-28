@@ -9,6 +9,7 @@
  */
 
 use super::binding::{argument_value, keyword_arg};
+use super::js_defaults::needs_own_undefined;
 use super::params::leading_ident;
 use super::syntax::{close_in, is_ident_byte, walk_code};
 use super::type_render::literal_text;
@@ -101,6 +102,11 @@ pub(crate) fn rewritten_call_with(
             let name = params[*p].name.clone();
             match bound.iter().position(|b| *b == Some(*p)) {
                 Some(a) => Some((a, (name, argument_value(&args[a], language).to_string()))),
+                // Without an own `undefined` property, destructuring can read the inherited
+                // Object.prototype value and skip the default initializer.
+                None if js && params[*p].default.is_some() && needs_own_undefined(&name) => {
+                    Some((usize::MAX, (name, "void 0".to_string())))
+                }
                 // A callee-side parameter default runs for a missing field as well as for one
                 // whose argument evaluated to undefined. Preserve the omitted field so the
                 // destructured parameter applies the original default in the callee's scope.

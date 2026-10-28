@@ -212,6 +212,19 @@ fn a_typescript_call_keeps_defaulted_fields_for_the_callee() {
 }
 
 #[test]
+fn a_defaulted_prototype_property_gets_own_undefined_when_omitted() {
+    let js = Language::JavaScript;
+    let (_, params) = parse_params("toString = \"fallback\"", js);
+    let args = strings(&[]);
+    let bound = bind_arguments(&args, &params, js).expect("a defaulted argument may be omitted");
+
+    assert_eq!(
+        rewritten_call(&args, &bound, &[0], &params, js, "Options", "options"),
+        "{ toString: void 0 }"
+    );
+}
+
+#[test]
 fn a_proto_field_is_an_own_property_in_the_literal_and_the_body() {
     assert_eq!(
         literal_text(

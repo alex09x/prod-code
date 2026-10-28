@@ -25,11 +25,54 @@ pub(super) fn preserve_callee_defaults(
 }
 
 pub(super) fn type_accepting_undefined(ty: &str) -> String {
-    if ty.split('|').any(|part| part.trim() == "undefined") {
-        ty.to_string()
+    if has_top_level_undefined(ty) {
+        return ty.to_string();
+    }
+    if ty.contains("=>") || ty.contains('?') {
+        format!("({ty}) | undefined")
     } else {
         format!("{ty} | undefined")
     }
+}
+
+pub(super) fn needs_own_undefined(name: &str) -> bool {
+    matches!(
+        name,
+        "__proto__"
+            | "constructor"
+            | "toString"
+            | "toLocaleString"
+            | "valueOf"
+            | "hasOwnProperty"
+            | "isPrototypeOf"
+            | "propertyIsEnumerable"
+            | "__defineGetter__"
+            | "__defineSetter__"
+            | "__lookupGetter__"
+            | "__lookupSetter__"
+    )
+}
+
+fn has_top_level_undefined(ty: &str) -> bool {
+    if ty.contains("=>") || ty.contains('?') {
+        return false;
+    }
+    let mut depth = 0usize;
+    let mut segment_start = 0;
+    for (offset, character) in ty.char_indices() {
+        match character {
+            '(' | '[' | '{' | '<' => depth += 1,
+            ')' | ']' | '}' | '>' => depth = depth.saturating_sub(1),
+            '|' if depth == 0 => {
+                if ty[segment_start..offset].trim() == "undefined" {
+                    return true;
+                }
+                segment_start = offset + character.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    ty[segment_start..].trim() == "undefined"
 }
 
 pub(super) fn ensure_contiguous_bundle(
@@ -212,7 +255,7 @@ fn continues_expression(source: &str, at: usize, end: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{after_directives, type_accepting_undefined};
+    use super::{after_directives, needs_own_undefined, type_accepting_undefined};
 
     #[test]
     fn binding_insertion_follows_directives_and_leading_comments() {
@@ -230,5 +273,25 @@ mod tests {
             type_accepting_undefined("string | undefined"),
             "string | undefined"
         );
+        assert_eq!(
+            type_accepting_undefined("() => string"),
+            "(() => string) | undefined"
+        );
+        assert_eq!(
+            type_accepting_undefined("(value: number) => string | undefined"),
+            "((value: number) => string | undefined) | undefined"
+        );
+        assert_eq!(
+            type_accepting_undefined("T extends U ? X : Y"),
+            "(T extends U ? X : Y) | undefined"
+        );
+    }
+
+    #[test]
+    fn prototype_property_defaults_need_an_own_undefined_value() {
+        for name in ["__proto__", "toString", "valueOf", "constructor"] {
+            assert!(needs_own_undefined(name), "{name}");
+        }
+        assert!(!needs_own_undefined("label"));
     }
 }

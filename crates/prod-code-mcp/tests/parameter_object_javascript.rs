@@ -787,7 +787,7 @@ function place(a, b, c) {
   return [a, b, c].join(\"\");
 }
 
-function tag(__proto__, toString, fill = 0) {
+function tag(__proto__, toString = \"fallback\", fill = 0) {
   const own = { __proto__ };
   return [Object.getPrototypeOf(own) === Object.prototype, own.__proto__, typeof toString, fill].join(\" \");
 }
@@ -799,9 +799,8 @@ console.log(seen.join(\",\"));
 
 /// What JavaScript does with the result, run with Node where the test runs: arguments that trade
 /// places only where one of them is a literal, a `__proto__` field that stays a field (a computed key in
-/// the literal and in the body's shorthand), a left-out `toString` that is `undefined` and not
-/// the one every object inherits, and `void 0` standing for a default. The rewritten script
-/// prints what the original printed.
+/// the literal and in the body's shorthand), and a missing `toString` default that must not read
+/// the inherited `Object.prototype.toString`. The rewritten script prints what the original did.
 #[tokio::test]
 async fn rewritten_javascript_prints_what_the_original_printed() {
     let ws = Workspace::new(&[FILES[0], FILES[1], ("src/run.js", RUN)]);
@@ -809,6 +808,9 @@ async fn rewritten_javascript_prints_what_the_original_printed() {
     let f = file.clone();
     let place = spot(RUN, "place(a", 0);
     let tag = spot(RUN, "tag(__proto__", 0);
+    let proto = spot(RUN, "__proto__, toString", 0);
+    let to_string = spot(RUN, "toString =", 0);
+    let fill = spot(RUN, "fill = 0", 0);
     let decl = |at: (u32, u32), skip: u32| (at.0, at.1 + skip);
     let remote = table_gateway(move |at| {
         let spots: Vec<(u32, u32)> = match at {
@@ -821,9 +823,9 @@ async fn rewritten_javascript_prints_what_the_original_printed() {
                 spot(RUN, "tag(\"q\"", 0),
                 spot(RUN, "tag(\"r\"", 0),
             ],
-            _ if at == decl(tag, 4) => vec![spot(RUN, "__proto__ }", 0)],
-            _ if at == decl(tag, 15) => vec![spot(RUN, "toString, fill]", 0)],
-            _ if at == decl(tag, 25) => vec![spot(RUN, "fill].", 0)],
+            _ if at == proto => vec![spot(RUN, "__proto__ }", 0)],
+            _ if at == to_string => vec![spot(RUN, "typeof toString", 7)],
+            _ if at == fill => vec![spot(RUN, "fill].", 0)],
             _ => return None,
         };
         Some(answers::locations(&f, &spots))
@@ -867,7 +869,7 @@ async fn rewritten_javascript_prints_what_the_original_printed() {
     .expect("a `__proto__` parameter is bundled");
     let tagged = rewritten(&tagged, "run.js");
     assert!(
-        tagged.contains("function tag({ __proto__, toString, fill = 0 }) {"),
+        tagged.contains("function tag({ __proto__, toString = \"fallback\", fill = 0 }) {"),
         "{tagged}"
     );
     assert!(
@@ -900,7 +902,7 @@ async fn rewritten_javascript_prints_what_the_original_printed() {
     };
     assert_eq!(
         before,
-        "1bc\ntrue p undefined 0 true q undefined 5 true r number 0\nb\n"
+        "1bc\ntrue p string 0 true q string 5 true r number 0\nb\n"
     );
     for text in [&placed, &tagged] {
         assert_eq!(
@@ -995,9 +997,38 @@ async fn typescript_defaults_stay_in_the_callee_for_explicit_and_runtime_undefin
         }
     })
     .await;
+    let root = ws.root();
+    let collision = prod_code_mcp::tools::execute_tool(
+        remote,
+        &root,
+        "code_introduce_parameter_object",
+        serde_json::json!({
+            "path": "src/defaults.ts",
+            "line": function.0,
+            "character": function.1,
+            "params": ["label", "suffix"],
+            "name": "LabelOptions",
+            "binding": "label",
+            "apply": true
+        }),
+    )
+    .await;
+    let collision = match collision {
+        Ok(result) => {
+            assert!(result.is_error, "{}", text_of(&result));
+            text_of(&result)
+        }
+        Err(error) => format!("{error:#}"),
+    };
+    assert!(
+        collision.contains("also a bundled parameter"),
+        "{collision}"
+    );
+    assert_eq!(ws.read("src/defaults.ts"), TYPESCRIPT_DEFAULTS);
+
     let result = prod_code_mcp::tools::execute_tool(
         remote,
-        &ws.root(),
+        &root,
         "code_introduce_parameter_object",
         serde_json::json!({
             "path": "src/defaults.ts",

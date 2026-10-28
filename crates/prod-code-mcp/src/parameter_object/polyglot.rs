@@ -101,6 +101,10 @@ pub(crate) async fn introduce_in(
     anyhow::ensure!(bundled.len() == params.len(), "a parameter was named twice");
     let preserve_defaults = preserve_callee_defaults(language, &declared, &bundled);
     if preserve_defaults {
+        anyhow::ensure!(
+            !bundled.iter().any(|index| declared[*index].name == binding),
+            "`{binding}` is also a bundled parameter of `{callee}`; preserving its default needs a distinct body binding"
+        );
         ensure_contiguous_bundle(&callee, &declared, &bundled)?;
     }
     for i in &bundled {
