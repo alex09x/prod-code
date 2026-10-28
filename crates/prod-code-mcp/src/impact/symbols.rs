@@ -8,6 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use super::incoming::unreadable;
@@ -111,11 +112,11 @@ pub(crate) fn is_callable_symbol(kind: u64, sym: &serde_json::Value, text: Optio
             return true;
         }
         if let Some(text) = text
-            && let Some((_, _, sl, _)) = symbol_range(sym)
-            && sl > 0
+            && let Some((start, end, _, _)) = symbol_range(sym)
+            && start > 0
         {
             let lines: Vec<&str> = text.lines().collect();
-            let idx = (sl - 1) as usize;
+            let idx = (start - 1) as usize;
             let decl = lines.get(idx).copied().unwrap_or("").trim();
             if decl.contains("match ")
                 || decl.starts_with("if let ")
@@ -123,7 +124,8 @@ pub(crate) fn is_callable_symbol(kind: u64, sym: &serde_json::Value, text: Optio
             {
                 return false;
             }
-            for line in lines.iter().skip(idx).take(3) {
+            let end = (end as usize).min(lines.len());
+            for line in lines.get(idx..end).unwrap_or_default() {
                 let trimmed = line.trim();
                 if trimmed.contains("function") || trimmed.contains("async (") {
                     return true;
@@ -150,13 +152,31 @@ pub(crate) fn collect_functions(
     out: &mut Vec<(String, u32, u32, u32, u32)>,
 ) -> std::result::Result<(), String> {
     let code = text.and_then(code_only);
-    collect_functions_inner(symbols, code.as_deref(), false, out)
+    let function_names: HashSet<String> = symbols
+        .iter()
+        .filter(|symbol| {
+            matches!(
+                symbol.get("kind").and_then(|kind| kind.as_u64()),
+                Some(6 | 9 | 12)
+            )
+        })
+        .filter_map(|symbol| symbol.get("name").and_then(|name| name.as_str()))
+        .map(str::to_string)
+        .collect();
+    collect_functions_inner(
+        symbols,
+        code.as_deref().or(text),
+        false,
+        &function_names,
+        out,
+    )
 }
 
 fn collect_functions_inner(
     symbols: &[serde_json::Value],
     text: Option<&str>,
     inside_callable: bool,
+    function_names: &HashSet<String>,
     out: &mut Vec<(String, u32, u32, u32, u32)>,
 ) -> std::result::Result<(), String> {
     for sym in symbols {
@@ -170,7 +190,12 @@ fn collect_functions_inner(
         if name.is_empty() || !(1..=26).contains(&kind) {
             return Err(malformed());
         }
-        let callable = if inside_callable {
+        let local_variable = kind == 13
+            && sym
+                .get("containerName")
+                .and_then(|container| container.as_str())
+                .is_some_and(|container| function_names.contains(container));
+        let callable = if inside_callable || local_variable {
             matches!(kind, 6 | 9 | 12)
         } else {
             is_callable_symbol(kind, sym, text)
@@ -182,7 +207,13 @@ fn collect_functions_inner(
         match sym.get("children") {
             None | Some(serde_json::Value::Null) => {}
             Some(serde_json::Value::Array(children)) => {
-                collect_functions_inner(children, text, inside_callable || callable, out)?;
+                collect_functions_inner(
+                    children,
+                    text,
+                    inside_callable || callable,
+                    function_names,
+                    out,
+                )?;
             }
             Some(_) => return Err(malformed()),
         }
