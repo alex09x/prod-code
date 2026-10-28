@@ -5555,6 +5555,78 @@ async fn code_grep_single_file_searches_locally_before_remote_exec() {
 }
 
 #[tokio::test]
+async fn code_grep_directory_searches_locally_before_remote_exec() {
+    let rg = std::process::Command::new("rg").arg("--version").output();
+    assert!(
+        rg.is_ok_and(|output| output.status.success()),
+        "ripgrep is available on the build node"
+    );
+    let ws = workspace();
+    write(
+        &ws,
+        "crates/prod-code-mcp/tests/validate_diff_proposal.rs",
+        "// proof verified clean\n// proof verified clean\n// proof verified clean\n",
+    );
+    commit(&ws);
+    let remote_output = std::process::Command::new("rg")
+        .args([
+            "--json",
+            "--fixed-strings",
+            "proof verified clean",
+            "crates/prod-code-mcp",
+        ])
+        .current_dir(ws.root())
+        .output()
+        .expect("the remote-search fixture output is generated");
+    assert!(remote_output.status.success());
+    let exec_started = Arc::new(tokio::sync::Notify::new());
+    let remote = mock_gateway(Script {
+        exec_stdout: remote_output.stdout,
+        exec_exit: Some(0),
+        exec_delay: std::time::Duration::from_secs(2),
+        exec_started: Arc::clone(&exec_started),
+        ..Script::default()
+    })
+    .await;
+
+    let started = std::time::Instant::now();
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_grep",
+        serde_json::json!({
+            "pattern": "proof verified clean",
+            "path": "crates/prod-code-mcp",
+            "fixed_strings": true
+        }),
+    )
+    .await
+    .expect("directory grep succeeds");
+    let elapsed = started.elapsed();
+    let text = text_of(&result);
+
+    assert!(!result.is_error, "{text}");
+    assert_eq!(
+        text.matches("validate_diff_proposal.rs:").count(),
+        3,
+        "{text}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(1),
+        "directory grep took {elapsed:?}"
+    );
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            exec_started.notified()
+        )
+        .await
+        .is_err(),
+        "a local directory search should not start a remote exec"
+    );
+}
+
+#[tokio::test]
 async fn code_grep_rejects_paths_outside_the_workspace() {
     let ws = workspace();
     commit(&ws);
