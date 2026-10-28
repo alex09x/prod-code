@@ -12,7 +12,7 @@ use super::serve::{configure_environment, serve_then_stop};
 use crate::ServerCli;
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
-use prod_code_protocol::tls::{ClientTlsConfig, pki};
+use prod_code_protocol::tls::pki;
 use prod_code_protocol::{AnyStream, AuthToken, ProdCodeCodec, WireMessage};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -145,18 +145,10 @@ async fn transport_security_production_wiring_uses_the_configured_client_and_gat
         // The production protocol connection reads the configured TLS policy, performs
         // the client handshake, and sends the auth token after TLS is established.
         proxy.clear();
-        let client_tls = ClientTlsConfig::from_env()
-            .unwrap()
-            .expect("the client TLS settings are configured")
-            .build()
+        prod_code_protocol::transport::clear_client_tls_cache();
+        let stream = prod_code_protocol::transport::connect_stream(proxy.listen_addr)
+            .await
             .unwrap();
-        let stream = prod_code_protocol::transport::connect_stream_with_client_config(
-            proxy.listen_addr,
-            Some(token),
-            Some(client_tls),
-        )
-        .await
-        .unwrap();
         let mut client = Framed::new(stream, ProdCodeCodec::new());
         client.send(WireMessage::StatusRequest).await.unwrap();
         assert!(matches!(
