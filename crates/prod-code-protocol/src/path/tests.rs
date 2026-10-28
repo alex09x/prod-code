@@ -311,3 +311,67 @@ fn inlay_label_locations_are_mapped_while_label_text_stays_verbatim() {
         "file:///Users/dev/app/src/lib.rs"
     );
 }
+
+/// #1523: a client on Windows names its workspace `C:\repo`, its files with either separator,
+/// and its URIs `file:///C:/repo/…` (VS Code writes `file:///c%3A/repo/…`). They map to the
+/// node's POSIX copy and back.
+#[test]
+fn a_windows_drive_root_maps_to_the_server_and_back() {
+    let t = PathTranslator::new(r"C:\repo", "/srv/ws/repo");
+    assert_eq!(
+        t.to_server_path(r"C:\repo\src\main.rs"),
+        "/srv/ws/repo/src/main.rs"
+    );
+    assert_eq!(
+        t.to_server_path("C:/repo/src/main.rs"),
+        "/srv/ws/repo/src/main.rs"
+    );
+    assert_eq!(
+        t.to_server_path(r"c:\Repo\src\main.rs"),
+        "/srv/ws/repo/src/main.rs"
+    );
+    assert_eq!(t.to_server_path(r"C:\repo"), "/srv/ws/repo");
+    assert_eq!(
+        t.to_client_path("/srv/ws/repo/src/main.rs"),
+        r"C:\repo\src\main.rs"
+    );
+
+    assert_eq!(
+        t.to_server_uri("file:///C:/repo/src/main.rs"),
+        "file:///srv/ws/repo/src/main.rs"
+    );
+    assert_eq!(
+        t.to_server_uri("file:///c%3A/repo/src/a%20b.rs#L3"),
+        "file:///srv/ws/repo/src/a%20b.rs#L3"
+    );
+    assert_eq!(
+        t.to_client_uri("file:///srv/ws/repo/src/a%20b.rs"),
+        "file:///C:/repo/src/a%20b.rs"
+    );
+    assert_eq!(t.to_client_uri("file:///srv/ws/repo/"), "file:///C:/repo/");
+
+    // A sibling sharing the prefix, another drive, and a file outside stay as they were.
+    assert_eq!(t.to_server_path(r"C:\repo2\x.rs"), r"C:\repo2\x.rs");
+    assert_eq!(t.to_server_path(r"D:\repo\x.rs"), r"D:\repo\x.rs");
+    assert_eq!(
+        t.to_server_uri("file:///C:/other/x.rs"),
+        "file:///C:/other/x.rs"
+    );
+    assert_eq!(
+        t.to_client_uri("file:///home/u/.cargo/registry/x.rs"),
+        "file:///home/u/.cargo/registry/x.rs"
+    );
+
+    // Inside an LSP message, as the session translates them.
+    let to_server = t.translate_lsp_to_server(
+        r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///c%3A/repo/src/lib.rs","text":"C:\\repo stays"}}}"#,
+    );
+    assert!(
+        to_server.contains(r#""uri":"file:///srv/ws/repo/src/lib.rs""#),
+        "{to_server}"
+    );
+    assert!(
+        to_server.contains(r#""text":"C:\\repo stays""#),
+        "{to_server}"
+    );
+}

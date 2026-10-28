@@ -10,6 +10,7 @@
 
 use super::uri::{file_uri, map_lsp_locations};
 use serde_json::Value;
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use url::Url;
 
@@ -20,10 +21,22 @@ struct Root {
     path: String,
     /// The encoded `file://` URI of `path`, without a trailing `/`.
     uri: String,
+    /// A Windows root with a drive letter (`C:\repo`): `path` has `\` separators and is
+    /// compared without regard to case (#1523).
+    windows: bool,
 }
 
 impl Root {
     fn new(root: &str) -> Self {
+        if super::windows::is_drive_absolute(root) {
+            let path = super::windows::normalize_root(root);
+            let uri = super::windows::uri_of(&path);
+            return Self {
+                path,
+                uri,
+                windows: true,
+            };
+        }
         let trimmed = root.trim_end_matches('/');
         let path = if trimmed.is_empty() && root.starts_with('/') {
             "/".to_string()
@@ -36,25 +49,33 @@ impl Root {
         } else {
             encoded.trim_end_matches('/').to_string()
         };
-        Self { path, uri }
+        Self {
+            path,
+            uri,
+            windows: false,
+        }
     }
 
     /// A relative or empty root names nothing, and must not match every absolute path.
     fn usable(&self) -> bool {
-        self.path.starts_with('/')
+        self.windows || self.path.starts_with('/')
     }
 
     /// The part of `value` after this root, empty or starting with `/`, when the root ends at
-    /// a whole path component (`/w/app` is not a prefix of `/w/app2`).
-    fn rest_of_path<'a>(&self, value: &'a str) -> Option<&'a str> {
+    /// a whole path component (`/w/app` is not a prefix of `/w/app2`). Under a Windows root,
+    /// either separator is accepted and the rest is given with `/`.
+    fn rest_of_path<'a>(&self, value: &'a str) -> Option<Cow<'a, str>> {
         if !self.usable() {
             return None;
         }
+        if self.windows {
+            return super::windows::rest_under(&self.path, value).map(Cow::Owned);
+        }
         if self.path == "/" {
-            return value.starts_with('/').then_some(value);
+            return value.starts_with('/').then_some(Cow::Borrowed(value));
         }
         let rest = value.strip_prefix(self.path.as_str())?;
-        (rest.is_empty() || rest.starts_with('/')).then_some(rest)
+        (rest.is_empty() || rest.starts_with('/')).then_some(Cow::Borrowed(rest))
     }
 
     /// The part of the URI `value` after this root's URI, at a whole path component.
@@ -73,6 +94,9 @@ impl Root {
 
     /// This root followed by `rest` (empty or starting with `/`).
     fn join_path(&self, rest: &str) -> String {
+        if self.windows {
+            return super::windows::join(&self.path, rest);
+        }
         match (self.path.as_str(), rest) {
             ("/", "") => "/".to_string(),
             ("/", rest) => rest.to_string(),
@@ -86,7 +110,46 @@ fn map_path(value: &str, from: &Root, to: &Root) -> Option<String> {
     if !to.usable() {
         return None;
     }
-    Some(to.join_path(from.rest_of_path(value)?))
+    Some(to.join_path(&from.rest_of_path(value)?))
+}
+
+/// [`map_uri`] when either root is a Windows one: the URI is decoded to the path it names,
+/// that path is moved, and the result is encoded as the other side writes it, keeping a
+/// trailing `/`, the query and the fragment.
+fn map_windows_uri(value: &str, from: &Root, to: &Root) -> Option<String> {
+    let (path, query, fragment) = if from.windows {
+        super::windows::path_of(value)?
+    } else {
+        let url = Url::parse(value).ok()?;
+        if url.scheme() != "file" {
+            return None;
+        }
+        let path = url.to_file_path().ok()?.to_string_lossy().into_owned();
+        (
+            path,
+            url.query().map(str::to_string),
+            url.fragment().map(str::to_string),
+        )
+    };
+    let target = to.join_path(&from.rest_of_path(&path)?);
+    let mut uri = if to.windows {
+        super::windows::uri_of(&target)
+    } else {
+        file_uri(Path::new(&target))
+    };
+    let without_extras = value.split(['?', '#']).next().unwrap_or(value);
+    if without_extras.ends_with('/') && !uri.ends_with('/') {
+        uri.push('/');
+    }
+    if let Some(query) = query {
+        uri.push('?');
+        uri.push_str(&query);
+    }
+    if let Some(fragment) = fragment {
+        uri.push('#');
+        uri.push_str(&fragment);
+    }
+    Some(uri)
 }
 
 /// The `file:` URI `value` moved from under `from` to under `to`. Another scheme, or a file
@@ -94,6 +157,9 @@ fn map_path(value: &str, from: &Root, to: &Root) -> Option<String> {
 fn map_uri(value: &str, from: &Root, to: &Root) -> Option<String> {
     if !value.starts_with("file:") || !from.usable() || !to.usable() {
         return None;
+    }
+    if from.windows || to.windows {
+        return map_windows_uri(value, from, to);
     }
     // The usual case keeps the rest exactly as the peer encoded it.
     if let Some(rest) = from.rest_of_uri(value) {
