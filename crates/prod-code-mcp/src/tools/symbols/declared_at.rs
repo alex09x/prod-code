@@ -153,7 +153,9 @@ pub(crate) fn scan_timeout_fallback_declarations(
         if !text.contains(name) {
             continue;
         }
-        for (index, line) in text.lines().enumerate() {
+        use crate::tools::references::across::{mask_executable_code, masked_code_string};
+        let code = masked_code_string(&text, &mask_executable_code(&text, &path));
+        for (index, (line, original)) in code.lines().zip(text.lines()).enumerate() {
             if !line.contains(name) {
                 continue;
             }
@@ -164,13 +166,20 @@ pub(crate) fn scan_timeout_fallback_declarations(
                             .to_ascii_lowercase()
                             .starts_with(&name.to_ascii_lowercase()))
                 {
+                    let byte = line
+                        .char_indices()
+                        .nth(col)
+                        .map_or(line.len(), |(at, _)| at);
+                    let Some(prefix) = original.get(..byte) else {
+                        continue;
+                    };
                     hits.push(SymbolHit {
                         path: path.clone(),
                         name: ident,
                         kind: "Declaration",
                         container: None,
                         line: index as u32 + 1,
-                        col: col as u32 + 1,
+                        col: prefix.chars().count() as u32 + 1,
                     });
                     if hits.len() >= max_hits {
                         return hits;
@@ -224,5 +233,23 @@ mod tests {
         let hits = scan_timeout_fallback_declarations(root, "reserve_", None, 10);
         let names: Vec<&str> = hits.iter().map(|h| h.name.as_str()).collect();
         assert_eq!(names, vec!["reserve_for_worktree", "reserve_memory"]);
+    }
+
+    #[test]
+    fn timeout_fallback_ignores_comments_and_string_literals() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"demo\"\n").unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "// fn compile_check_comment() {}\nconst FIXTURE: &str = r#\"\npub mod compile_check_string;\n\"#;\n/* 💡 */ pub mod compile_check_real;\n",
+        )
+        .unwrap();
+
+        let hits = scan_timeout_fallback_declarations(root, "compile_check", None, 10);
+        let names: Vec<&str> = hits.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(names, vec!["compile_check_real"]);
+        assert_eq!((hits[0].line, hits[0].col), (5, 17));
     }
 }
