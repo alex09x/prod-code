@@ -10,6 +10,7 @@
 
 use std::{collections::BTreeSet, net::SocketAddr, path::Path, time::Duration};
 
+use super::hazards::swapped_and_removed_parameters;
 use crate::signature::types::CallSite;
 
 const MAX_STRINGIFY_HOVER_QUERIES: usize = 16;
@@ -23,19 +24,12 @@ pub async fn mark_builtin_stringify_args(
     declared_len: usize,
     has_receiver: bool,
 ) {
-    let mut changed = BTreeSet::new();
-    for (new_position, old_position) in plan.iter().enumerate() {
-        if let Some(old_position) = old_position
-            && *old_position != new_position
-        {
-            changed.insert(*old_position);
-        }
-    }
-    for original in 0..declared_len {
-        if !plan.contains(&Some(original)) {
-            changed.insert(original);
-        }
-    }
+    let (swapped, removed) = swapped_and_removed_parameters(plan, declared_len);
+    let changed: BTreeSet<usize> = swapped
+        .into_iter()
+        .flat_map(|(earlier, later)| [earlier, later])
+        .chain(removed)
+        .collect();
     if changed.is_empty() {
         return;
     }
@@ -46,39 +40,47 @@ pub async fn mark_builtin_stringify_args(
             continue;
         }
         let receiver_offset = usize::from(has_receiver && call.args.len() == declared_len + 1);
-        let Some(site) = call.stringify_calls.iter().find(|site| {
-            site.argument >= receiver_offset && changed.contains(&(site.argument - receiver_offset))
-        }) else {
+        let candidates: Vec<_> = call
+            .stringify_calls
+            .iter()
+            .copied()
+            .filter(|site| {
+                site.argument >= receiver_offset
+                    && changed.contains(&(site.argument - receiver_offset))
+            })
+            .collect();
+        if candidates.is_empty() {
             continue;
-        };
-        if queries >= MAX_STRINGIFY_HOVER_QUERIES {
-            return;
         }
-        queries += 1;
         let Ok(uri) = url::Url::from_file_path(&call.file) else {
             continue;
         };
-        let params = serde_json::json!({
-            "textDocument": { "uri": uri.as_str() },
-            "position": {
-                "line": site.line.saturating_sub(1),
-                "character": site.column.saturating_sub(1)
+        for site in candidates {
+            if queries >= MAX_STRINGIFY_HOVER_QUERIES {
+                return;
             }
-        });
-        let hover = tokio::time::timeout(
-            Duration::from_millis(750),
-            crate::tools::execute_lsp_query(remote, root, &call.file, "textDocument/hover", params),
-        )
-        .await;
-        let is_builtin = matches!(hover, Ok(Ok(ref value)) if builtin_stringify_hover(value));
-        if is_builtin {
-            call.builtin_stringify_args.extend(
-                call.stringify_calls
-                    .iter()
-                    .filter(|site| site.argument >= receiver_offset)
-                    .filter(|site| changed.contains(&(site.argument - receiver_offset)))
-                    .map(|site| site.argument),
-            );
+            queries += 1;
+            let params = serde_json::json!({
+                "textDocument": { "uri": uri.as_str() },
+                "position": {
+                    "line": site.line.saturating_sub(1),
+                    "character": site.column.saturating_sub(1)
+                }
+            });
+            let hover = tokio::time::timeout(
+                Duration::from_millis(750),
+                crate::tools::execute_lsp_query(
+                    remote,
+                    root,
+                    &call.file,
+                    "textDocument/hover",
+                    params,
+                ),
+            )
+            .await;
+            if matches!(hover, Ok(Ok(ref value)) if builtin_stringify_hover(value)) {
+                call.builtin_stringify_args.insert(site.argument);
+            }
         }
     }
 }

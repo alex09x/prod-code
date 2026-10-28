@@ -236,16 +236,10 @@ pub async fn param_facts(
 /// `facts` is what the analyzer confirmed about each parameter's type; what it did not confirm
 /// counts as able to run code. The receiver is evaluated first before and after, so it is not an
 /// argument here; a call written `Type::f(recv, …)` passes it first and it is skipped.
-pub fn effect_hazards(
-    name: &str,
-    declared: &[Declared],
-    facts: &[ParamFacts],
-    has_receiver: bool,
+pub(crate) fn swapped_and_removed_parameters(
     args: &[Option<usize>],
-    calls: &[CallSite],
-) -> Vec<String> {
-    let unknown = ParamFacts::default();
-    let fact = |i: usize| facts.get(i).unwrap_or(&unknown);
+    declared_len: usize,
+) -> (Vec<(usize, usize)>, Vec<usize>) {
     let kept: Vec<usize> = args.iter().flatten().copied().collect();
     // (i, j), declared i before j, that the new order passes j before i.
     let mut swapped = Vec::new();
@@ -256,7 +250,21 @@ pub fn effect_hazards(
             }
         }
     }
-    let removed: Vec<usize> = (0..declared.len()).filter(|i| !kept.contains(i)).collect();
+    let removed = (0..declared_len).filter(|i| !kept.contains(i)).collect();
+    (swapped, removed)
+}
+
+pub fn effect_hazards(
+    name: &str,
+    declared: &[Declared],
+    facts: &[ParamFacts],
+    has_receiver: bool,
+    args: &[Option<usize>],
+    calls: &[CallSite],
+) -> Vec<String> {
+    let unknown = ParamFacts::default();
+    let fact = |i: usize| facts.get(i).unwrap_or(&unknown);
+    let (swapped, removed) = swapped_and_removed_parameters(args, declared.len());
     let mut out = Vec::new();
     for &(i, j) in &swapped {
         let (a, b) = (&declared[i], &declared[j]);

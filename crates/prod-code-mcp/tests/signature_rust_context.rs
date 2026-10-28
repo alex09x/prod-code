@@ -92,17 +92,37 @@ async fn apply(
 ) -> anyhow::Result<prod_code_mcp::protocol::McpToolCallResult> {
     let file = ws.path("src/main.rs");
     let (line, col) = position(source, call);
+    let builtin_hover = source.find("core::stringify!").map(|_| {
+        let (line, column) = position(source, "core::stringify!");
+        (line, column + "core::".encode_utf16().count() as u32)
+    });
     let answer_file = file.clone();
     let remote = match std::env::var("PROD_CODE_ISSUE1504_GATEWAY") {
         Ok(address) => address.parse().expect("the live gateway address is valid"),
-        Err(_) => ScriptedGateway::start(move |method, _| match method {
+        Err(_) => ScriptedGateway::start(move |method, params| match method {
             "prodCode/structuralReplace" => answers::whole_file(&answer_file, source, &rewritten),
             "textDocument/references" => answers::locations(&answer_file, &[(line + 1, col + 1)]),
             "textDocument/hover" => {
-                let description = if source.contains("macro_rules! stringify") {
-                    "```rust\nfixture::stringify\n```\n```rust\nmacro_rules! stringify\n```"
+                let hover_position = (
+                    params
+                        .pointer("/position/line")
+                        .and_then(|value| value.as_u64()),
+                    params
+                        .pointer("/position/character")
+                        .and_then(|value| value.as_u64()),
+                );
+                let is_builtin = if source.contains("macro_rules! stringify") {
+                    builtin_hover.is_some_and(|(hover_line, hover_column)| {
+                        hover_position
+                            == (Some(u64::from(hover_line)), Some(u64::from(hover_column)))
+                    })
                 } else {
+                    true
+                };
+                let description = if is_builtin {
                     "```rust\ncore::macros::builtin\n```\n```rust\nmacro_rules! stringify\n```"
+                } else {
+                    "```rust\nfixture::stringify\n```\n```rust\nmacro_rules! stringify\n```"
                 };
                 serde_json::json!({
                     "contents": { "kind": "markdown", "value": description }
@@ -266,6 +286,37 @@ fn main() { println!("{}", stringify!(tokens)); }
     assert!(applied_source.contains("join(stringify!(&&), stringify!(& &))"));
     assert_eq!(native_output(&ws), before);
 
+    const MIXED: &str = "macro_rules! stringify { ($($tokens:tt)*) => {{ print!(\"macro\"); \"custom\" }}; }\nfn side() -> &'static str { print!(\"side\"); \"middle\" }\nfn join(a: &str, b: &str, c: &str) -> String { format!(\"{a}|{b}|{c}\") }\nfn main() { println!(\"{}\", join(core::stringify!(& &), side(), stringify!(&&))); }\n";
+    let mixed = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname='demo'\nversion='0.1.0'\nedition='2024'\n",
+        ),
+        ("src/main.rs", MIXED),
+    ]);
+    mixed.commit();
+    let mixed_before = native_output(&mixed);
+    assert!(mixed_before.starts_with("sidemacro"), "{mixed_before}");
+    let mixed_rewrite = MIXED.replace(
+        "join(core::stringify!(& &), side(), stringify!(&&))",
+        "join(stringify!(&&), side(), core::stringify!(& &))",
+    );
+    let result = apply(
+        &mixed,
+        MIXED,
+        mixed_rewrite,
+        "join(a",
+        "join(core::stringify",
+        serde_json::json!(["c", "b", "a"]),
+        None,
+        false,
+    )
+    .await;
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("evaluated in the opposite order"), "{error}");
+    assert_eq!(mixed.read("src/main.rs"), MIXED);
+    assert_eq!(native_output(&mixed), mixed_before);
+
     const SHADOWED: &str = "macro_rules! stringify { ($($tokens:tt)*) => {{ print!(\"side\"); \"value\" }}; }\nfn join(a: &str, b: &str) -> String { format!(\"{a}|{b}\") }\nfn main() { println!(\"{}\", join(stringify!(& &), stringify!(&&))); }\n";
     let shadowed = Workspace::new(&[
         (
@@ -295,4 +346,46 @@ fn main() { println!("{}", stringify!(tokens)); }
     assert!(error.contains("evaluated in the opposite order"), "{error}");
     assert_eq!(shadowed.read("src/main.rs"), SHADOWED);
     assert_eq!(native_output(&shadowed), shadowed_before);
+}
+
+#[tokio::test]
+async fn builtin_stringify_middle_parameter_is_checked_when_swaps_keep_its_index() {
+    const SOURCE: &str = "fn join(a: &str, b: &str, c: &str) -> String { format!(\"{a}|{b}|{c}\") }\nfn main() { let x: &str = \"x\"; let y: &str = \"y\"; println!(\"{}\", join(x, core::stringify!(& &), y)); }\n";
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname='demo'\nversion='0.1.0'\nedition='2024'\n",
+        ),
+        ("src/main.rs", SOURCE),
+    ]);
+    ws.commit();
+    let before = native_output(&ws);
+    assert_eq!(before, "x|& &|y\n");
+    let rewritten = SOURCE
+        .replace(
+            "fn join(a: &str, b: &str, c: &str)",
+            "fn join(c: &str, b: &str, a: &str)",
+        )
+        .replace(
+            "join(x, core::stringify!(& &), y)",
+            "join(y, core::stringify!(& &), x)",
+        );
+    let result = apply(
+        &ws,
+        SOURCE,
+        rewritten,
+        "join(a",
+        "join(x, core::stringify",
+        serde_json::json!(["c", "b", "a"]),
+        None,
+        false,
+    )
+    .await;
+    let applied =
+        result.expect("the builtin middle argument is effect-free despite staying at index 1");
+    assert!(!applied.is_error, "{:?}", applied.content);
+    let applied_source = ws.read("src/main.rs");
+    assert!(applied_source.contains("fn join(c: &str, b: &str, a: &str)"));
+    assert!(applied_source.contains("join(y, core::stringify!(& &), x)"));
+    assert_eq!(native_output(&ws), before);
 }
