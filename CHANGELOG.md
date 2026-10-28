@@ -7,6 +7,7 @@
 
 ### Fixed
 - **Impact Analysis Ignores Callable-Looking Text Inside Rust Literals** (`crates/prod-code-mcp`, #1730): Rust impact analysis now checks only code tokens when recognizing callable variable declarations, so function-looking text inside strings and comments no longer creates incomplete caller/test gaps.
+- **Impact Signature Warnings Exclude Import References** (`crates/prod-code-mcp`, #1733): `code_impact` now checks call hierarchy ranges against source syntax so imports and function values are not reported as unadjusted call sites, while actual single-line and multiline calls remain covered.
 - **Rust Child-Module Moves Preserve Only Needed Parent Scope** (`crates/prod-code-mcp`, #1255): Moving a Rust item into a child module now carries `use super::*` only when the item depends on a parent declaration, test-crate scope, or a glob/macro import that cannot be narrowed. Unrelated child moves keep their existing imports and output.
 - **Duplicate Extraction Respects Cargo Target and Module Ownership** (`crates/prod-code-mcp`, #1440): Cross-file duplicate discovery and validation now use Cargo target roots and Rust module ownership, including explicit target paths and conditional modules. Ambiguous ownership is refused, and generated calls are qualified from the selected module.
 - **Nested Callable Returns Keep Their Own Scope** (`crates/prod-code-mcp`, #1514): `code_wrap_return` honors explicit path and line selections for nested Rust functions, and callable-scope checks preserve nested returns across multiline headers.
