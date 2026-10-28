@@ -22,6 +22,9 @@ mod visibility_scope;
 
 pub use visibility_scope::visibility;
 use visibility_scope::widest_visibility;
+pub(super) use visibility_scope::{
+    add_import_at_inline_scope, inline_scope_at, relative_import_path,
+};
 
 /// An item's text split into its leading lines of comments, docs and attributes, and the
 /// declaration that follows them.

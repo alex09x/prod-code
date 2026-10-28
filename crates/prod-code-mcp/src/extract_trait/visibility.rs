@@ -101,10 +101,17 @@ fn common_prefix_scope(a: &[String], b: &[String]) -> Scope {
     }
 }
 
-fn enclosing_inline_modules(text: &str, impl_at: usize) -> Vec<String> {
+#[derive(Clone)]
+struct InlineModuleScope {
+    open: usize,
+    close: usize,
+    name: String,
+}
+
+fn inline_module_scopes(text: &str) -> Vec<InlineModuleScope> {
     let code = lexical_code(text);
     let mut mods = Vec::new();
-    for (i, _) in text.match_indices("mod").take_while(|(i, _)| *i < impl_at) {
+    for (i, _) in text.match_indices("mod") {
         if !code[i..i + 3].iter().all(|is_code| *is_code)
             || text[..i].chars().next_back().is_some_and(is_ident)
             || text[i + 3..].chars().next().is_some_and(is_ident)
@@ -131,15 +138,70 @@ fn enclosing_inline_modules(text: &str, impl_at: usize) -> Vec<String> {
         if text.as_bytes().get(open) != Some(&b'{') {
             continue;
         }
-        if let Some(close) = matching_close_brace(text, open)
-            && open < impl_at
-            && impl_at < close
-        {
-            mods.push((open, name));
+        if let Some(close) = matching_close_brace(text, open) {
+            mods.push(InlineModuleScope { open, close, name });
         }
     }
-    mods.sort_by_key(|(open, _)| *open);
-    mods.into_iter().map(|(_, name)| name).collect()
+    mods.sort_by_key(|module| module.open);
+    mods
+}
+
+pub fn inline_scope_at(text: &str, at: usize) -> (Vec<String>, usize) {
+    let modules: Vec<_> = inline_module_scopes(text)
+        .into_iter()
+        .filter(|module| module.open < at && at < module.close)
+        .collect();
+    let insertion = modules.last().map_or(0, |module| module.open);
+    (
+        modules.into_iter().map(|module| module.name).collect(),
+        insertion,
+    )
+}
+
+pub fn relative_import_path(
+    caller_modules: &[String],
+    trait_modules: &[String],
+    trait_name: &str,
+) -> Option<String> {
+    let common = caller_modules
+        .iter()
+        .zip(trait_modules)
+        .take_while(|(caller, target)| caller == target)
+        .count();
+    if common == caller_modules.len() && common == trait_modules.len() {
+        return None;
+    }
+    let mut path = vec!["super".to_string(); caller_modules.len() - common];
+    path.extend(trait_modules[common..].iter().cloned());
+    path.push(trait_name.to_string());
+    Some(path.join("::"))
+}
+
+pub fn add_import_at_inline_scope(text: &str, scope_open: usize, use_line: &str) -> String {
+    if scope_open == 0 {
+        return crate::move_item::add_import(text, use_line);
+    }
+    let Some(close) = matching_close_brace(text, scope_open) else {
+        return text.to_string();
+    };
+    let body = &text[scope_open + 1..close];
+    if body.contains(use_line) {
+        return text.to_string();
+    }
+    let indent = body
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map_or("    ", |line| &line[..line.len() - line.trim_start().len()]);
+    let updated = crate::move_item::add_import(body, &format!("{indent}{use_line}"));
+    let mut out = String::with_capacity(text.len() + updated.len() - body.len());
+    out.push_str(&text[..scope_open + 1]);
+    out.push_str(&updated);
+    out.push_str(&text[close..]);
+    out
+}
+
+fn enclosing_inline_modules(text: &str, impl_at: usize) -> Vec<String> {
+    inline_scope_at(text, impl_at).0
 }
 
 fn combine_scopes(a: Scope, b: Scope, inline_mods: &[String]) -> Scope {

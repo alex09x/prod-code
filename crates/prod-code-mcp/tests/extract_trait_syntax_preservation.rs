@@ -8,6 +8,8 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+#[path = "extract_trait_syntax_preservation/caller_scopes.rs"]
+mod caller_scopes;
 #[path = "extract_trait_syntax_preservation/conditional_cases.rs"]
 mod conditional_cases;
 #[path = "extract_trait_syntax_preservation/control_cases.rs"]
@@ -29,6 +31,11 @@ pub use prod_code_mcp::extract_trait::{items, rewrite};
 async fn recovered_parser_regressions() {
     execution_manifest::capture();
     recovered_cases::recovered_parser_regressions().await;
+}
+
+#[tokio::test]
+async fn trait_extraction_preserves_inline_and_non_library_caller_scopes() {
+    caller_scopes::same_file_inline_module_and_example_targets_get_their_trait_imports().await;
 }
 
 #[path = "../src/extract_trait/tests.rs"]
