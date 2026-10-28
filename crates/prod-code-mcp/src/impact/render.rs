@@ -58,7 +58,61 @@ impl ImpactReport {
     /// it cannot or the language cannot select tests, nothing when no test can be affected
     /// (#201, #434).
     pub fn ci_decision(&self) -> CiDecision {
-        let (run, why) = match (self.full_suite_reason(), &self.test_command) {
+        let reason = self.full_suite_reason();
+        if let Some(plan) = &self.test_plan {
+            if let Some(reason) = reason {
+                if !plan.unsupported_whole.is_empty() {
+                    return CiDecision {
+                        run: CiRun::Unsupported,
+                        why: format!(
+                            "{reason}; no whole-suite command for {}",
+                            plan.unsupported_whole.join(", ")
+                        ),
+                    };
+                }
+                if plan.whole_is_root_only && plan.whole.is_some() {
+                    return CiDecision {
+                        run: CiRun::WholeSuite,
+                        why: format!("the whole suite, because {reason}"),
+                    };
+                }
+                return match &plan.whole {
+                    Some(command) => CiDecision {
+                        run: CiRun::PlannedSuite(command.clone()),
+                        why: format!("whole suites for known affected projects, because {reason}"),
+                    },
+                    None => CiDecision {
+                        run: CiRun::Unsupported,
+                        why: format!("{reason}; no affected project suite could be planned"),
+                    },
+                };
+            }
+            if !plan.unsupported_selected.is_empty() {
+                return CiDecision {
+                    run: CiRun::Unsupported,
+                    why: format!(
+                        "no test command for {}",
+                        plan.unsupported_selected.join(", ")
+                    ),
+                };
+            }
+            if let Some(command) = &plan.selected {
+                let why = if plan.selection_fallbacks.is_empty() {
+                    format!("{} test(s) that reach the change", self.tests.len())
+                } else {
+                    format!(
+                        "{} affected test(s); whole suites for {}",
+                        self.tests.len(),
+                        plan.selection_fallbacks.join(", ")
+                    )
+                };
+                return CiDecision {
+                    run: CiRun::Selected(command.clone()),
+                    why,
+                };
+            }
+        }
+        let (run, why) = match (reason, &self.test_command) {
             (Some(reason), _) => (
                 CiRun::WholeSuite,
                 format!("the whole suite, because {reason}"),
@@ -268,10 +322,23 @@ impl ImpactReport {
         }
         // An untrusted selection is not offered as the command: the tests it found are listed
         // above, and what `--run` runs is the whole suite (#1471).
-        match (self.full_suite_reason(), &self.test_command) {
-            (Some(reason), _) => out.push_str(&format!("run: the whole suite ({reason})\n")),
-            (None, Some(cmd)) => out.push_str(&format!("run: {}\n", shell_words(cmd))),
-            (None, None) => {}
+        let decision = self.ci_decision();
+        match decision.run {
+            CiRun::WholeSuite => {
+                if let Some(reason) = self.full_suite_reason() {
+                    out.push_str(&format!("run: the whole suite ({reason})\n"));
+                } else {
+                    out.push_str(&format!("run: {}\n", decision.why));
+                }
+            }
+            CiRun::PlannedSuite(cmd) | CiRun::Selected(cmd) => {
+                out.push_str(&format!("run: {} ({})\n", shell_words(&cmd), decision.why));
+            }
+            CiRun::Unsupported => out.push_str(&format!(
+                "run: cannot plan complete coverage ({})\n",
+                decision.why
+            )),
+            CiRun::Nothing => {}
         }
         out
     }

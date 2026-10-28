@@ -113,6 +113,7 @@ fn test_signature_warning_rendering() {
         index: None,
         reaches: vec![],
         incomplete: vec![],
+        test_plan: None,
         signature_warnings: vec![SignatureWarning {
             symbol: Symbol {
                 name: "process_order".to_string(),

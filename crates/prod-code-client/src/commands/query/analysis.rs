@@ -14,6 +14,44 @@ use std::env;
 use std::net::SocketAddr;
 use std::path::Path;
 
+#[cfg(test)]
+#[path = "impact_plan_tests.rs"]
+mod impact_plan_tests;
+
+fn impact_run_plan(
+    root: &Path,
+    report: &prod_code_mcp::impact::ImpactReport,
+) -> Result<(Option<Vec<String>>, String)> {
+    let decision = report.ci_decision();
+    let command = match decision.run {
+        prod_code_mcp::impact::CiRun::WholeSuite => Some(
+            prod_code_mcp::verify::plan_command_with(
+                &prod_code_mcp::verify::detect_tools(root),
+                &report.language,
+                prod_code_mcp::verify::VerifyKind::Test,
+                None,
+            )
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "impact has to run {}, but there is no test command for {}: {e:#}",
+                    decision.why,
+                    report.language
+                )
+            })?,
+        ),
+        prod_code_mcp::impact::CiRun::Selected(selected) => Some(selected),
+        prod_code_mcp::impact::CiRun::PlannedSuite(command) => Some(command),
+        prod_code_mcp::impact::CiRun::Unsupported => {
+            anyhow::bail!(
+                "impact cannot plan complete test coverage: {}",
+                decision.why
+            )
+        }
+        prod_code_mcp::impact::CiRun::Nothing => None,
+    };
+    Ok((command, decision.why))
+}
+
 pub async fn run_impact(
     remote: SocketAddr,
     base: Option<&str>,
@@ -39,27 +77,7 @@ pub async fn run_impact(
     // `--run` and `--ci` run the same thing: the selection only when it can be trusted, the
     // whole suite otherwise (#1471).
     let (command, why) = if ci || run {
-        let decision = report.ci_decision();
-        let command = match decision.run {
-            prod_code_mcp::impact::CiRun::WholeSuite => Some(
-                prod_code_mcp::verify::plan_command_with(
-                    &prod_code_mcp::verify::detect_tools(&root),
-                    &report.language,
-                    prod_code_mcp::verify::VerifyKind::Test,
-                    None,
-                )
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "impact has to run {}, but there is no test command for {}: {e:#}",
-                        decision.why,
-                        report.language
-                    )
-                })?,
-            ),
-            prod_code_mcp::impact::CiRun::Selected(selected) => Some(selected),
-            prod_code_mcp::impact::CiRun::Nothing => None,
-        };
-        (command, decision.why)
+        impact_run_plan(&root, &report)?
     } else {
         (None, String::new())
     };

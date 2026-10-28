@@ -11,5 +11,7 @@
 #[cfg(unix)]
 mod ctest_filter;
 mod hunks_and_symbols;
+mod mixed_projects;
+mod nested_projects;
 mod selection;
 mod signatures_and_filters;

@@ -20,7 +20,7 @@ use super::incoming::{Incoming, incoming_calls, note, test_name, unreadable};
 use super::pool::SessionPool;
 use super::signatures::check_adjusted_signature;
 use super::symbols::{collect_functions, is_source_file};
-use super::test_cmd::{file_language, test_command_for_tests};
+use super::test_cmd::file_language;
 use super::types::{COLD_RETRIES, COLD_WAIT, Gap, ImpactReport, IndexBuild, Reach, Symbol};
 
 async fn swift_index_build(remote: SocketAddr, root: &Path) -> Option<IndexBuild> {
@@ -377,7 +377,9 @@ pub async fn analyze(
 
     session_pool.close_all().await;
     let tests: Vec<Symbol> = tests.into_iter().collect();
-    let test_command = test_command_for_tests(root, &language, &tools, &tests);
+    let test_plan =
+        super::test_plan::build_test_plan(root, &language, &tools, &tests, &changed_files);
+    let test_command = test_plan.selected.clone();
     Ok(ImpactReport {
         language,
         base: base.unwrap_or("HEAD").to_string(),
@@ -386,6 +388,7 @@ pub async fn analyze(
         callers: callers.into_iter().collect(),
         tests,
         test_command,
+        test_plan: Some(test_plan),
         unattributed_files: unattributed,
         index,
         reaches,
