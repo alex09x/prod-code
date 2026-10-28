@@ -70,7 +70,7 @@ fn errors_on_lines_using_a_removed_symbol_get_a_note() {
     assert!(
         reports[0]
             .render()
-            .contains("note: this line uses `shared_target_dir`")
+            .contains("note: this line mentions `shared_target_dir`")
     );
 }
 
@@ -117,6 +117,7 @@ fn silent_lines_using_a_removed_symbol_get_a_synthesised_warning() {
     let item = &reports[0].items[0];
     assert_eq!((item.line, item.col), (2, 16));
     assert_eq!(item.code.as_deref(), Some(STALE_REFERENCE));
+    assert!(item.message.contains("may refer"), "{}", item.message);
     assert!(
         item.note
             .as_deref()
@@ -342,13 +343,13 @@ fn non_rust_files_preserve_existing_behavior_and_utf16_columns() {
     let mut sources = HashMap::new();
     sources.insert(
         "gateway/workspace.go".to_string(),
-        "package main\nfunc run() {\n    // 🚀 covers()\n}\n".to_string(),
+        "package main\nfunc run() {\n    /* 🚀 */ covers()\n}\n".to_string(),
     );
     let missing = vec![("covers".to_string(), "engine/lib.go".to_string())];
     annotate_missing_symbols(&mut reports, &sources, &missing, &BTreeSet::new());
     assert_eq!(reports[0].warnings, 1);
     assert_eq!(reports[0].items[0].line, 3);
-    assert_eq!(reports[0].items[0].col, 11);
+    assert_eq!(reports[0].items[0].col, 14);
 }
 
 /// A cut-short definition check keeps its warnings and says it was cut short (#1465).

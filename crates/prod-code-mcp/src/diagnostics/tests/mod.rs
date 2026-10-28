@@ -10,4 +10,5 @@
 
 mod regressions;
 mod stale_refs;
+mod stale_refs_identity;
 mod unit;
