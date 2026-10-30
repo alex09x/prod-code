@@ -16,11 +16,11 @@ import importlib.util
 import io
 import json
 import os
-from pathlib import Path
 import sys
 import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
 HOOK_SCRIPT = Path(__file__).parent / "hooks" / "prod-code-local-build-guard.py"
@@ -1026,6 +1026,140 @@ class ProdCodeGuardSymbolGrepPolicyTests(unittest.TestCase):
                 self.assertIn(f'prod-code grep "{suggested}" {expected_path}', reason)
 
 
+class ProdCodeGuardSedSourceReadTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.cwd = str(Path(__file__).resolve().parent.parent)
+
+    def test_sed_reads_source_files_are_detected(self) -> None:
+        commands = [
+            "sed -n '1,60p' crates/prod-code-mcp/src/tools/schemas/execution.rs",
+            "gsed -n '1,60p' /repo/src/main.PY",
+            "sed -f filter.sed src/main.rs",
+            "env LANG=C sed -e '1,20p' src/main.rs",
+            "sudo -u alex09x sed -n '1,20p' src/main.rs",
+            "bash -lc 'sed -n \"1,20p\" src/main.rs'",
+            "sed -n '1,20p' < src/main.rs",
+            "sed -n '1,20p' src/*.rs | head",
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertIsNotNone(guard.sed_source_target(command, self.cwd))
+
+    def test_extensionless_symlink_to_source_is_detected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_dir = Path(temp_dir) / "src"
+            source_dir.mkdir()
+            source = source_dir / "main.rs"
+            source.write_text("fn main() {}\n")
+            alias = Path(temp_dir) / "main-source"
+            alias.symlink_to(source)
+
+            self.assertIsNotNone(
+                guard.sed_source_target("sed -n '1p' main-source", temp_dir)
+            )
+
+    def test_documentation_config_stdin_and_output_redirection_are_allowed(
+        self,
+    ) -> None:
+        commands = [
+            "sed -n '1,20p' README.md",
+            "sed -n '1,20p' Cargo.toml",
+            "sed -n '1,20p' config.yaml",
+            "sed -n '1,20p'",
+            "printf 'a\\nb\\n' | sed -n '1,2p'",
+            "sed -n '1p' <<< 'plain stdin text'",
+            "sed -n '1p' < README.md",
+            "sed -n '1p' > src/main.rs",
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertIsNone(guard.sed_source_target(command, self.cwd))
+
+    def test_in_place_edits_are_allowed(self) -> None:
+        commands = [
+            "sed -i '' 's/old/new/' src/main.rs",
+            "sed -i.bak 's/old/new/' src/main.rs",
+            "sed --in-place=.bak 's/old/new/' src/main.rs",
+            "sed -ni.bak 's/old/new/' src/main.rs",
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertIsNone(guard.sed_source_target(command, self.cwd))
+
+    def test_fallback_requires_an_explicit_one_command_opt_in(self) -> None:
+        self.assertTrue(
+            guard.source_sed_fallback_requested(
+                "PROD_CODE_SOURCE_FALLBACK=1 sed -n '1p' src/main.rs"
+            )
+        )
+        self.assertTrue(
+            guard.source_sed_fallback_requested(
+                "env PROD_CODE_SOURCE_FALLBACK=1 sed -n '1p' src/main.rs"
+            )
+        )
+        self.assertFalse(
+            guard.source_sed_fallback_requested(
+                "echo PROD_CODE_SOURCE_FALLBACK=1; sed -n '1p' src/main.rs"
+            )
+        )
+        self.assertFalse(
+            guard.source_sed_fallback_requested(
+                "PROD_CODE_SOURCE_FALLBACK=1 echo ok; sed -n '1p' src/main.rs"
+            )
+        )
+        with mock.patch.dict(os.environ, {"PROD_CODE_SOURCE_FALLBACK": "1"}):
+            self.assertFalse(
+                guard.source_sed_fallback_requested("sed -n '1p' src/main.rs")
+            )
+
+    def test_claude_pretool_use_denies_source_read_with_semantic_guidance(self) -> None:
+        command = "sed -n '1,60p' src/main.rs"
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "cwd": self.cwd,
+        }
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(guard, "log"),
+            mock.patch("sys.stdin", io.StringIO(json.dumps(payload))),
+            mock.patch("sys.stdout", stdout),
+            mock.patch.dict(os.environ, {"PROD_CODE_SOURCE_FALLBACK": ""}),
+        ):
+            guard.main()
+
+        result = json.loads(stdout.getvalue())
+        output = result["hookSpecificOutput"]
+        self.assertEqual(output["permissionDecision"], "deny")
+        reason = output["permissionDecisionReason"]
+        self.assertIn("code_outline", reason)
+        self.assertIn("code_definition", reason)
+        self.assertIn("PROD_CODE_SOURCE_FALLBACK=1", reason)
+
+    def test_claude_pretool_use_logs_explicit_source_fallback(self) -> None:
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "PROD_CODE_SOURCE_FALLBACK=1 sed -n '1p' src/main.rs"
+            },
+            "cwd": self.cwd,
+        }
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(guard, "log") as log_mock,
+            mock.patch("sys.stdin", io.StringIO(json.dumps(payload))),
+            mock.patch("sys.stdout", stdout),
+            mock.patch.dict(os.environ, {"PROD_CODE_SOURCE_FALLBACK": ""}),
+        ):
+            guard.main()
+
+        self.assertEqual(stdout.getvalue(), "")
+        log_mock.assert_called_once()
+        self.assertEqual(log_mock.call_args.args[0]["rule"], "source-sed")
+        self.assertEqual(log_mock.call_args.args[0]["decision"], "override")
+
+
 if __name__ == "__main__":
     unittest.main()
-

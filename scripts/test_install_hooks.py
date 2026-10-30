@@ -71,6 +71,69 @@ class InstallHooksTests(unittest.TestCase):
         ok_after, _ = claude.check(str(self.dummy_dest))
         self.assertFalse(ok_after)
 
+    def test_claude_install_preserves_other_pre_tool_use_hooks(self):
+        claude = installer.ClaudeCodeProvider()
+        claude.home_dir = str(self.base / ".claude")
+        claude.config_file = str(self.base / ".claude" / "settings.json")
+        os.makedirs(claude.home_dir, exist_ok=True)
+
+        observer = {
+            "matcher": "",
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": "secondary-observer-hook ingest --event PreToolUse",
+                    "timeout": 5,
+                }
+            ],
+        }
+        installer.atomic_write_json(
+            claude.config_file,
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Bash",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": str(self.dummy_dest),
+                                    "timeout": 5,
+                                    "statusMessage": "prod-code build guard",
+                                }
+                            ],
+                        },
+                        observer,
+                    ],
+                    "PostToolUse": [
+                        {
+                            "matcher": "",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "unrelated-post-tool-hook",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            },
+        )
+
+        result = claude.install(str(self.dummy_dest))
+        self.assertIn("Updated", result)
+        with open(claude.config_file, encoding="utf-8") as config_file:
+            configured = json.load(config_file)
+        pre_tool_use = configured["hooks"]["PreToolUse"]
+        self.assertEqual(len(pre_tool_use), 2)
+        self.assertEqual(pre_tool_use[1], observer)
+        self.assertEqual(
+            configured["hooks"]["PostToolUse"][0]["hooks"][0]["command"],
+            "unrelated-post-tool-hook",
+        )
+        self.assertEqual(pre_tool_use[0]["matcher"], "Bash|Edit")
+        self.assertEqual(pre_tool_use[0]["hooks"][0]["command"], str(self.dummy_dest))
+
     def test_codex_provider_install_and_check(self):
         codex = installer.CodexProvider()
         codex.home_dir = str(self.base / ".codex")
@@ -78,14 +141,14 @@ class InstallHooksTests(unittest.TestCase):
 
         os.makedirs(codex.home_dir, exist_ok=True)
         # Not installed yet
-        ok, msg = codex.check(str(self.dummy_dest))
+        ok, _msg = codex.check(str(self.dummy_dest))
         self.assertFalse(ok)
 
         # Install hook
         res = codex.install(str(self.dummy_dest))
         self.assertIn("Updated", res)
 
-        ok, msg = codex.check(str(self.dummy_dest))
+        ok, _msg = codex.check(str(self.dummy_dest))
         self.assertTrue(ok)
 
         # Uninstall hook

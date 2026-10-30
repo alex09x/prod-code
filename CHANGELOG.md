@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Claude Guard Routes Source Reads Through Semantic Tools** (`scripts/hooks/prod-code-local-build-guard.py`, #1756): Direct `sed` reads of source-code files are blocked with guidance to use `code_outline` / `code_definition`. Documentation, configuration, stdin, and in-place edits remain available; a single explicit `PROD_CODE_SOURCE_FALLBACK=1` read is logged when prod-code is unavailable. Installer tests verify unrelated PreToolUse hooks are preserved.
+
 ## v0.3.44 — 2026-10-28
 
 ### Fixed
