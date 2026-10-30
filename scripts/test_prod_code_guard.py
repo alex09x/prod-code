@@ -1035,6 +1035,8 @@ class ProdCodeGuardSedSourceReadTests(unittest.TestCase):
             "sed -n '1,60p' crates/prod-code-mcp/src/tools/schemas/execution.rs",
             "gsed -n '1,60p' /repo/src/main.PY",
             "sed -f filter.sed src/main.rs",
+            "sed -e1,40p src/main.rs",
+            "sed --expression=1,40p src/main.cpp",
             "env LANG=C sed -e '1,20p' src/main.rs",
             "sudo -u alex09x sed -n '1,20p' src/main.rs",
             "bash -lc 'sed -n \"1,20p\" src/main.rs'",
@@ -1057,6 +1059,38 @@ class ProdCodeGuardSedSourceReadTests(unittest.TestCase):
             self.assertIsNotNone(
                 guard.sed_source_target("sed -n '1p' main-source", temp_dir)
             )
+
+    def test_clean_language_workspaces_block_sed_expression_reads(self) -> None:
+        cases = [
+            ("main.swift", "sed -e1,40p main.swift"),
+            ("main.ts", "sed --expression=1,40p main.ts"),
+            ("main.py", "sed -e1,40p main.py"),
+            ("main.cpp", "sed --expression=1,40p main.cpp"),
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self.assertFalse((root / ".git").exists())
+            for filename, command in cases:
+                (root / filename).write_text("source fixture\n")
+                payload = {
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "Bash",
+                    "tool_input": {"command": command},
+                    "cwd": temp_dir,
+                }
+                stdout = io.StringIO()
+                with (
+                    mock.patch.object(guard, "log"),
+                    mock.patch("sys.stdin", io.StringIO(json.dumps(payload))),
+                    mock.patch("sys.stdout", stdout),
+                ):
+                    guard.main()
+                response = json.loads(stdout.getvalue())
+                self.assertEqual(
+                    response["hookSpecificOutput"]["permissionDecision"],
+                    "deny",
+                    filename,
+                )
 
     def test_documentation_config_stdin_and_output_redirection_are_allowed(
         self,
@@ -1112,6 +1146,21 @@ class ProdCodeGuardSedSourceReadTests(unittest.TestCase):
                 guard.source_sed_fallback_requested("sed -n '1p' src/main.rs")
             )
 
+    def test_fallback_is_limited_to_one_named_source_file(self) -> None:
+        self.assertTrue(
+            guard.source_sed_fallback_requested(
+                "PROD_CODE_SOURCE_FALLBACK=1 sed -e1,40p src/main.rs", self.cwd
+            )
+        )
+        denied_fallbacks = [
+            "PROD_CODE_SOURCE_FALLBACK=1 sed -n '1p' src/*.rs",
+            "PROD_CODE_SOURCE_FALLBACK=1 sed -n '1p' src/one.rs src/two.rs",
+            "PROD_CODE_SOURCE_FALLBACK=1 sed -n '1p' src/one.rs; sed -n '1p' src/two.rs",
+        ]
+        for command in denied_fallbacks:
+            with self.subTest(command=command):
+                self.assertFalse(guard.source_sed_fallback_requested(command, self.cwd))
+
     def test_claude_pretool_use_denies_source_read_with_semantic_guidance(self) -> None:
         command = "sed -n '1,60p' src/main.rs"
         payload = {
@@ -1159,6 +1208,26 @@ class ProdCodeGuardSedSourceReadTests(unittest.TestCase):
         log_mock.assert_called_once()
         self.assertEqual(log_mock.call_args.args[0]["rule"], "source-sed")
         self.assertEqual(log_mock.call_args.args[0]["decision"], "override")
+
+    def test_claude_pretool_use_denies_glob_fallback(self) -> None:
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "PROD_CODE_SOURCE_FALLBACK=1 sed -n '1,5p' src/*.rs"
+            },
+            "cwd": self.cwd,
+        }
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(guard, "log"),
+            mock.patch("sys.stdin", io.StringIO(json.dumps(payload))),
+            mock.patch("sys.stdout", stdout),
+        ):
+            guard.main()
+
+        response = json.loads(stdout.getvalue())
+        self.assertEqual(response["hookSpecificOutput"]["permissionDecision"], "deny")
 
 
 if __name__ == "__main__":

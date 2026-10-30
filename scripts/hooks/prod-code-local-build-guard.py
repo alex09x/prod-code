@@ -841,11 +841,27 @@ def _sed_source_targets(args):
     return files + redirected_input
 
 
-def sed_source_target(command, cwd, depth=0):
-    """Returns the source-code file sed reads, or None for stdin/resources/edits."""
-    if depth >= 3:
-        return None
+def _is_source_code_path(path, cwd):
+    if not path or path == "-" or path in ("/dev/stdin", "/dev/fd/0"):
+        return False
+    expanded = os.path.expanduser(path)
+    resolved = (
+        expanded
+        if os.path.isabs(expanded)
+        else os.path.join(cwd or os.getcwd(), expanded)
+    )
+    return (
+        CODE_EXT.search(resolved.lower()) is not None
+        or CODE_EXT.search(os.path.realpath(resolved).lower()) is not None
+    )
 
+
+def _sed_source_invocations(command, cwd, depth=0, inherited_fallback=False):
+    """Returns each sed invocation's file operands and scoped fallback flag."""
+    if depth >= 3:
+        return []
+
+    invocations = []
     for part in split_shell_segments(command):
         try:
             words = shlex.split(part)
@@ -854,9 +870,10 @@ def sed_source_target(command, cwd, depth=0):
         if not words:
             continue
 
-        index, _fallback = _unwrap_shell_words(words)
+        index, fallback = _unwrap_shell_words(words)
         if index >= len(words):
             continue
+        fallback = fallback or inherited_fallback
 
         remaining = shlex.join(words[index:])
         nested = SHELL_C.match(remaining)
@@ -864,26 +881,23 @@ def sed_source_target(command, cwd, depth=0):
             script = nested.group("script").strip()
             if len(script) >= 2 and script[0] == script[-1] and script[0] in "'\"":
                 script = script[1:-1]
-            target = sed_source_target(script, cwd, depth + 1)
-            if target:
-                return target
+            invocations.extend(
+                _sed_source_invocations(script, cwd, depth + 1, fallback)
+            )
             continue
 
         if os.path.basename(words[index]).lower() not in ("sed", "gsed"):
             continue
+        invocations.append((_sed_source_targets(words[index + 1 :]), fallback))
 
-        for path in _sed_source_targets(words[index + 1 :]):
-            if not path or path == "-" or path in ("/dev/stdin", "/dev/fd/0"):
-                continue
-            expanded = os.path.expanduser(path)
-            resolved = (
-                expanded
-                if os.path.isabs(expanded)
-                else os.path.join(cwd or os.getcwd(), expanded)
-            )
-            if CODE_EXT.search(resolved.lower()) or CODE_EXT.search(
-                os.path.realpath(resolved).lower()
-            ):
+    return invocations
+
+
+def sed_source_target(command, cwd, depth=0):
+    """Returns the source-code file sed reads, or None for stdin/resources/edits."""
+    for operands, _fallback in _sed_source_invocations(command, cwd, depth):
+        for path in operands:
+            if _is_source_code_path(path, cwd):
                 return path
 
     return None
@@ -895,30 +909,18 @@ def source_sed_fallback_requested(command, cwd=None):
 
 
 def _source_sed_fallback_requested(command, cwd, depth):
-    if depth >= 3:
+    invocations = _sed_source_invocations(command, cwd, depth)
+    source_invocations = [
+        (operands, fallback)
+        for operands, fallback in invocations
+        if any(_is_source_code_path(path, cwd) for path in operands)
+    ]
+    if len(source_invocations) != 1:
         return False
-    for part in split_shell_segments(command):
-        try:
-            words = shlex.split(part)
-        except ValueError:
-            continue
-        index, fallback = _unwrap_shell_words(words)
-        if index >= len(words):
-            continue
-        remaining = shlex.join(words[index:])
-        nested = SHELL_C.match(remaining)
-        if nested:
-            script = nested.group("script").strip()
-            if len(script) >= 2 and script[0] == script[-1] and script[0] in "'\"":
-                script = script[1:-1]
-            if fallback and sed_source_target(script, cwd, depth + 1):
-                return True
-            if _source_sed_fallback_requested(script, cwd, depth + 1):
-                return True
-            continue
-        if fallback and sed_source_target(remaining, cwd, depth + 1):
-            return True
-    return False
+    operands, fallback = source_invocations[0]
+    if not fallback or len(operands) != 1:
+        return False
+    return not any(char in operands[0] for char in "*?[")
 
 
 def asked_prod_code(transcript, symbol, agent=None):
