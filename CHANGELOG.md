@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **Guard Detects Inline Python Source Rewrites** (`scripts/hooks`, #1760): The guard redirects identifiable inline Python writes to repository source files to contextual editing tools. Data processing and opaque programs remain available. Hook components are staged as a versioned bundle before activation.
 - **Claude Guard Routes Source Reads Through Semantic Tools** (`scripts/hooks/prod-code-local-build-guard.py`, #1756): Direct `sed` reads of source-code files are blocked with guidance to use `code_outline` / `code_definition`. Documentation, configuration, stdin, and in-place edits remain available; a logged `PROD_CODE_SOURCE_FALLBACK=1` fallback is limited to one named source file, never a glob or multi-file search. Installer tests verify unrelated PreToolUse hooks are preserved.
 
 ## v0.3.44 — 2026-10-28
