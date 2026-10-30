@@ -10,426 +10,240 @@
 """
 Universal installer and health-checker for prod-code AI agent guard hooks.
 Detects installed agent environments (Claude Code, Codex, Antigravity/Gemini),
-deploys the canonical guard script, and safely registers PreToolUse hooks.
+deploys the canonical guard script and all required guard modules, and safely
+registers PreToolUse hooks.
 
 Usage:
-    python3 scripts/hooks/install-hooks.py           # Install/update hooks for all detected agents
-    python3 scripts/hooks/install-hooks.py --check   # Check health and status without modifications
+    python3 scripts/hooks/install-hooks.py             # Install/update hooks for all detected agents
+    python3 scripts/hooks/install-hooks.py --check     # Check health and status without modifications
     python3 scripts/hooks/install-hooks.py --uninstall # Remove guard hooks from agent configs
 """
 
 import argparse
-import json
 import os
 import shutil
 import stat
 import sys
+import urllib.request
 from pathlib import Path
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from hook_providers import (
+    CANONICAL_HOOK_NAME,
+    AntigravityProvider,
+    ClaudeCodeProvider,
+    CodexProvider,
+    Provider,
+    atomic_write_json,
+    read_json_safe,
+)
+
+__all__ = [
+    "CANONICAL_HOOK_DIR",
+    "CANONICAL_HOOK_NAME",
+    "CANONICAL_HOOK_PATH",
+    "GUARD_PACKAGE_DIR",
+    "RAW_GITHUB_HOOKS_BASE",
+    "REPO_HOOK_SRC",
+    "REQUIRED_GUARD_COMPONENTS",
+    "REQUIRED_GUARD_RELPATHS",
+    "AntigravityProvider",
+    "ClaudeCodeProvider",
+    "CodexProvider",
+    "Provider",
+    "atomic_write_json",
+    "check_canonical_hook",
+    "deploy_canonical_script",
+    "main",
+    "read_json_safe",
+]
 
 CANONICAL_HOOK_DIR = os.path.expanduser("~/.claude/hooks")
-CANONICAL_HOOK_NAME = "prod-code-local-build-guard.py"
 CANONICAL_HOOK_PATH = os.path.join(CANONICAL_HOOK_DIR, CANONICAL_HOOK_NAME)
-
-SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_HOOK_SRC = SCRIPT_DIR / CANONICAL_HOOK_NAME
+RAW_GITHUB_HOOKS_BASE = "https://raw.githubusercontent.com/alex09x/prod-code/main/scripts/hooks"
+
+GUARD_PACKAGE_DIR = "prod_code_guard"
+REQUIRED_GUARD_RELPATHS = (
+    f"{GUARD_PACKAGE_DIR}/__init__.py",
+    f"{GUARD_PACKAGE_DIR}/shell.py",
+    f"{GUARD_PACKAGE_DIR}/grep_guard.py",
+    f"{GUARD_PACKAGE_DIR}/sed_guard.py",
+    f"{GUARD_PACKAGE_DIR}/shell_python.py",
+    f"{GUARD_PACKAGE_DIR}/python_write_guard.py",
+    f"{GUARD_PACKAGE_DIR}/rename_guard.py",
+)
+REQUIRED_GUARD_COMPONENTS = (CANONICAL_HOOK_NAME, *REQUIRED_GUARD_RELPATHS)
 
 
-def atomic_write_json(file_path: str, data: dict) -> None:
-    """Safely and atomically writes JSON data to file_path."""
-    os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
-    temp_path = f"{file_path}.tmp.{os.getpid()}_{os.urandom(4).hex()}"
-    with open(temp_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
-    os.replace(temp_path, file_path)
+def _download_component(url: str, dest_tmp: Path) -> None:
+    with urllib.request.urlopen(url, timeout=15) as resp:
+        body = resp.read()
+    if not body:
+        raise ValueError(f"Empty download from {url}")
+    dest_tmp.write_bytes(body)
 
 
-def read_json_safe(file_path: str) -> dict:
-    """Reads JSON from file_path, returning empty dict if missing or malformed."""
-    if not os.path.isfile(file_path):
-        return {}
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
-class Provider:
-    name: str = ""
-
-    def is_detected(self) -> bool:
-        raise NotImplementedError
-
-    def check(self, hook_path: str) -> tuple[bool, str]:
-        """Returns (is_ok, details_message)."""
-        raise NotImplementedError
-
-    def install(self, hook_path: str) -> str:
-        """Installs/updates hook configuration. Returns description of changes."""
-        raise NotImplementedError
-
-    def uninstall(self, hook_path: str) -> str:
-        """Removes hook configuration. Returns description of changes."""
-        raise NotImplementedError
-
-
-class ClaudeCodeProvider(Provider):
-    name = "Claude Code"
-
-    def __init__(self):
-        self.home_dir = os.path.expanduser("~/.claude")
-        self.config_file = os.path.join(self.home_dir, "settings.json")
-
-    def is_detected(self) -> bool:
-        return os.path.isdir(self.home_dir) or shutil.which("claude") is not None
-
-    def check(self, hook_path: str) -> tuple[bool, str]:
-        if not self.is_detected():
-            return True, "Not installed (skipped)"
-        if not os.path.isfile(self.config_file):
-            return False, f"Missing settings file: {self.config_file}"
-
-        data = read_json_safe(self.config_file)
-        hooks = data.get("hooks", {}).get("PreToolUse", [])
-        for entry in hooks:
-            matcher = entry.get("matcher", "")
-            for h in entry.get("hooks", []):
-                cmd = h.get("command", "")
-                if CANONICAL_HOOK_NAME in cmd:
-                    if "Edit" in matcher:
-                        return True, f"Configured ({self.config_file}, matcher: {matcher})"
-                    return False, f"Outdated matcher '{matcher}' in {self.config_file} (requires 'Bash|Edit')"
-        return False, f"Hook not registered in {self.config_file}"
-
-    def install(self, hook_path: str) -> str:
-        data = read_json_safe(self.config_file)
-        hooks = data.setdefault("hooks", {})
-        pre_tool_use = hooks.setdefault("PreToolUse", [])
-
-        found = False
-        changed = False
-        for entry in pre_tool_use:
-            for h in entry.get("hooks", []):
-                if CANONICAL_HOOK_NAME in h.get("command", ""):
-                    found = True
-                    h["command"] = hook_path
-                    if entry.get("matcher") != "Bash|Edit":
-                        entry["matcher"] = "Bash|Edit"
-                        changed = True
-
-        if not found:
-            pre_tool_use.append({
-                "matcher": "Bash|Edit",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": hook_path,
-                        "timeout": 5,
-                        "statusMessage": "prod-code build guard"
-                    }
-                ]
-            })
-            changed = True
-
-        if changed or not os.path.exists(self.config_file):
-            atomic_write_json(self.config_file, data)
-            return f"Updated {self.config_file} (matcher: Bash|Edit)"
-        return f"Already up-to-date in {self.config_file}"
-
-    def uninstall(self, hook_path: str) -> str:
-        if not os.path.isfile(self.config_file):
-            return "No configuration file found"
-        data = read_json_safe(self.config_file)
-        pre_tool_use = data.get("hooks", {}).get("PreToolUse", [])
-        new_ptu = [
-            e for e in pre_tool_use
-            if not any(CANONICAL_HOOK_NAME in h.get("command", "") for h in e.get("hooks", []))
-        ]
-        if len(new_ptu) != len(pre_tool_use):
-            data["hooks"]["PreToolUse"] = new_ptu
-            atomic_write_json(self.config_file, data)
-            return f"Removed hook from {self.config_file}"
-        return "Hook was not registered"
-
-
-class CodexProvider(Provider):
-    name = "Codex"
-
-    def __init__(self):
-        self.home_dir = os.path.expanduser("~/.codex")
-        self.config_file = os.path.join(self.home_dir, "hooks.json")
-
-    def is_detected(self) -> bool:
-        return os.path.isdir(self.home_dir) or shutil.which("codex") is not None
-
-    def check(self, hook_path: str) -> tuple[bool, str]:
-        if not self.is_detected():
-            return True, "Not installed (skipped)"
-        if not os.path.isfile(self.config_file):
-            return False, f"Missing hooks file: {self.config_file}"
-
-        data = read_json_safe(self.config_file)
-        hooks = data.get("hooks", {}).get("PreToolUse", [])
-        for entry in hooks:
-            for h in entry.get("hooks", []):
-                cmd = h.get("command", "")
-                if CANONICAL_HOOK_NAME in cmd:
-                    return True, f"Configured ({self.config_file})"
-        return False, f"Hook not registered in {self.config_file}"
-
-    def install(self, hook_path: str) -> str:
-        data = read_json_safe(self.config_file)
-        hooks = data.setdefault("hooks", {})
-        pre_tool_use = hooks.setdefault("PreToolUse", [])
-
-        found = False
-        changed = False
-        for entry in pre_tool_use:
-            for h in entry.get("hooks", []):
-                if CANONICAL_HOOK_NAME in h.get("command", ""):
-                    found = True
-                    if h.get("command") != hook_path:
-                        h["command"] = hook_path
-                        changed = True
-
-        if not found:
-            pre_tool_use.append({
-                "matcher": "",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": hook_path,
-                        "timeout": 5
-                    }
-                ]
-            })
-            changed = True
-
-        if changed or not os.path.exists(self.config_file):
-            atomic_write_json(self.config_file, data)
-            return f"Updated {self.config_file}"
-        return f"Already up-to-date in {self.config_file}"
-
-    def uninstall(self, hook_path: str) -> str:
-        if not os.path.isfile(self.config_file):
-            return "No configuration file found"
-        data = read_json_safe(self.config_file)
-        pre_tool_use = data.get("hooks", {}).get("PreToolUse", [])
-        new_ptu = [
-            e for e in pre_tool_use
-            if not any(CANONICAL_HOOK_NAME in h.get("command", "") for h in e.get("hooks", []))
-        ]
-        if len(new_ptu) != len(pre_tool_use):
-            data["hooks"]["PreToolUse"] = new_ptu
-            atomic_write_json(self.config_file, data)
-            return f"Removed hook from {self.config_file}"
-        return "Hook was not registered"
-
-
-class AntigravityProvider(Provider):
-    name = "Antigravity (Gemini)"
-
-    def __init__(self):
-        self.home_dir = os.path.expanduser("~/.gemini")
-        self.config_file = os.path.join(self.home_dir, "config", "hooks.json")
-
-    def is_detected(self) -> bool:
-        return (
-            os.path.isdir(self.home_dir)
-            or shutil.which("agy") is not None
-            or shutil.which("gemini") is not None
-        )
-
-    def check(self, hook_path: str) -> tuple[bool, str]:
-        if not self.is_detected():
-            return True, "Not installed (skipped)"
-        if not os.path.isfile(self.config_file):
-            return False, f"Missing hooks file: {self.config_file}"
-
-        data = read_json_safe(self.config_file)
-        guard_entry = data.get("prod-code-guard", {})
-        if not guard_entry.get("enabled", False):
-            return False, f"prod-code-guard disabled in {self.config_file}"
-
-        ptu = guard_entry.get("PreToolUse", [])
-        for entry in ptu:
-            matcher = entry.get("matcher", "")
-            for h in entry.get("hooks", []):
-                cmd = h.get("command", "")
-                if CANONICAL_HOOK_NAME in cmd:
-                    if "replace_file_content" in matcher:
-                        return True, f"Configured ({self.config_file}, matcher: {matcher})"
-                    return False, f"Outdated matcher '{matcher}' in {self.config_file}"
-        return False, f"prod-code-guard not registered in {self.config_file}"
-
-    def install(self, hook_path: str) -> str:
-        data = read_json_safe(self.config_file)
-        guard_entry = data.setdefault("prod-code-guard", {})
-        guard_entry["enabled"] = True
-        ptu = guard_entry.setdefault("PreToolUse", [])
-
-        found = False
-        changed = False
-        for entry in ptu:
-            for h in entry.get("hooks", []):
-                if CANONICAL_HOOK_NAME in h.get("command", ""):
-                    found = True
-                    h["command"] = hook_path
-                    if entry.get("matcher") != "run_command|replace_file_content":
-                        entry["matcher"] = "run_command|replace_file_content"
-                        changed = True
-
-        if not found:
-            ptu.append({
-                "matcher": "run_command|replace_file_content",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": hook_path,
-                        "timeout": 5
-                    }
-                ]
-            })
-            changed = True
-
-        if changed or not os.path.exists(self.config_file):
-            atomic_write_json(self.config_file, data)
-            return f"Updated {self.config_file} (matcher: run_command|replace_file_content)"
-        return f"Already up-to-date in {self.config_file}"
-
-    def uninstall(self, hook_path: str) -> str:
-        if not os.path.isfile(self.config_file):
-            return "No configuration file found"
-        data = read_json_safe(self.config_file)
-        if "prod-code-guard" in data:
-            del data["prod-code-guard"]
-            atomic_write_json(self.config_file, data)
-            return f"Removed prod-code-guard from {self.config_file}"
-        return "prod-code-guard was not registered"
-
-
-def deploy_canonical_script(src_path: Path, dest_path: str) -> None:
-    """Copies source hook script to destination with 0755 permissions."""
+def deploy_canonical_script(
+    src_path: Path, dest_path: str, base_url: str = RAW_GITHUB_HOOKS_BASE
+) -> None:
+    """Deploys the canonical guard entrypoint and all required guard modules atomically."""
+    src = Path(src_path)
+    src_dir = src.parent
     dest = Path(dest_path)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if not src_path.is_file():
-        # Fallback: attempt downloading directly from GitHub
-        try:
-            import urllib.request
-            url = f"https://raw.githubusercontent.com/alex09x/prod-code/main/scripts/hooks/{CANONICAL_HOOK_NAME}"
-            urllib.request.urlretrieve(url, dest)
-        except Exception as e:
-            raise FileNotFoundError(f"Source hook script not found at {src_path} and failed to download: {e}")
-    else:
-        shutil.copy2(src_path, dest)
-    dest.chmod(dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH | stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+    dest_dir = dest.parent
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest: list[tuple[Path, str, Path, bool]] = [(src, CANONICAL_HOOK_NAME, dest, True)]
+    for rel in REQUIRED_GUARD_RELPATHS:
+        manifest.append((src_dir / rel, rel, dest_dir / rel, False))
+
+    staged: list[tuple[Path, Path, bool]] = []
+    suffix = f".tmp.{os.getpid()}_{os.urandom(4).hex()}"
+    try:
+        for local_src, remote_rel, final_dest, is_exec in manifest:
+            final_dest.parent.mkdir(parents=True, exist_ok=True)
+            tmp_dest = final_dest.with_name(final_dest.name + suffix)
+            if local_src.is_file():
+                shutil.copy2(local_src, tmp_dest)
+            else:
+                url = f"{base_url.rstrip('/')}/{remote_rel}"
+                try:
+                    _download_component(url, tmp_dest)
+                except Exception as exc:
+                    raise FileNotFoundError(
+                        f"Required hook component missing at {local_src} and failed to download from {url}: {exc}"
+                    ) from exc
+            staged.append((tmp_dest, final_dest, is_exec))
+
+        for tmp_dest, final_dest, is_exec in staged:
+            mode = stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH
+            if is_exec:
+                mode |= stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+            tmp_dest.chmod(mode)
+            os.replace(tmp_dest, final_dest)
+    except Exception:
+        for tmp_dest, _, _ in staged:
+            if tmp_dest.exists():
+                try:
+                    tmp_dest.unlink()
+                except OSError:
+                    pass
+        raise
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Install and manage prod-code guard hooks across AI coding agents.")
+def check_canonical_hook(hook_path: str) -> tuple[bool, str]:
+    """Verifies the canonical guard script and all required guard modules exist and are usable."""
+    hook = Path(hook_path)
+    if not hook.is_file():
+        return False, f"MISSING ({hook_path})"
+    if not os.access(hook_path, os.X_OK):
+        return False, f"EXISTS BUT NOT EXECUTABLE ({hook_path})"
+
+    hook_dir = hook.parent
+    missing = [
+        rel
+        for rel in REQUIRED_GUARD_RELPATHS
+        if not (hook_dir / rel).is_file()
+        or not os.access(hook_dir / rel, os.R_OK)
+        or (hook_dir / rel).stat().st_size == 0
+    ]
+    if missing:
+        return False, f"MISSING REQUIRED COMPONENTS ({', '.join(missing)}) in {hook_dir}"
+    return True, f"OK ({hook_path}, +{len(REQUIRED_GUARD_RELPATHS)} modules)"
+
+
+def _run_verification(canonical_path: str, providers: list[Provider]) -> bool:
+    hook_ok, hook_msg = check_canonical_hook(canonical_path)
+    hook_sym = "[+]" if hook_ok else ("[-]" if hook_msg.startswith("MISSING (") else "[!]")
+    print(f"{hook_sym} Canonical hook script : {hook_msg}")
+    all_ok = hook_ok
+
+    print()
+    for p in providers:
+        if not p.is_detected():
+            print(f"[-] {p.name:<22} : Not detected")
+            continue
+        ok, details = p.check(canonical_path)
+        symbol = "[+]" if ok else "[!]"
+        print(f"{symbol} {p.name:<22} : {details}")
+        if not ok:
+            all_ok = False
+    return all_ok
+
+
+def main(argv: list[str] | None = None, providers: list[Provider] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Install and manage prod-code guard hooks across AI coding agents."
+    )
     parser.add_argument("--check", action="store_true", help="Inspect and verify configuration without making changes")
     parser.add_argument("--uninstall", action="store_true", help="Remove guard hooks from agent configurations")
     parser.add_argument("--hook-script", type=str, default=None, help=f"Path to source hook script (default: {REPO_HOOK_SRC})")
-    args = parser.parse_args()
+    parser.add_argument("--canonical-hook", type=str, default=None, help=f"Destination canonical hook path (default: {CANONICAL_HOOK_PATH})")
+    args = parser.parse_args(argv)
 
     hook_src = Path(args.hook_script) if args.hook_script else REPO_HOOK_SRC
-    providers: list[Provider] = [ClaudeCodeProvider(), CodexProvider(), AntigravityProvider()]
+    canonical_path = args.canonical_hook or CANONICAL_HOOK_PATH
+    active_providers = providers if providers is not None else [ClaudeCodeProvider(), CodexProvider(), AntigravityProvider()]
 
     print("======================================================================")
     print(" prod-code Guard Hook Installer & Health Checker")
     print("======================================================================")
-    print(f"Canonical hook path : {CANONICAL_HOOK_PATH}")
+    print(f"Canonical hook path : {canonical_path}")
     print(f"Source script path  : {hook_src}")
     print("----------------------------------------------------------------------")
 
     if args.check:
         print("Checking hook installation across detected agent environments:\n")
-        all_ok = True
-        script_exists = os.path.isfile(CANONICAL_HOOK_PATH)
-        is_exec = script_exists and os.access(CANONICAL_HOOK_PATH, os.X_OK)
-        if not script_exists:
-            print(f"[-] Canonical hook script : MISSING ({CANONICAL_HOOK_PATH})")
-            all_ok = False
-        elif not is_exec:
-            print(f"[!] Canonical hook script : EXISTS BUT NOT EXECUTABLE ({CANONICAL_HOOK_PATH})")
-            all_ok = False
-        else:
-            print(f"[+] Canonical hook script : OK ({CANONICAL_HOOK_PATH})")
-
-        print("")
-        for p in providers:
-            detected = p.is_detected()
-            if not detected:
-                print(f"[-] {p.name:<22} : Not detected")
-                continue
-            ok, details = p.check(CANONICAL_HOOK_PATH)
-            symbol = "[+]" if ok else "[!]"
-            print(f"{symbol} {p.name:<22} : {details}")
-            if not ok:
-                all_ok = False
-
+        all_ok = _run_verification(canonical_path, active_providers)
         print("----------------------------------------------------------------------")
         if all_ok:
             print("Summary: All detected agent environments are healthy and protected.")
             return 0
-        else:
-            print("Summary: Some agent environments require installation or updates.")
-            print("Run without --check to automatically install or update hooks.")
-            return 1
+        print("Summary: Some agent environments require installation or updates.")
+        print("Run without --check to automatically install or update hooks.")
+        return 1
 
     if args.uninstall:
         print("Uninstalling prod-code guard hooks from agent environments:\n")
-        for p in providers:
+        for p in active_providers:
             if not p.is_detected():
                 print(f"[-] {p.name:<22} : Not detected (skipped)")
                 continue
-            res = p.uninstall(CANONICAL_HOOK_PATH)
-            print(f"[x] {p.name:<22} : {res}")
+            print(f"[x] {p.name:<22} : {p.uninstall(canonical_path)}")
         print("\nUninstall completed.")
         return 0
 
-    # Default: Install / Deploy
     print("Deploying canonical hook script and configuring agent providers:\n")
     try:
-        deploy_canonical_script(hook_src, CANONICAL_HOOK_PATH)
-        print(f"[+] Canonical script   : Deployed and verified executable at {CANONICAL_HOOK_PATH}")
-    except Exception as e:
+        deploy_canonical_script(hook_src, canonical_path)
+        print(f"[+] Canonical script   : Deployed and verified executable at {canonical_path}")
+    except (OSError, ValueError) as e:
         print(f"[!] Error deploying hook script: {e}", file=sys.stderr)
         return 1
 
-    for p in providers:
+    install_failed = False
+    for p in active_providers:
         if not p.is_detected():
             print(f"[-] {p.name:<22} : Not detected (skipped)")
             continue
         try:
-            res = p.install(CANONICAL_HOOK_PATH)
-            print(f"[+] {p.name:<22} : {res}")
-        except Exception as e:
+            print(f"[+] {p.name:<22} : {p.install(canonical_path)}")
+        except (OSError, ValueError) as e:
+            install_failed = True
             print(f"[!] {p.name:<22} : Failed to configure: {e}", file=sys.stderr)
 
     print("----------------------------------------------------------------------")
-    print("Installation finished. Verifying installation with --check:")
-    print("")
-
-    # Run check logic
-    all_ok = True
-    for p in providers:
-        if not p.is_detected():
-            continue
-        ok, details = p.check(CANONICAL_HOOK_PATH)
-        symbol = "[+]" if ok else "[!]"
-        print(f"{symbol} {p.name:<22} : {details}")
-        if not ok:
-            all_ok = False
-
+    print("Installation finished. Verifying installation with --check:\n")
+    all_ok = _run_verification(canonical_path, active_providers) and not install_failed
     if all_ok:
         print("\nStatus: All detected agent providers are fully configured.")
         return 0
-    else:
-        print("\nStatus: One or more providers failed verification.")
-        return 1
+    print("\nStatus: One or more providers or required components failed verification.")
+    return 1
 
 
 if __name__ == "__main__":
