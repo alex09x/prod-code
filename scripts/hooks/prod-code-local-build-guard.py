@@ -616,6 +616,311 @@ def text_grep(command, cwd):
     return None
 
 
+def _unwrap_shell_words(words):
+    """Returns the command index after assignments and common shell wrappers.
+
+    Also reports whether the caller explicitly requested the one-command source-read
+    fallback, either in the hook environment or as a leading command assignment.
+    """
+    i = 0
+    fallback = False
+    assignment = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.DOTALL)
+
+    while i < len(words):
+        token = words[i]
+        match = assignment.match(token)
+        if match:
+            if match.group(1) == "PROD_CODE_SOURCE_FALLBACK":
+                fallback = match.group(2) == "1"
+            i += 1
+            continue
+
+        name = os.path.basename(token).lower()
+        if name == "env":
+            i += 1
+            while i < len(words):
+                option = words[i]
+                match = assignment.match(option)
+                if match:
+                    if match.group(1) == "PROD_CODE_SOURCE_FALLBACK":
+                        fallback = match.group(2) == "1"
+                    i += 1
+                    continue
+                if option == "--":
+                    i += 1
+                    break
+                if option in (
+                    "-i",
+                    "--ignore-environment",
+                    "-0",
+                    "--null",
+                    "-v",
+                    "--debug",
+                ):
+                    i += 1
+                    continue
+                if option in ("-u", "--unset", "-C", "--chdir", "-S", "--split-string"):
+                    i += 2
+                    continue
+                if option.startswith(("--unset=", "--chdir=", "--split-string=")):
+                    i += 1
+                    continue
+                if option.startswith("-") and option != "-":
+                    i += 1
+                    continue
+                break
+            continue
+
+        if name == "sudo":
+            i += 1
+            while i < len(words):
+                option = words[i]
+                if option == "--":
+                    i += 1
+                    break
+                if option in (
+                    "-u",
+                    "--user",
+                    "-g",
+                    "--group",
+                    "-h",
+                    "--host",
+                    "-p",
+                    "--prompt",
+                    "-C",
+                    "--chdir",
+                    "-r",
+                    "--role",
+                    "-t",
+                    "--type",
+                ):
+                    i += 2
+                    continue
+                if option.startswith("-"):
+                    i += 1
+                    continue
+                break
+            continue
+
+        if name == "nice":
+            i += 1
+            if i < len(words) and words[i] in ("-n", "--adjustment"):
+                i += 2
+            elif i < len(words) and re.fullmatch(r"-[0-9]+", words[i]):
+                i += 1
+            continue
+
+        if name == "time":
+            i += 1
+            while i < len(words) and words[i].startswith("-"):
+                if words[i] in ("-o", "--output", "-f", "--format"):
+                    i += 2
+                else:
+                    i += 1
+            continue
+
+        if name == "command":
+            i += 1
+            if i < len(words) and words[i] == "-p":
+                i += 1
+            continue
+
+        if name == "exec":
+            i += 1
+            if i < len(words) and words[i] == "-a":
+                i += 2
+            continue
+
+        return i, fallback
+
+    return i, fallback
+
+
+def _sed_source_targets(args):
+    """File operands read by sed, excluding its program and in-place edits."""
+    positional = []
+    redirected_input = []
+    explicit_script = False
+    in_place = False
+    options = True
+    i = 0
+
+    while i < len(args):
+        arg = args[i]
+
+        # Here-docs and here-strings provide stdin, not a source-file operand.
+        if arg in ("<<", "<<-", "<<<"):
+            i += 2
+            continue
+        if arg.startswith(("<<", "<<-", "<<<")):
+            i += 1
+            continue
+
+        if arg in ("<", "0<", "<>", "0<>"):
+            if i + 1 < len(args):
+                redirected_input.append(args[i + 1])
+            i += 2
+            continue
+        if arg.startswith(("<>", "0<>")) and len(arg) > 2:
+            prefix = "0<>" if arg.startswith("0<>") else "<>"
+            redirected_input.append(arg[len(prefix) :])
+            i += 1
+            continue
+        input_redirect = re.match(r"^(?:[0-9]+)?<([^<].*)$", arg)
+        if input_redirect:
+            redirected_input.append(input_redirect.group(1))
+            i += 1
+            continue
+
+        # Ignore output redirections: they write a result but do not make sed read
+        # the redirected file as source input.
+        if arg in (">", ">>", "1>", "1>>", "2>", "2>>", "&>", "&>>"):
+            i += 2
+            continue
+        if re.match(r"^(?:[0-9]+)?(?:&>>|&>|>>|>)(.+)$", arg):
+            i += 1
+            continue
+        if re.fullmatch(r"(?:[0-9]+)?(?:&>>|&>|>>|>)", arg):
+            i += 2
+            continue
+
+        if options and arg == "--":
+            options = False
+            i += 1
+            continue
+        if options and (arg == "--in-place" or arg.startswith("--in-place=")):
+            in_place = True
+            i += 1
+            continue
+        if options and arg.startswith("-i") and not arg.startswith("--"):
+            # GNU and BSD sed both accept an optional backup suffix attached to -i.
+            in_place = True
+            i += 1
+            continue
+        if options and arg in ("-e", "-f", "--expression", "--file"):
+            explicit_script = True
+            i += 2
+            continue
+        if options and arg.startswith(("--expression=", "--file=")):
+            explicit_script = True
+            i += 1
+            continue
+        if options and arg == "--line-length":
+            i += 2
+            continue
+        if options and arg.startswith("--line-length="):
+            i += 1
+            continue
+
+        if options and arg.startswith("-") and arg != "-":
+            # Handle combined short flags such as -ne and attached script forms
+            # such as -ep. In-place mode is allowed regardless of its operands.
+            consume_argument = False
+            for offset, option in enumerate(arg[1:]):
+                if option == "i":
+                    in_place = True
+                    break
+                if option in ("e", "f"):
+                    explicit_script = True
+                    consume_argument = offset == len(arg) - 2
+                    break
+                if option == "l" and offset == len(arg) - 2:
+                    consume_argument = True
+                    break
+            i += 1 + int(consume_argument)
+            continue
+
+        positional.append(arg)
+        i += 1
+
+    if in_place:
+        return []
+
+    # With no -e/-f option, sed's first positional operand is its program.
+    files = positional if explicit_script else positional[1:]
+    return files + redirected_input
+
+
+def sed_source_target(command, cwd, depth=0):
+    """Returns the source-code file sed reads, or None for stdin/resources/edits."""
+    if depth >= 3:
+        return None
+
+    for part in split_shell_segments(command):
+        try:
+            words = shlex.split(part)
+        except ValueError:
+            continue
+        if not words:
+            continue
+
+        index, _fallback = _unwrap_shell_words(words)
+        if index >= len(words):
+            continue
+
+        remaining = shlex.join(words[index:])
+        nested = SHELL_C.match(remaining)
+        if nested:
+            script = nested.group("script").strip()
+            if len(script) >= 2 and script[0] == script[-1] and script[0] in "'\"":
+                script = script[1:-1]
+            target = sed_source_target(script, cwd, depth + 1)
+            if target:
+                return target
+            continue
+
+        if os.path.basename(words[index]).lower() not in ("sed", "gsed"):
+            continue
+
+        for path in _sed_source_targets(words[index + 1 :]):
+            if not path or path == "-" or path in ("/dev/stdin", "/dev/fd/0"):
+                continue
+            expanded = os.path.expanduser(path)
+            resolved = (
+                expanded
+                if os.path.isabs(expanded)
+                else os.path.join(cwd or os.getcwd(), expanded)
+            )
+            if CODE_EXT.search(resolved.lower()) or CODE_EXT.search(
+                os.path.realpath(resolved).lower()
+            ):
+                return path
+
+    return None
+
+
+def source_sed_fallback_requested(command, cwd=None):
+    """An explicit one-command opt-in for source reads when prod-code is unavailable."""
+    return _source_sed_fallback_requested(command, cwd or os.getcwd(), 0)
+
+
+def _source_sed_fallback_requested(command, cwd, depth):
+    if depth >= 3:
+        return False
+    for part in split_shell_segments(command):
+        try:
+            words = shlex.split(part)
+        except ValueError:
+            continue
+        index, fallback = _unwrap_shell_words(words)
+        if index >= len(words):
+            continue
+        remaining = shlex.join(words[index:])
+        nested = SHELL_C.match(remaining)
+        if nested:
+            script = nested.group("script").strip()
+            if len(script) >= 2 and script[0] == script[-1] and script[0] in "'\"":
+                script = script[1:-1]
+            if fallback and sed_source_target(script, cwd, depth + 1):
+                return True
+            if _source_sed_fallback_requested(script, cwd, depth + 1):
+                return True
+            continue
+        if fallback and sed_source_target(remaining, cwd, depth + 1):
+            return True
+    return False
+
+
 def asked_prod_code(transcript, symbol, agent=None):
     """Whether this session already asked prod-code about `symbol`: a line of its transcript
     that is a prod-code call (MCP code_* tool or the prod-code CLI) and names the symbol. Only
@@ -1098,6 +1403,40 @@ def main():
                     f"It runs ripgrep on the build node and returns file:line:col with the enclosing AST symbol (`[in Type::method]`). "
                     f"For AST symbol lookups use code_symbols / code_definition / code_references; for concept search use code_search."
                 )
+    if not reason:
+        source_target = sed_source_target(command, cwd)
+        if source_target:
+            if source_sed_fallback_requested(command, cwd):
+                log(
+                    {
+                        "ts": int(time.time()),
+                        "agent": agent,
+                        "rule": "source-sed",
+                        "decision": "override",
+                        "cwd": cwd,
+                        "file": source_target,
+                        "cmd": command[:300],
+                    }
+                )
+            else:
+                log(
+                    {
+                        "ts": int(time.time()),
+                        "agent": agent,
+                        "rule": "source-sed",
+                        "decision": "deny",
+                        "cwd": cwd,
+                        "file": source_target,
+                        "cmd": command[:300],
+                    }
+                )
+                reason = (
+                    f"Direct `sed` reads of source-code files are blocked (`{source_target}`). "
+                    f"Use code_outline {{path: {json.dumps(source_target)}}} to inspect file structure, "
+                    f"code_definition for a named declaration, or code_grep for literal text. "
+                    f"If prod-code is unavailable, prefix this single read with "
+                    f"`PROD_CODE_SOURCE_FALLBACK=1`; fallback use is logged. Report a persistent prod-code outage."
+                )
     if not reason and agy:
         # No decision at all: "allow" would skip Antigravity's own permission prompt.
         pass
@@ -1105,13 +1444,17 @@ def main():
         if agent in ("gemini", "antigravity"):
             print(json.dumps({"decision": "deny", "reason": reason}))
         else:
-            print(json.dumps({
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": reason,
-                }
-            }))
+            print(
+                json.dumps(
+                    {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": reason,
+                        }
+                    }
+                )
+            )
     return 0
 
 
