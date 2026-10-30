@@ -55,20 +55,23 @@ def _write_version_bundle(
         if pause_on_stdin
         else ""
     )
+    modules = [
+        ".".join(Path(rel).with_suffix("").parts)
+        for rel in installer.REQUIRED_GUARD_RELPATHS
+        if Path(rel).name != "__init__.py"
+    ]
     entry.write_text(
         "#!/usr/bin/env python3\n"
-        "import sys\nfrom pathlib import Path\n"
+        "import importlib\nimport sys\nfrom pathlib import Path\n"
         "_HOOK_DIR = str(Path(__file__).resolve().parent)\n"
         "if _HOOK_DIR not in sys.path:\n    sys.path.insert(0, _HOOK_DIR)\n"
         f'EXPECTED = "{tag}"\n'
         "from prod_code_guard import grep_guard\n"
         f"{pause_code}"
         "import prod_code_guard\n"
-        "from prod_code_guard import python_write_guard, rename_guard, sed_guard, shell, shell_python\n"
-        "versions = {\n"
-        "    prod_code_guard.VERSION, grep_guard.VERSION, python_write_guard.VERSION,\n"
-        "    rename_guard.VERSION, sed_guard.VERSION, shell.VERSION, shell_python.VERSION,\n"
-        "}\n"
+        f"MODULES = {modules!r}\n"
+        "versions = {prod_code_guard.VERSION, grep_guard.VERSION}\n"
+        "versions.update(importlib.import_module(name).VERSION for name in MODULES)\n"
         "if versions != {EXPECTED}:\n"
         "    print(f'MIXED:{EXPECTED}:{sorted(versions)}', file=sys.stderr)\n"
         "    sys.exit(2)\n"
