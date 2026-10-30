@@ -46,15 +46,18 @@ pub(super) fn validate_workspace_paths(
 }
 
 fn validate_single_workspace_path(root: &Path, raw: &str) -> Result<()> {
-    let candidate = if raw.starts_with("file://") {
-        let parsed = url::Url::parse(raw)
-            .map_err(|_| anyhow::anyhow!("path or cwd '{raw}' is not a valid file URI"))?;
-        parsed
-            .to_file_path()
-            .map_err(|_| anyhow::anyhow!("path or cwd '{raw}' is not a local file URI"))?
-    } else {
-        PathBuf::from(raw)
-    };
+    ensure!(
+        !raw.get(..5)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file:")),
+        "file URI paths are not supported; use a filesystem path in the selected workspace"
+    );
+    let candidate = PathBuf::from(raw);
+    ensure!(
+        !candidate
+            .components()
+            .any(|part| part == Component::ParentDir),
+        "path or cwd '{raw}' is outside the selected workspace or contains '..' segments"
+    );
     let resolved = if candidate.is_absolute() {
         resolve_confined_steps(root, Path::new(""), &candidate, false, 0, raw)?
     } else {
@@ -161,4 +164,35 @@ fn resolve_confined_steps(
 
 fn deepest_existing_ancestor(path: &Path) -> Option<&Path> {
     path.ancestors().find(|ancestor| ancestor.exists())
+}
+
+#[cfg(test)]
+mod workspace_confinement_regressions {
+    use super::*;
+
+    #[test]
+    fn rejects_file_uris_in_path_arguments() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let uri = url::Url::from_file_path(root.join("src.rs"))
+            .unwrap()
+            .to_string();
+        for raw in [
+            uri.clone(),
+            uri.replacen("file:", "FILE:", 1),
+            "file:/outside.rs".into(),
+        ] {
+            let err = validate_single_workspace_path(&root, &raw).unwrap_err();
+            assert!(format!("{err:#}").contains("file URI"), "{raw}: {err:#}");
+        }
+    }
+
+    #[test]
+    fn rejects_absolute_paths_containing_parent_components() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let raw = format!("/missing/..{}/src.rs", root.display());
+        let err = validate_single_workspace_path(&root, &raw).unwrap_err();
+        assert!(format!("{err:#}").contains(".."), "{err:#}");
+    }
 }

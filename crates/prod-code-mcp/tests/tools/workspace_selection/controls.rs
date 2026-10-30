@@ -56,7 +56,7 @@ async fn navigation_workspace_selector_rejects_unrelated_and_invalid_roots() {
         args["workspace"] = serde_json::json!(unrelated.root().to_string_lossy());
         let err = execute_tool(nowhere(), &trees.ws.root(), tool, args)
             .await
-            .expect_err(&format!("{tool} must reject unrelated repository"));
+            .unwrap_err();
         assert!(
             format!("{err:#}").contains("same Git repository"),
             "{tool}: {err:#}"
@@ -134,7 +134,7 @@ async fn navigation_workspace_selector_rejects_unrelated_and_invalid_roots() {
             }),
         )
         .await
-        .expect_err(&format!("{unsupported} must reject workspace"));
+        .unwrap_err();
         assert!(
             format!("{err:#}").contains("workspace is supported only by"),
             "{unsupported}: {err:#}"
@@ -188,7 +188,6 @@ async fn navigation_workspace_selector_rejects_paths_escaping_selected_worktree(
         "nonexistent/../../outside.rs".to_string(),
         primary_file,
         outside_str.clone(),
-        outside_uri,
     ];
     #[cfg(unix)]
     {
@@ -215,12 +214,24 @@ async fn navigation_workspace_selector_rejects_paths_escaping_selected_worktree(
             args["workspace"] = serde_json::json!(sibling_str);
             let err = execute_tool(nowhere(), &trees.ws.root(), tool, args)
                 .await
-                .expect_err(&format!("{tool} must reject escaping path `{bad_path}`"));
+                .unwrap_err();
             assert!(
                 format!("{err:#}").contains("outside the selected workspace"),
                 "{tool} ({bad_path}): {err:#}"
             );
         }
+    }
+
+    for uri in [outside_uri, "file:/outside.rs".to_string()] {
+        let err = execute_tool(
+            nowhere(),
+            &trees.ws.root(),
+            "code_grep",
+            serde_json::json!({ "workspace": sibling_str, "pattern": "fn", "path": uri }),
+        )
+        .await
+        .expect_err("file URIs must be refused before dispatch");
+        assert!(format!("{err:#}").contains("file URI"), "{err:#}");
     }
 
     // Alias keys (`file_path`) and primary-selected -> sibling-path must also be confined.

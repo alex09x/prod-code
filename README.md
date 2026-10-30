@@ -241,7 +241,8 @@ For a Git worktree, run the CLI from that worktree to select it. In an existing 
 session, supported navigation and grep calls can select another worktree of the same
 repository with `workspace: "/absolute/path/to/worktree"`. Relative paths in the call
 resolve against that worktree. Omitting `workspace` uses the MCP session's configured
-workspace.
+workspace. For these calls, use filesystem paths without `..` components; file URIs are
+not accepted.
 
 **Find code**
 

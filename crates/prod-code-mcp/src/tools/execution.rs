@@ -148,7 +148,7 @@ fn execute_tool_inner<'a>(
         let mut reference_budget = reference_budget;
         let mut args = args;
         let workspace_root =
-            resolve_workspace_root(&configured_workspace_root, tool_name, &mut args)?;
+            resolve_workspace_root(configured_workspace_root, tool_name, &mut args)?;
         let workspace_root = workspace_root.as_path();
         // Invalid explicit positions are refused before symbol lookup, routing or any write.
         validate_position_arguments(tool_name, &args)?;
