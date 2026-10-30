@@ -11,9 +11,14 @@
 GUARD_SUBMODULES = (
     "__init__.py",
     "shell.py",
+    "grep_patterns.py",
     "grep_guard.py",
     "sed_guard.py",
+    "shell_lex.py",
     "shell_python.py",
+    "python_write_eval.py",
     "python_write_guard.py",
+    "payload.py",
     "rename_guard.py",
+    "dispatch.py",
 )
