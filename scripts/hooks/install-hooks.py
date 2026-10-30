@@ -10,7 +10,7 @@
 """
 Universal installer and health-checker for prod-code AI agent guard hooks.
 Detects installed agent environments (Claude Code, Codex, Antigravity/Gemini),
-deploys the canonical guard script and all required guard modules, and safely
+stages a complete versioned guard bundle with atomic pointer activation, and safely
 registers PreToolUse hooks.
 
 Usage:
@@ -19,33 +19,69 @@ Usage:
     python3 scripts/hooks/install-hooks.py --uninstall # Remove guard hooks from agent configs
 """
 
-import argparse
-import os
-import shutil
-import stat
 import sys
-import urllib.request
+
+if __name__ == "__main__":
+    sys.path[:] = [p for p in sys.path if p not in ("", ".")]
+
+import argparse
+import importlib.util
+import os
 from pathlib import Path
+from types import ModuleType
+
+if __name__ == "__main__":
+    _cwd_abs = os.path.abspath(os.getcwd())
+    _cwd_real = os.path.realpath(os.getcwd())
+    sys.path[:] = [
+        p
+        for p in sys.path
+        if p not in ("", ".")
+        and os.path.abspath(p) != _cwd_abs
+        and os.path.realpath(p) != _cwd_real
+    ]
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
 
-from hook_providers import (
-    CANONICAL_HOOK_NAME,
-    AntigravityProvider,
-    ClaudeCodeProvider,
-    CodexProvider,
-    Provider,
-    atomic_write_json,
-    read_json_safe,
-)
+
+def _load_sibling_module(module_name: str, filename: str) -> ModuleType:
+    module_path = SCRIPT_DIR / filename
+    spec = importlib.util.spec_from_file_location(module_name, str(module_path))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load installer module at {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_providers_mod = _load_sibling_module("_prod_code_hook_providers", "hook_providers.py")
+_deploy_mod = _load_sibling_module("_prod_code_hook_deploy", "hook_deploy.py")
+
+CANONICAL_HOOK_NAME = _providers_mod.CANONICAL_HOOK_NAME
+AntigravityProvider = _providers_mod.AntigravityProvider
+ClaudeCodeProvider = _providers_mod.ClaudeCodeProvider
+CodexProvider = _providers_mod.CodexProvider
+Provider = _providers_mod.Provider
+atomic_write_json = _providers_mod.atomic_write_json
+read_json_safe = _providers_mod.read_json_safe
+
+GUARD_PACKAGE_DIR = _deploy_mod.GUARD_PACKAGE_DIR
+LAUNCHER_MARKER = _deploy_mod.LAUNCHER_MARKER
+RAW_GITHUB_HOOKS_BASE = _deploy_mod.RAW_GITHUB_HOOKS_BASE
+REQUIRED_GUARD_COMPONENTS = _deploy_mod.REQUIRED_GUARD_COMPONENTS
+REQUIRED_GUARD_RELPATHS = _deploy_mod.REQUIRED_GUARD_RELPATHS
+check_canonical_hook = _deploy_mod.check_canonical_hook
+deploy_canonical_script = _deploy_mod.deploy_canonical_script
+resolve_active_entrypoint = _deploy_mod.resolve_active_entrypoint
+resolve_active_version_dir = _deploy_mod.resolve_active_version_dir
+versions_store_dir = _deploy_mod.versions_store_dir
 
 __all__ = [
     "CANONICAL_HOOK_DIR",
     "CANONICAL_HOOK_NAME",
     "CANONICAL_HOOK_PATH",
     "GUARD_PACKAGE_DIR",
+    "LAUNCHER_MARKER",
     "RAW_GITHUB_HOOKS_BASE",
     "REPO_HOOK_SRC",
     "REQUIRED_GUARD_COMPONENTS",
@@ -59,101 +95,14 @@ __all__ = [
     "deploy_canonical_script",
     "main",
     "read_json_safe",
+    "resolve_active_entrypoint",
+    "resolve_active_version_dir",
+    "versions_store_dir",
 ]
 
 CANONICAL_HOOK_DIR = os.path.expanduser("~/.claude/hooks")
 CANONICAL_HOOK_PATH = os.path.join(CANONICAL_HOOK_DIR, CANONICAL_HOOK_NAME)
 REPO_HOOK_SRC = SCRIPT_DIR / CANONICAL_HOOK_NAME
-RAW_GITHUB_HOOKS_BASE = "https://raw.githubusercontent.com/alex09x/prod-code/main/scripts/hooks"
-
-GUARD_PACKAGE_DIR = "prod_code_guard"
-REQUIRED_GUARD_RELPATHS = (
-    f"{GUARD_PACKAGE_DIR}/__init__.py",
-    f"{GUARD_PACKAGE_DIR}/shell.py",
-    f"{GUARD_PACKAGE_DIR}/grep_guard.py",
-    f"{GUARD_PACKAGE_DIR}/sed_guard.py",
-    f"{GUARD_PACKAGE_DIR}/shell_python.py",
-    f"{GUARD_PACKAGE_DIR}/python_write_guard.py",
-    f"{GUARD_PACKAGE_DIR}/rename_guard.py",
-)
-REQUIRED_GUARD_COMPONENTS = (CANONICAL_HOOK_NAME, *REQUIRED_GUARD_RELPATHS)
-
-
-def _download_component(url: str, dest_tmp: Path) -> None:
-    with urllib.request.urlopen(url, timeout=15) as resp:
-        body = resp.read()
-    if not body:
-        raise ValueError(f"Empty download from {url}")
-    dest_tmp.write_bytes(body)
-
-
-def deploy_canonical_script(
-    src_path: Path, dest_path: str, base_url: str = RAW_GITHUB_HOOKS_BASE
-) -> None:
-    """Deploys the canonical guard entrypoint and all required guard modules atomically."""
-    src = Path(src_path)
-    src_dir = src.parent
-    dest = Path(dest_path)
-    dest_dir = dest.parent
-    dest_dir.mkdir(parents=True, exist_ok=True)
-
-    manifest: list[tuple[Path, str, Path, bool]] = [(src, CANONICAL_HOOK_NAME, dest, True)]
-    for rel in REQUIRED_GUARD_RELPATHS:
-        manifest.append((src_dir / rel, rel, dest_dir / rel, False))
-
-    staged: list[tuple[Path, Path, bool]] = []
-    suffix = f".tmp.{os.getpid()}_{os.urandom(4).hex()}"
-    try:
-        for local_src, remote_rel, final_dest, is_exec in manifest:
-            final_dest.parent.mkdir(parents=True, exist_ok=True)
-            tmp_dest = final_dest.with_name(final_dest.name + suffix)
-            if local_src.is_file():
-                shutil.copy2(local_src, tmp_dest)
-            else:
-                url = f"{base_url.rstrip('/')}/{remote_rel}"
-                try:
-                    _download_component(url, tmp_dest)
-                except Exception as exc:
-                    raise FileNotFoundError(
-                        f"Required hook component missing at {local_src} and failed to download from {url}: {exc}"
-                    ) from exc
-            staged.append((tmp_dest, final_dest, is_exec))
-
-        for tmp_dest, final_dest, is_exec in staged:
-            mode = stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH
-            if is_exec:
-                mode |= stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
-            tmp_dest.chmod(mode)
-            os.replace(tmp_dest, final_dest)
-    except Exception:
-        for tmp_dest, _, _ in staged:
-            if tmp_dest.exists():
-                try:
-                    tmp_dest.unlink()
-                except OSError:
-                    pass
-        raise
-
-
-def check_canonical_hook(hook_path: str) -> tuple[bool, str]:
-    """Verifies the canonical guard script and all required guard modules exist and are usable."""
-    hook = Path(hook_path)
-    if not hook.is_file():
-        return False, f"MISSING ({hook_path})"
-    if not os.access(hook_path, os.X_OK):
-        return False, f"EXISTS BUT NOT EXECUTABLE ({hook_path})"
-
-    hook_dir = hook.parent
-    missing = [
-        rel
-        for rel in REQUIRED_GUARD_RELPATHS
-        if not (hook_dir / rel).is_file()
-        or not os.access(hook_dir / rel, os.R_OK)
-        or (hook_dir / rel).stat().st_size == 0
-    ]
-    if missing:
-        return False, f"MISSING REQUIRED COMPONENTS ({', '.join(missing)}) in {hook_dir}"
-    return True, f"OK ({hook_path}, +{len(REQUIRED_GUARD_RELPATHS)} modules)"
 
 
 def _run_verification(canonical_path: str, providers: list[Provider]) -> bool:
@@ -179,15 +128,37 @@ def main(argv: list[str] | None = None, providers: list[Provider] | None = None)
     parser = argparse.ArgumentParser(
         description="Install and manage prod-code guard hooks across AI coding agents."
     )
-    parser.add_argument("--check", action="store_true", help="Inspect and verify configuration without making changes")
-    parser.add_argument("--uninstall", action="store_true", help="Remove guard hooks from agent configurations")
-    parser.add_argument("--hook-script", type=str, default=None, help=f"Path to source hook script (default: {REPO_HOOK_SRC})")
-    parser.add_argument("--canonical-hook", type=str, default=None, help=f"Destination canonical hook path (default: {CANONICAL_HOOK_PATH})")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Inspect and verify configuration without making changes",
+    )
+    parser.add_argument(
+        "--uninstall",
+        action="store_true",
+        help="Remove guard hooks from agent configurations",
+    )
+    parser.add_argument(
+        "--hook-script",
+        type=str,
+        default=None,
+        help=f"Path to source hook script (default: {REPO_HOOK_SRC})",
+    )
+    parser.add_argument(
+        "--canonical-hook",
+        type=str,
+        default=None,
+        help=f"Destination canonical hook path (default: {CANONICAL_HOOK_PATH})",
+    )
     args = parser.parse_args(argv)
 
     hook_src = Path(args.hook_script) if args.hook_script else REPO_HOOK_SRC
     canonical_path = args.canonical_hook or CANONICAL_HOOK_PATH
-    active_providers = providers if providers is not None else [ClaudeCodeProvider(), CodexProvider(), AntigravityProvider()]
+    active_providers = (
+        providers
+        if providers is not None
+        else [ClaudeCodeProvider(), CodexProvider(), AntigravityProvider()]
+    )
 
     print("======================================================================")
     print(" prod-code Guard Hook Installer & Health Checker")
