@@ -79,15 +79,23 @@ class MultiFileRenameUnitCasesMixin(GuardTestCaseBase):
             ("fnv1a_64", "normalized_source_hash"),
         )
         # Multi-line code / statements with logic changes rejected
-        self.assertIsNone(guard.single_symbol_rename("let x = foo();", "let x = foo() + 10;"))
         self.assertIsNone(
-            guard.single_symbol_rename("if x > 0 { return true; }", "if x >= 0 { return false; }")
+            guard.single_symbol_rename("let x = foo();", "let x = foo() + 10;")
+        )
+        self.assertIsNone(
+            guard.single_symbol_rename(
+                "if x > 0 { return true; }", "if x >= 0 { return false; }"
+            )
         )
         self.assertIsNone(
             guard.single_symbol_rename("let a = 1; let b = 2;", "let c = 1; let d = 2;")
         )
-        self.assertEqual(guard.single_symbol_rename("fn old() {}", "fn new() {}"), ("old", "new"))
-        self.assertIsNone(guard.single_symbol_rename("fn old() { 1 }", "fn old() { 2 }"))
+        self.assertEqual(
+            guard.single_symbol_rename("fn old() {}", "fn new() {}"), ("old", "new")
+        )
+        self.assertIsNone(
+            guard.single_symbol_rename("fn old() { 1 }", "fn old() { 2 }")
+        )
         # Identical or empty
         self.assertIsNone(guard.single_symbol_rename("foo", "foo"))
         self.assertIsNone(guard.single_symbol_rename("", "bar"))
@@ -127,7 +135,11 @@ class MultiFileRenameUnitCasesMixin(GuardTestCaseBase):
 
             # Different repository for same (old_sym, new_sym): allowed!
             denied, other = guard.check_multi_file_rename(
-                conv, "/other_repo/src/b.rs", "old_func", "new_func", repo_root="/other_repo"
+                conv,
+                "/other_repo/src/b.rs",
+                "old_func",
+                "new_func",
+                repo_root="/other_repo",
             )
             self.assertFalse(denied)
             self.assertIsNone(other)
@@ -150,7 +162,9 @@ class MultiFileRenameUnitCasesMixin(GuardTestCaseBase):
             os.utime(stale_file, (past_time, past_time))
             os.utime(stale_lock, (past_time, past_time))
             # Next check cleans up stale .json file but PRESERVES .lock file
-            guard.check_multi_file_rename(conv, "/repo/src/c.rs", "foo", "bar", repo_root="/repo")
+            guard.check_multi_file_rename(
+                conv, "/repo/src/c.rs", "foo", "bar", repo_root="/repo"
+            )
             self.assertFalse(os.path.exists(stale_file))
             self.assertTrue(
                 os.path.exists(stale_lock),
@@ -273,7 +287,9 @@ class MultiFileRenameUnitCasesMixin(GuardTestCaseBase):
                 res2 = f2.result()
 
             results = [res1[0], res2[0]]
-            self.assertEqual(sorted(results), [False, True], f"Concurrent results: {res1} and {res2}")
+            self.assertEqual(
+                sorted(results), [False, True], f"Concurrent results: {res1} and {res2}"
+            )
 
     def test_codex_apply_patch_parsing_and_detection(self) -> None:
         guard = self._guard()
@@ -298,13 +314,20 @@ class MultiFileRenameUnitCasesMixin(GuardTestCaseBase):
         edits = guard.file_edits_from_payload(payload)
         self.assertEqual(len(edits), 2)
         self.assertEqual(edits[0][0], "/repo/src/lib.rs")
-        self.assertEqual(guard.single_symbol_rename(edits[0][1], edits[0][2]), ("old_sym", "new_sym"))
+        self.assertEqual(
+            guard.single_symbol_rename(edits[0][1], edits[0][2]), ("old_sym", "new_sym")
+        )
         self.assertEqual(edits[1][0], "/repo/src/main.rs")
-        self.assertEqual(guard.single_symbol_rename(edits[1][1], edits[1][2]), ("old_sym", "new_sym"))
+        self.assertEqual(
+            guard.single_symbol_rename(edits[1][1], edits[1][2]), ("old_sym", "new_sym")
+        )
         self.assertFalse(edits[0][3])
 
         # Test override inside patch
         patch_override = patch_text + "\n# PROD_CODE_MANUAL_RENAME=1"
-        payload_override = {"tool_name": "apply_patch", "tool_input": {"cmd": patch_override}}
+        payload_override = {
+            "tool_name": "apply_patch",
+            "tool_input": {"cmd": patch_override},
+        }
         edits_override = guard.file_edits_from_payload(payload_override)
         self.assertTrue(all(e[3] for e in edits_override))

@@ -133,7 +133,9 @@ class BuildCommandCasesMixin(GuardTestCaseBase):
             with self.subTest(command=cmd):
                 self.assertIsNone(guard.verdict(cmd))
 
-    def test_quoted_search_patterns_and_reporting_payloads_allowed_issue_868(self) -> None:
+    def test_quoted_search_patterns_and_reporting_payloads_allowed_issue_868(
+        self,
+    ) -> None:
         guard = self._guard()
         # Issue #868: quoted regex alternations and documentation payloads containing build command names
         allowed = [

@@ -27,35 +27,149 @@ DEFINITION = re.compile(
     r"(?P<name>" + IDENT + r")"
 )
 GREP_OPTS_WITH_ARG = {
-    "-e", "-f", "-A", "-B", "-C", "-m", "-g", "-t", "-T", "--glob", "--type",
-    "--type-not", "--regexp", "--file", "--max-count", "--context",
-    "--after-context", "--before-context", "--include", "--exclude",
+    "-e",
+    "-f",
+    "-A",
+    "-B",
+    "-C",
+    "-m",
+    "-g",
+    "-t",
+    "-T",
+    "--glob",
+    "--type",
+    "--type-not",
+    "--regexp",
+    "--file",
+    "--max-count",
+    "--context",
+    "--after-context",
+    "--before-context",
+    "--include",
+    "--exclude",
 }
 
 RESOURCE_EXTENSIONS = {
     # Data & config formats
-    "json", "jsonl", "yaml", "yml", "toml", "xml", "csv", "tsv", "sql", "graphql", "gql", "proto",
+    "json",
+    "jsonl",
+    "yaml",
+    "yml",
+    "toml",
+    "xml",
+    "csv",
+    "tsv",
+    "sql",
+    "graphql",
+    "gql",
+    "proto",
     # Text, documentation & logs
-    "md", "markdown", "txt", "rst", "adoc", "pdf", "log", "diff", "patch",
+    "md",
+    "markdown",
+    "txt",
+    "rst",
+    "adoc",
+    "pdf",
+    "log",
+    "diff",
+    "patch",
     # Config & lockfiles
-    "lock", "ini", "cfg", "conf", "env", "plist", "properties", "map", "snap",
+    "lock",
+    "ini",
+    "cfg",
+    "conf",
+    "env",
+    "plist",
+    "properties",
+    "map",
+    "snap",
     # Web & styles
-    "html", "htm", "css", "scss", "sass", "less", "svg",
+    "html",
+    "htm",
+    "css",
+    "scss",
+    "sass",
+    "less",
+    "svg",
     # Images & media
-    "png", "jpg", "jpeg", "gif", "ico", "webp", "bmp", "tiff",
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "ico",
+    "webp",
+    "bmp",
+    "tiff",
     # Archives & binaries
-    "zip", "tar", "gz", "tgz", "bz2", "xz", "wasm", "bin", "dat", "data", "out",
+    "zip",
+    "tar",
+    "gz",
+    "tgz",
+    "bz2",
+    "xz",
+    "wasm",
+    "bin",
+    "dat",
+    "data",
+    "out",
     # Shell & scripts
-    "sh", "bash", "zsh", "fish", "bat", "ps1",
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "bat",
+    "ps1",
     # Source code files
-    "rs", "go", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "pyi", "c", "cc", "cpp", "cxx",
-    "h", "hh", "hpp", "hxx", "swift", "kt", "kts", "java", "cs", "rb", "php", "scala", "zig",
-    "lua", "r", "dart", "ex", "exs", "erl", "hs", "clj", "jl", "asm", "s",
+    "rs",
+    "go",
+    "ts",
+    "tsx",
+    "js",
+    "jsx",
+    "mjs",
+    "cjs",
+    "py",
+    "pyi",
+    "c",
+    "cc",
+    "cpp",
+    "cxx",
+    "h",
+    "hh",
+    "hpp",
+    "hxx",
+    "swift",
+    "kt",
+    "kts",
+    "java",
+    "cs",
+    "rb",
+    "php",
+    "scala",
+    "zig",
+    "lua",
+    "r",
+    "dart",
+    "ex",
+    "exs",
+    "erl",
+    "hs",
+    "clj",
+    "jl",
+    "asm",
+    "s",
 }
 
 SPECIAL_FILENAMES = {
-    "makefile", "dockerfile", "containerfile", "license", "readme",
-    "cargo.lock", "gemfile", "procfile", "vagrantfile",
+    "makefile",
+    "dockerfile",
+    "containerfile",
+    "license",
+    "readme",
+    "cargo.lock",
+    "gemfile",
+    "procfile",
+    "vagrantfile",
 }
 
 
@@ -174,7 +288,9 @@ def bre_to_ripgrep(pattern):
 
 def ripgrep_pattern(command, cwd, pat):
     """`pat`, from a grep in `command`, written the way `prod-code grep` reads it (#1581)."""
-    for patterns, _paths, _recursive, fixed_strings, basic in _iter_grep_invocations(command, cwd):
+    for patterns, _paths, _recursive, fixed_strings, basic in _iter_grep_invocations(
+        command, cwd
+    ):
         if pat in patterns:
             if fixed_strings:
                 return re.sub(r"([\\.+*?()|\[\]{}^$])", r"\\\1", pat)
@@ -199,7 +315,18 @@ def _iter_grep_invocations(command, cwd):
             continue
         tool = os.path.basename(words[0])
         args = words[1:]
-        if tool in ("python", "python3", "node", "ruby", "perl", "sed", "awk", "tee", "cat", "patch"):
+        if tool in (
+            "python",
+            "python3",
+            "node",
+            "ruby",
+            "perl",
+            "sed",
+            "awk",
+            "tee",
+            "cat",
+            "patch",
+        ):
             preceded_by_script = True
             continue
         if tool in ("bash", "sh", "zsh", "fish"):
@@ -251,7 +378,10 @@ def _iter_grep_invocations(command, cwd):
             preceded_by_script
             and not recursive
             and paths
-            and all(not os.path.isdir(os.path.join(cwd or ".", os.path.expanduser(x))) for x in paths)
+            and all(
+                not os.path.isdir(os.path.join(cwd or ".", os.path.expanduser(x)))
+                for x in paths
+            )
         ):
             continue
         if paths:
@@ -261,7 +391,9 @@ def _iter_grep_invocations(command, cwd):
                 if CODE_EXT.search(x)
                 or (
                     os.path.isdir(os.path.join(cwd or ".", os.path.expanduser(x)))
-                    and not re.search(r"(^|/)(\.claude|node_modules|target|\.build|logs?|tmp)(/|$)", x)
+                    and not re.search(
+                        r"(^|/)(\.claude|node_modules|target|\.build|logs?|tmp)(/|$)", x
+                    )
                 )
             ]
             if not code or all(NOT_CODE_EXT.search(x) for x in paths):
@@ -279,7 +411,9 @@ def symbol_grep(command, cwd):
     """(symbol, pattern) when the command looks a symbol up over source files with grep/rg."""
     if "PROD_CODE_GREP=1" in command:
         return None
-    for patterns, _paths, _recursive, fixed_strings, _basic in _iter_grep_invocations(command, cwd):
+    for patterns, _paths, _recursive, fixed_strings, _basic in _iter_grep_invocations(
+        command, cwd
+    ):
         for pat in patterns:
             if is_filename_or_fixture_pattern(pat, cwd, fixed_strings):
                 continue
@@ -294,10 +428,16 @@ def text_grep(command, cwd):
     over source files with grep/rg that should be routed to `code_grep` / `prod-code grep` (#1119)."""
     if "PROD_CODE_GREP=1" in command:
         return None
-    for patterns, paths, _recursive, fixed_strings, _basic in _iter_grep_invocations(command, cwd):
+    for patterns, paths, _recursive, fixed_strings, _basic in _iter_grep_invocations(
+        command, cwd
+    ):
         target_path = None
         for p in paths:
-            if p != "." and not p.startswith("*.") and not re.fullmatch(r"\.[a-z0-9]+", p, re.IGNORECASE):
+            if (
+                p != "."
+                and not p.startswith("*.")
+                and not re.fullmatch(r"\.[a-z0-9]+", p, re.IGNORECASE)
+            ):
                 target_path = p
                 break
         for pat in patterns:

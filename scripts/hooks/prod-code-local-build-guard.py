@@ -22,8 +22,10 @@ import time
 from pathlib import Path
 
 _HOOK_DIR = str(Path(__file__).resolve().parent)
-if _HOOK_DIR not in sys.path:
-    sys.path.insert(0, _HOOK_DIR)
+sys.path[:] = [
+    _HOOK_DIR,
+    *[p for p in sys.path if p not in ("", _HOOK_DIR, os.getcwd())],
+]
 
 from prod_code_guard.grep_guard import (
     asked_prod_code,
@@ -130,7 +132,9 @@ def log(entry):
         pass
 
 
-def check_multi_file_rename(conv_id, file_path, old_sym, new_sym, repo_root=None, now=None):
+def check_multi_file_rename(
+    conv_id, file_path, old_sym, new_sym, repo_root=None, now=None
+):
     return _check_multi_file_rename(
         conv_id,
         file_path,
@@ -176,7 +180,9 @@ def _resolve_transcript(payload: dict, cwd: str | None) -> str | None:
             if path_val:
                 slug = path_val.replace("/", "-")
                 for prefix in (slug, f"-{slug.lstrip('-')}"):
-                    cand = os.path.expanduser(f"~/.claude/projects/{prefix}/{sess_id}.jsonl")
+                    cand = os.path.expanduser(
+                        f"~/.claude/projects/{prefix}/{sess_id}.jsonl"
+                    )
                     if os.path.isfile(cand):
                         return cand
     return transcript
@@ -189,27 +195,74 @@ def _handle_edit_renames(payload: dict, edits: list, agy: bool) -> int:
         agent = "antigravity"
         conv_id = payload.get("conversationId") or "default"
     else:
-        tool_in = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
-        cwd = tool_in.get("workdir") or tool_in.get("cwd") or payload.get("cwd") or os.getcwd()
-        agent = "gemini" if payload.get("hook_event_name") == "BeforeTool" else payload.get("tool_name", "")
-        conv_id = payload.get("conversation_id") or payload.get("session_id") or "default"
+        tool_in = (
+            payload.get("tool_input")
+            if isinstance(payload.get("tool_input"), dict)
+            else {}
+        )
+        cwd = (
+            tool_in.get("workdir")
+            or tool_in.get("cwd")
+            or payload.get("cwd")
+            or os.getcwd()
+        )
+        agent = (
+            "gemini"
+            if payload.get("hook_event_name") == "BeforeTool"
+            else payload.get("tool_name", "")
+        )
+        conv_id = (
+            payload.get("conversation_id") or payload.get("session_id") or "default"
+        )
 
     for target_file, old_content, replacement, override in edits:
-        resolved_file = target_file if os.path.isabs(target_file) else os.path.join(cwd, target_file)
+        resolved_file = (
+            target_file
+            if os.path.isabs(target_file)
+            else os.path.join(cwd, target_file)
+        )
         repo_root = git_repo_root(resolved_file) or git_repo_root(cwd)
-        if not (resolved_file and CODE_EXT.search(resolved_file) and repo_root is not None):
+        if not (
+            resolved_file and CODE_EXT.search(resolved_file) and repo_root is not None
+        ):
             continue
         sym_pair = single_symbol_rename(old_content, replacement)
         if not sym_pair:
             continue
         old_sym, new_sym = sym_pair
         if override:
-            log({"ts": int(time.time()), "agent": agent, "rule": "multi-file-rename", "decision": "override", "cwd": cwd, "symbol": old_sym, "file": resolved_file})
+            log(
+                {
+                    "ts": int(time.time()),
+                    "agent": agent,
+                    "rule": "multi-file-rename",
+                    "decision": "override",
+                    "cwd": cwd,
+                    "symbol": old_sym,
+                    "file": resolved_file,
+                }
+            )
             continue
-        is_multi, prev_file = check_multi_file_rename(conv_id, resolved_file, old_sym, new_sym, repo_root=repo_root)
+        is_multi, prev_file = check_multi_file_rename(
+            conv_id, resolved_file, old_sym, new_sym, repo_root=repo_root
+        )
         if is_multi:
-            log({"ts": int(time.time()), "agent": agent, "rule": "multi-file-rename", "decision": "deny", "cwd": cwd, "symbol": old_sym, "file": resolved_file, "prev_file": prev_file})
-            prev_name, cur_name = os.path.basename(prev_file), os.path.basename(resolved_file)
+            log(
+                {
+                    "ts": int(time.time()),
+                    "agent": agent,
+                    "rule": "multi-file-rename",
+                    "decision": "deny",
+                    "cwd": cwd,
+                    "symbol": old_sym,
+                    "file": resolved_file,
+                    "prev_file": prev_file,
+                }
+            )
+            prev_name, cur_name = (
+                os.path.basename(prev_file),
+                os.path.basename(resolved_file),
+            )
             reason = (
                 f"Multi-file symbol rename detected: replacing `{old_sym}` with `{new_sym}` across files "
                 f"(`{prev_name}` and `{cur_name}`). Do not edit files manually across the workspace. "
@@ -222,7 +275,17 @@ def _handle_edit_renames(payload: dict, edits: list, agy: bool) -> int:
             )
             _emit_denial(agent, reason)
             return 0
-        log({"ts": int(time.time()), "agent": agent, "rule": "multi-file-rename", "decision": "first-file-tracked", "cwd": cwd, "symbol": old_sym, "file": resolved_file})
+        log(
+            {
+                "ts": int(time.time()),
+                "agent": agent,
+                "rule": "multi-file-rename",
+                "decision": "first-file-tracked",
+                "cwd": cwd,
+                "symbol": old_sym,
+                "file": resolved_file,
+            }
+        )
     return 0
 
 
@@ -231,6 +294,8 @@ def main():
     try:
         payload = json.loads(raw)
     except (ValueError, TypeError):
+        return 0
+    if not isinstance(payload, dict):
         return 0
     agy = isinstance(payload.get("toolCall"), dict)
 
@@ -247,18 +312,50 @@ def main():
         cwd = args.get("Cwd") or (paths[0] if paths else os.getcwd())
         agent = "antigravity"
     else:
-        tool_in = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
-        cwd = tool_in.get("workdir") or tool_in.get("cwd") or payload.get("cwd") or os.getcwd()
-        agent = "gemini" if payload.get("hook_event_name") == "BeforeTool" else payload.get("tool_name", "")
+        tool_in = (
+            payload.get("tool_input")
+            if isinstance(payload.get("tool_input"), dict)
+            else {}
+        )
+        cwd = (
+            tool_in.get("workdir")
+            or tool_in.get("cwd")
+            or payload.get("cwd")
+            or os.getcwd()
+        )
+        agent = (
+            "gemini"
+            if payload.get("hook_event_name") == "BeforeTool"
+            else payload.get("tool_name", "")
+        )
 
     reason = verdict(command)
     if reason:
-        log({"ts": int(time.time()), "agent": agent, "rule": "local-build", "decision": "deny", "cwd": cwd, "cmd": command[:300]})
+        log(
+            {
+                "ts": int(time.time()),
+                "agent": agent,
+                "rule": "local-build",
+                "decision": "deny",
+                "cwd": cwd,
+                "cmd": command[:300],
+            }
+        )
 
     if not reason:
         write_target = scripted_source_write_target(command, cwd)
         if write_target:
-            log({"ts": int(time.time()), "agent": agent, "rule": "scripted-source-write", "decision": "deny", "cwd": cwd, "file": write_target, "cmd": command[:300]})
+            log(
+                {
+                    "ts": int(time.time()),
+                    "agent": agent,
+                    "rule": "scripted-source-write",
+                    "decision": "deny",
+                    "cwd": cwd,
+                    "file": write_target,
+                    "cmd": command[:300],
+                }
+            )
             reason = (
                 f"Inline Python rewrites of repository source files are blocked (`{write_target}`). "
                 f"Use a native contextual edit tool (`Edit`, `replace_file_content`, or `apply_patch`) "
@@ -274,23 +371,64 @@ def main():
             if again:
                 sym = again[0]
                 if not asked_prod_code(transcript, sym, agent=agent):
-                    log({"ts": int(time.time()), "agent": agent, "rule": "symbol-grep", "decision": "override-refused", "cwd": cwd, "symbol": sym, "cmd": command[:300]})
+                    log(
+                        {
+                            "ts": int(time.time()),
+                            "agent": agent,
+                            "rule": "symbol-grep",
+                            "decision": "override-refused",
+                            "cwd": cwd,
+                            "symbol": sym,
+                            "cmd": command[:300],
+                        }
+                    )
                     reason = (
                         f"Grep for symbol `{sym}` is blocked. Ask prod-code first: "
                         f'code_definition {{symbol: "{sym}"}}, code_symbols {{query: "{sym}"}}, '
                         f'or code_grep {{pattern: "{sym}"}} (`prod-code grep "{sym}"`).'
                     )
                 elif not reported_prod_code_issue(transcript, sym, agent=agent):
-                    log({"ts": int(time.time()), "agent": agent, "rule": "symbol-grep", "decision": "override-refused", "cwd": cwd, "symbol": sym, "cmd": command[:300]})
+                    log(
+                        {
+                            "ts": int(time.time()),
+                            "agent": agent,
+                            "rule": "symbol-grep",
+                            "decision": "override-refused",
+                            "cwd": cwd,
+                            "symbol": sym,
+                            "cmd": command[:300],
+                        }
+                    )
                     reason = (
                         f"Grep for symbol `{sym}` is blocked. If prod-code failed to resolve `{sym}`, "
                         f'you must report the bug first: code_report_issue {{title: "Symbol not found: {sym}", body: "..."}}.'
                     )
                 else:
-                    log({"ts": int(time.time()), "agent": agent, "rule": "symbol-grep", "decision": "override", "cwd": cwd, "symbol": sym, "cmd": command[:300]})
+                    log(
+                        {
+                            "ts": int(time.time()),
+                            "agent": agent,
+                            "rule": "symbol-grep",
+                            "decision": "override",
+                            "cwd": cwd,
+                            "symbol": sym,
+                            "cmd": command[:300],
+                        }
+                    )
         if found:
             sym, pat = found
-            log({"ts": int(time.time()), "agent": agent, "rule": "symbol-grep", "decision": "deny", "cwd": cwd, "symbol": sym, "pattern": pat, "cmd": command[:300]})
+            log(
+                {
+                    "ts": int(time.time()),
+                    "agent": agent,
+                    "rule": "symbol-grep",
+                    "decision": "deny",
+                    "cwd": cwd,
+                    "symbol": sym,
+                    "pattern": pat,
+                    "cmd": command[:300],
+                }
+            )
             rg = ripgrep_pattern(command, cwd, pat)
             reason = (
                 f"Grep for code symbol `{sym}` is blocked (`{pat}`). Use prod-code AST tools: "
@@ -302,10 +440,28 @@ def main():
             found_text = text_grep(command, cwd)
             if found_text is not None:
                 pat, target_path = found_text
-                log({"ts": int(time.time()), "agent": agent, "rule": "text-grep", "decision": "deny", "cwd": cwd, "pattern": pat, "cmd": command[:300]})
+                log(
+                    {
+                        "ts": int(time.time()),
+                        "agent": agent,
+                        "rule": "text-grep",
+                        "decision": "deny",
+                        "cwd": cwd,
+                        "pattern": pat,
+                        "cmd": command[:300],
+                    }
+                )
                 rg = ripgrep_pattern(command, cwd, pat)
-                mcp_call = f'code_grep {{pattern: "{rg}", path: "{target_path}"}}' if target_path else f'code_grep {{pattern: "{rg}"}}'
-                cli_call = f'prod-code grep "{rg}" {target_path}' if target_path else f'prod-code grep "{rg}"'
+                mcp_call = (
+                    f'code_grep {{pattern: "{rg}", path: "{target_path}"}}'
+                    if target_path
+                    else f'code_grep {{pattern: "{rg}"}}'
+                )
+                cli_call = (
+                    f'prod-code grep "{rg}" {target_path}'
+                    if target_path
+                    else f'prod-code grep "{rg}"'
+                )
                 reason = (
                     f"Grep for text pattern `{pat}` over source files is blocked. "
                     f"Use prod-code literal/regex text search instead: {mcp_call} (CLI: `{cli_call}`). "
@@ -317,9 +473,29 @@ def main():
         source_target = sed_source_target(command, cwd)
         if source_target:
             if source_sed_fallback_requested(command, cwd):
-                log({"ts": int(time.time()), "agent": agent, "rule": "source-sed", "decision": "override", "cwd": cwd, "file": source_target, "cmd": command[:300]})
+                log(
+                    {
+                        "ts": int(time.time()),
+                        "agent": agent,
+                        "rule": "source-sed",
+                        "decision": "override",
+                        "cwd": cwd,
+                        "file": source_target,
+                        "cmd": command[:300],
+                    }
+                )
             else:
-                log({"ts": int(time.time()), "agent": agent, "rule": "source-sed", "decision": "deny", "cwd": cwd, "file": source_target, "cmd": command[:300]})
+                log(
+                    {
+                        "ts": int(time.time()),
+                        "agent": agent,
+                        "rule": "source-sed",
+                        "decision": "deny",
+                        "cwd": cwd,
+                        "file": source_target,
+                        "cmd": command[:300],
+                    }
+                )
                 reason = (
                     f"Direct `sed` reads of source-code files are blocked (`{source_target}`). "
                     f"Use code_outline {{path: {json.dumps(source_target)}}} to inspect file structure, "

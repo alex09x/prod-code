@@ -39,7 +39,9 @@ class SymbolGrepPolicyCasesMixin(GuardTestCaseBase):
         # Empty transcript -> False
         with open(self.transcript_file, "w") as f:
             f.write(json.dumps({"step": 1, "type": "USER_INPUT"}) + "\n")
-        self.assertFalse(guard.reported_prod_code_issue(self.transcript_file, "my_func"))
+        self.assertFalse(
+            guard.reported_prod_code_issue(self.transcript_file, "my_func")
+        )
 
         # Transcript with code_report_issue -> True
         with open(self.transcript_file, "a") as f:
@@ -106,17 +108,24 @@ class SymbolGrepPolicyCasesMixin(GuardTestCaseBase):
 
         # Case 2: Asked prod-code, but did NOT report issue
         with open(self.transcript_file, "w") as f:
-            f.write(json.dumps({"tool": "code_definition", "args": {"symbol": "my_symbol"}}) + "\n")
+            f.write(
+                json.dumps({"tool": "code_definition", "args": {"symbol": "my_symbol"}})
+                + "\n"
+            )
 
         res_2 = json.loads(self._invoke_main_stdio(payload))
         self.assertEqual(res_2.get("decision"), "deny")
-        self.assertIn("report the bug first: code_report_issue", res_2.get("reason", ""))
+        self.assertIn(
+            "report the bug first: code_report_issue", res_2.get("reason", "")
+        )
         self.assertNotIn("PROD_CODE_GREP", res_2.get("reason", ""))
 
         # Case 3: Asked prod-code AND reported issue -> override allowed!
         with open(self.transcript_file, "a") as f:
             f.write(
-                json.dumps({"tool": "code_report_issue", "args": {"title": "Symbol not found"}})
+                json.dumps(
+                    {"tool": "code_report_issue", "args": {"title": "Symbol not found"}}
+                )
                 + "\n"
             )
 
@@ -127,9 +136,13 @@ class SymbolGrepPolicyCasesMixin(GuardTestCaseBase):
         guard = self._guard()
         # For AI agents, lack of transcript must block the bypass rather than assuming True
         self.assertFalse(guard.reported_prod_code_issue(None, "my_func", agent="Bash"))
-        self.assertFalse(guard.reported_prod_code_issue("/nonexistent/path", "my_func", agent="Bash"))
+        self.assertFalse(
+            guard.reported_prod_code_issue("/nonexistent/path", "my_func", agent="Bash")
+        )
         self.assertFalse(guard.asked_prod_code(None, "my_func", agent="Bash"))
-        self.assertFalse(guard.asked_prod_code("/nonexistent/path", "my_func", agent="Bash"))
+        self.assertFalse(
+            guard.asked_prod_code("/nonexistent/path", "my_func", agent="Bash")
+        )
 
     def test_claude_code_session_transcript_resolution(self) -> None:
         repo_root = self.repo_root
@@ -137,7 +150,9 @@ class SymbolGrepPolicyCasesMixin(GuardTestCaseBase):
         cwd_slug = repo_root.replace("/", "-")
         assert self.temp_dir is not None
         fake_home = self.temp_dir.name
-        claude_dir = os.path.join(fake_home, ".claude", "projects", f"-{cwd_slug.lstrip('-')}")
+        claude_dir = os.path.join(
+            fake_home, ".claude", "projects", f"-{cwd_slug.lstrip('-')}"
+        )
         os.makedirs(claude_dir, exist_ok=True)
         transcript_path = os.path.join(claude_dir, f"{session_id}.jsonl")
 
@@ -164,7 +179,9 @@ class SymbolGrepPolicyCasesMixin(GuardTestCaseBase):
         }
 
         # Case 1: Asked prod-code in transcript, but did not report issue yet -> denied
-        with mock.patch("os.path.expanduser", side_effect=lambda p: p.replace("~", fake_home)):
+        with mock.patch(
+            "os.path.expanduser", side_effect=lambda p: p.replace("~", fake_home)
+        ):
             out = self._invoke_main_stdio(payload)
             self.assertTrue(out)
             res = json.loads(out)
@@ -190,7 +207,9 @@ class SymbolGrepPolicyCasesMixin(GuardTestCaseBase):
             # Allowed -> no denial output printed for Bash
             self.assertEqual(self._invoke_main_stdio(payload), "")
 
-    def test_heredoc_and_inline_script_edit_verification_allowed_issue_1125(self) -> None:
+    def test_heredoc_and_inline_script_edit_verification_allowed_issue_1125(
+        self,
+    ) -> None:
         guard = self._guard()
         repo_root = self.repo_root
         cmd_example_4 = (
@@ -207,18 +226,12 @@ class SymbolGrepPolicyCasesMixin(GuardTestCaseBase):
         self.assertIsNone(guard.text_grep(cmd_example_4, repo_root))
 
         cmd_escaped_eof = (
-            "python3 - <<\\EOF\n"
-            "s = '`grep -rn someIdentifier src/`'\n"
-            "EOF\n"
+            "python3 - <<\\EOF\ns = '`grep -rn someIdentifier src/`'\nEOF\n"
         )
         self.assertIsNone(guard.symbol_grep(cmd_escaped_eof, repo_root))
         self.assertIsNone(guard.text_grep(cmd_escaped_eof, repo_root))
 
-        cmd_unquoted_python = (
-            "python3 - <<EOF\n"
-            "doc = '`rg my_symbol crates/`'\n"
-            "EOF\n"
-        )
+        cmd_unquoted_python = "python3 - <<EOF\ndoc = '`rg my_symbol crates/`'\nEOF\n"
         self.assertIsNone(guard.symbol_grep(cmd_unquoted_python, repo_root))
         self.assertIsNone(guard.text_grep(cmd_unquoted_python, repo_root))
 
@@ -252,5 +265,8 @@ class SymbolGrepPolicyCasesMixin(GuardTestCaseBase):
                 }
                 out = json.loads(self._invoke_main_stdio(payload))
                 reason = out["hookSpecificOutput"]["permissionDecisionReason"]
-                self.assertIn(f'code_grep {{pattern: "{suggested}", path: "{expected_path}"}}', reason)
+                self.assertIn(
+                    f'code_grep {{pattern: "{suggested}", path: "{expected_path}"}}',
+                    reason,
+                )
                 self.assertIn(f'prod-code grep "{suggested}" {expected_path}', reason)

@@ -32,7 +32,9 @@ class MultiFileRenameHookCasesMixin(GuardTestCaseBase):
                 "toolCall": {
                     "name": "replace_file_content",
                     "args": {
-                        "TargetFile": str(self.repo_root / "scripts" / "hooks" / "file_a.py"),
+                        "TargetFile": str(
+                            self.repo_root / "scripts" / "hooks" / "file_a.py"
+                        ),
                         "TargetContent": "my_symbol",
                         "ReplacementContent": "my_new_symbol",
                         "Instruction": "rename",
@@ -49,7 +51,9 @@ class MultiFileRenameHookCasesMixin(GuardTestCaseBase):
                 "toolCall": {
                     "name": "replace_file_content",
                     "args": {
-                        "TargetFile": str(self.repo_root / "scripts" / "hooks" / "file_b.py"),
+                        "TargetFile": str(
+                            self.repo_root / "scripts" / "hooks" / "file_b.py"
+                        ),
                         "TargetContent": "my_symbol",
                         "ReplacementContent": "my_new_symbol",
                         "Instruction": "rename",
@@ -69,7 +73,9 @@ class MultiFileRenameHookCasesMixin(GuardTestCaseBase):
                 "toolCall": {
                     "name": "replace_file_content",
                     "args": {
-                        "TargetFile": str(self.repo_root / "scripts" / "hooks" / "file_c.py"),
+                        "TargetFile": str(
+                            self.repo_root / "scripts" / "hooks" / "file_c.py"
+                        ),
                         "TargetContent": "my_symbol",
                         "ReplacementContent": "my_new_symbol",
                         "Instruction": "PROD_CODE_MANUAL_RENAME=1",
@@ -114,7 +120,9 @@ class MultiFileRenameHookCasesMixin(GuardTestCaseBase):
                 "Multi-file symbol rename detected",
                 res["hookSpecificOutput"]["permissionDecisionReason"],
             )
-            self.assertIn("code_rename", res["hookSpecificOutput"]["permissionDecisionReason"])
+            self.assertIn(
+                "code_rename", res["hookSpecificOutput"]["permissionDecisionReason"]
+            )
 
     def test_claude_edit_multi_file_denied_in_main(self) -> None:
         repo_root = str(self.repo_root)
@@ -155,4 +163,6 @@ class MultiFileRenameHookCasesMixin(GuardTestCaseBase):
                 "Multi-file symbol rename detected",
                 res["hookSpecificOutput"]["permissionDecisionReason"],
             )
-            self.assertIn("code_rename", res["hookSpecificOutput"]["permissionDecisionReason"])
+            self.assertIn(
+                "code_rename", res["hookSpecificOutput"]["permissionDecisionReason"]
+            )

@@ -44,7 +44,14 @@ def _unwrap_shell_words(words):
                 if option == "--":
                     i += 1
                     break
-                if option in ("-i", "--ignore-environment", "-0", "--null", "-v", "--debug"):
+                if option in (
+                    "-i",
+                    "--ignore-environment",
+                    "-0",
+                    "--null",
+                    "-v",
+                    "--debug",
+                ):
                     i += 1
                     continue
                 if option in ("-u", "--unset", "-C", "--chdir", "-S", "--split-string"):
@@ -67,8 +74,20 @@ def _unwrap_shell_words(words):
                     i += 1
                     break
                 if option in (
-                    "-u", "--user", "-g", "--group", "-h", "--host",
-                    "-p", "--prompt", "-C", "--chdir", "-r", "--role", "-t", "--type",
+                    "-u",
+                    "--user",
+                    "-g",
+                    "--group",
+                    "-h",
+                    "--host",
+                    "-p",
+                    "--prompt",
+                    "-C",
+                    "--chdir",
+                    "-r",
+                    "--role",
+                    "-t",
+                    "--type",
                 ):
                     i += 2
                     continue
@@ -223,7 +242,9 @@ def _sed_source_invocations(command, cwd, depth=0, inherited_fallback=False):
             script = nested.group("script").strip()
             if len(script) >= 2 and script[0] == script[-1] and script[0] in "'\"":
                 script = script[1:-1]
-            invocations.extend(_sed_source_invocations(script, cwd, depth + 1, fallback))
+            invocations.extend(
+                _sed_source_invocations(script, cwd, depth + 1, fallback)
+            )
             continue
         if os.path.basename(words[index]).lower() not in ("sed", "gsed"):
             continue

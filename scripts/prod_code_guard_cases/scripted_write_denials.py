@@ -54,7 +54,6 @@ class ScriptedSourceWriteFixtureBase(GuardTestCaseBase):
 
 
 class ScriptedSourceWriteDenialCasesMixin(ScriptedSourceWriteFixtureBase):
-
     def test_issue_1760_claude_pretool_use_variable_bound_rewrite_denied(self) -> None:
         command = (
             'python3 -c \'p="crates/prod-code-mcp/src/lib.rs"; '
@@ -80,8 +79,10 @@ class ScriptedSourceWriteDenialCasesMixin(ScriptedSourceWriteFixtureBase):
         self.assertEqual(entry["decision"], "deny")
         self.assertEqual(entry["file"], "crates/prod-code-mcp/src/lib.rs")
 
-    def test_codex_antigravity_and_gemini_payloads_deny_with_edit_guidance(self) -> None:
-        cmd = "python3 -c 'from pathlib import Path; Path(\"src/main.rs\").write_text(\"fn main() {}\\n\")'"
+    def test_codex_antigravity_and_gemini_payloads_deny_with_edit_guidance(
+        self,
+    ) -> None:
+        cmd = 'python3 -c \'from pathlib import Path; Path("src/main.rs").write_text("fn main() {}\\n")\''
 
         codex_payload = {
             "hook_event_name": "PreToolUse",
@@ -119,16 +120,16 @@ class ScriptedSourceWriteDenialCasesMixin(ScriptedSourceWriteFixtureBase):
     def test_inline_python_c_and_heredoc_source_writes_detected(self) -> None:
         guard = self._guard()
         commands = [
-            "python3 -c 'open(\"crates/prod-code-mcp/src/lib.rs\", \"w\").write(\"x\")'",
-            "python -c 'with open(\"src/main.go\", mode=\"w+\", encoding=\"utf-8\") as f: f.write(\"package main\\n\")'",
-            "python3.12 -uc 'from pathlib import Path; p = Path(\"crates\") / \"app\" / \"main.ts\"; p.write_text(\"export {}\\n\")'",
-            "python3 -c 'import os; p = os.path.join(\"src\", \"handler.py\"); open(p, \"a\").write(\"# x\\n\")'",
-            "python3 -c 'crate = \"prod-code-mcp\"; p = f\"crates/{crate}/src/lib.rs\"; open(p, \"w\").write(\"x\")'",
-            "python3 -c 'import sys; p = sys.argv[1]; open(p, \"w\").write(\"x\")' crates/prod-code-mcp/src/lib.rs",
-            "python3 -c 'import os; tmp = \"src/lib.rs.tmp\"; open(tmp, \"w\").write(\"x\"); os.replace(tmp, \"src/lib.rs\")'",
-            "python3 -c 'from pathlib import Path; [Path(p).write_text(\"x\") for p in [\"src/a.rs\", \"src/b.rs\"]]'",
+            'python3 -c \'open("crates/prod-code-mcp/src/lib.rs", "w").write("x")\'',
+            'python -c \'with open("src/main.go", mode="w+", encoding="utf-8") as f: f.write("package main\\n")\'',
+            'python3.12 -uc \'from pathlib import Path; p = Path("crates") / "app" / "main.ts"; p.write_text("export {}\\n")\'',
+            'python3 -c \'import os; p = os.path.join("src", "handler.py"); open(p, "a").write("# x\\n")\'',
+            'python3 -c \'crate = "prod-code-mcp"; p = f"crates/{crate}/src/lib.rs"; open(p, "w").write("x")\'',
+            'python3 -c \'import sys; p = sys.argv[1]; open(p, "w").write("x")\' crates/prod-code-mcp/src/lib.rs',
+            'python3 -c \'import os; tmp = "src/lib.rs.tmp"; open(tmp, "w").write("x"); os.replace(tmp, "src/lib.rs")\'',
+            'python3 -c \'from pathlib import Path; [Path(p).write_text("x") for p in ["src/a.rs", "src/b.rs"]]\'',
             "python3 -c $'p = \\'src/lib.rs\\'\\nopen(p, \\'w\\').write(\\'x\\')'",
-            "env LANG=C bash -lc 'python3 -c \"open(\\\"src/lib.rs\\\", \\\"w\\\").write(\\\"x\\\")\"'",
+            'env LANG=C bash -lc \'python3 -c "open(\\"src/lib.rs\\", \\"w\\").write(\\"x\\")"\'',
             (
                 "python3 - <<'EOF'\n"
                 "p = 'crates/prod-code-mcp/src/lib.rs'\n"
@@ -153,7 +154,7 @@ class ScriptedSourceWriteDenialCasesMixin(ScriptedSourceWriteFixtureBase):
                 "open('src/lib.rs', 'w').write('// edited\\n')\n"
                 "EOF"
             ),
-            "python3 <<< 'open(\"src/lib.rs\", \"w\").write(\"x\")'",
+            'python3 <<< \'open("src/lib.rs", "w").write("x")\'',
         ]
         for command in commands:
             with self.subTest(command=command):
@@ -223,10 +224,14 @@ class ScriptedSourceWriteDenialCasesMixin(ScriptedSourceWriteFixtureBase):
             tempfile.TemporaryDirectory(dir=tmp_base) as outside_dir,
         ):
             # Real Git worktrees carry a `.git` file pointing at the common repo's worktrees entry.
-            (Path(wt_root) / ".git").write_text("gitdir: /fake/repo/.git/worktrees/wt\n")
+            (Path(wt_root) / ".git").write_text(
+                "gitdir: /fake/repo/.git/worktrees/wt\n"
+            )
             self.assertIsNone(guard.git_repo_root(outside_dir))
 
-            cmd_rel = "python3 -c 'p=\"src/lib.rs\"; open(p, \"w\").write(\"pub fn f() {}\\n\")'"
+            cmd_rel = (
+                'python3 -c \'p="src/lib.rs"; open(p, "w").write("pub fn f() {}\\n")\''
+            )
             payload_in_wt = {
                 "hook_event_name": "PreToolUse",
                 "tool_name": "Bash",
@@ -244,7 +249,7 @@ class ScriptedSourceWriteDenialCasesMixin(ScriptedSourceWriteFixtureBase):
                 f"cd -- {wt_root}; {cmd_rel}",
                 f"(cd {wt_root} && {cmd_rel})",
                 f"env -C {wt_root} {cmd_rel}",
-                f"bash -lc 'cd {wt_root} && python3 -c \"open(\\\"src/lib.rs\\\", \\\"w\\\").write(\\\"x\\\")\"'",
+                f'bash -lc \'cd {wt_root} && python3 -c "open(\\"src/lib.rs\\", \\"w\\").write(\\"x\\")"\'',
                 f'python3 -c \'open("{wt_root}/src/lib.rs", "w").write("x")\'',
             ]
             for command in cd_commands:
@@ -263,7 +268,7 @@ class ScriptedSourceWriteDenialCasesMixin(ScriptedSourceWriteFixtureBase):
 
             subshell_then_repo = (
                 f"(cd {outside_dir} && echo scratch); "
-                "python3 -c 'open(\"src/lib.rs\", \"w\").write(\"x\")'"
+                'python3 -c \'open("src/lib.rs", "w").write("x")\''
             )
             self.assertEqual(
                 guard.scripted_source_write_target(subshell_then_repo, self.cwd),

@@ -11,12 +11,27 @@
 import os
 import re
 
+from .shell import shell_command_option_index
+
 _PYTHON_BIN_RE = re.compile(r"^python(?:\d+(?:\.\d+)*)?$")
 _ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", re.DOTALL)
 _REDIR_RE = re.compile(r"^(\d*)(<<<|<<-|<<|&>>|&>|>>|>&|<&|<>|>\||<|>)")
 _ANSI_ESC_RE = re.compile(r"\\(x[0-9a-fA-F]{2}|[0-7]{1,3}|['\"\\nrtabfv])")
-_ANSI_MAP = {"'": "'", '"': '"', "\\": "\\", "n": "\n", "r": "\r", "t": "\t", "a": "\a", "b": "\b", "f": "\f", "v": "\v"}
-_WRAPPER_FLAGS_WITH_VAL = frozenset({"-u", "-g", "-h", "-p", "-C", "-r", "-t", "-n", "-o", "-f", "-a"})
+_ANSI_MAP = {
+    "'": "'",
+    '"': '"',
+    "\\": "\\",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "a": "\a",
+    "b": "\b",
+    "f": "\f",
+    "v": "\v",
+}
+_WRAPPER_FLAGS_WITH_VAL = frozenset(
+    {"-u", "-g", "-h", "-p", "-C", "-r", "-t", "-n", "-o", "-f", "-a"}
+)
 
 
 def _decode_ansi_c(raw: str) -> str:
@@ -63,7 +78,9 @@ def _read_delim(text: str, j: int) -> tuple[str, bool, int]:
     return "".join(chars), quoted, j
 
 
-def _scan_shell_items(command: str) -> tuple[list[tuple[str, str]], dict[str, tuple[str, bool]]]:
+def _scan_shell_items(
+    command: str,
+) -> tuple[list[tuple[str, str]], dict[str, tuple[str, bool]]]:
     """Single-pass quote-aware scan producing structural items and extracted heredoc bodies."""
     items: list[tuple[str, str]] = []
     cur: list[str] = []
@@ -98,7 +115,11 @@ def _scan_shell_items(command: str) -> tuple[list[tuple[str, str]], dict[str, tu
             while j < n and command[j] != "'":
                 j += 2 if command[j] == "\\" and j + 1 < n else 1
             if j < n:
-                cur.append("'" + _decode_ansi_c(command[i + 2 : j]).replace("'", "'\"'\"'") + "'")
+                cur.append(
+                    "'"
+                    + _decode_ansi_c(command[i + 2 : j]).replace("'", "'\"'\"'")
+                    + "'"
+                )
                 i = j + 1
             else:
                 cur.append(c)
@@ -170,7 +191,11 @@ def _scan_shell_items(command: str) -> tuple[list[tuple[str, str]], dict[str, tu
 
 
 def _is_var_ref(chunk: str, idx: int) -> bool:
-    return chunk[idx] == "$" and idx + 1 < len(chunk) and (chunk[idx + 1].isalpha() or chunk[idx + 1] in "_{(")
+    return (
+        chunk[idx] == "$"
+        and idx + 1 < len(chunk)
+        and (chunk[idx + 1].isalpha() or chunk[idx + 1] in "_{(")
+    )
 
 
 def _read_word(chunk: str, i: int) -> tuple[str, bool, int]:
@@ -249,7 +274,9 @@ def _resolve_chdir(base_cwd: str | None, target: str, expanded: bool) -> str | N
     exp = os.path.expanduser(target)
     if os.path.isabs(exp):
         return os.path.normpath(exp)
-    return os.path.normpath(os.path.join(base_cwd, exp)) if base_cwd is not None else None
+    return (
+        os.path.normpath(os.path.join(base_cwd, exp)) if base_cwd is not None else None
+    )
 
 
 def _unwrap_cmd_words(words: list[tuple[str, bool]], base_cwd: str | None):
@@ -294,7 +321,9 @@ def _unwrap_cmd_words(words: list[tuple[str, bool]], base_cwd: str | None):
     return i, cmd_cwd
 
 
-def _extract_python_args(args: list[tuple[str, bool]], stdin_payload: tuple[str, bool] | None):
+def _extract_python_args(
+    args: list[tuple[str, bool]], stdin_payload: tuple[str, bool] | None
+):
     i = 0
     while i < len(args):
         tok, exp = args[i]
@@ -322,14 +351,22 @@ def _extract_python_args(args: list[tuple[str, bool]], stdin_payload: tuple[str,
                 tail = flags[pos + 1 :]
                 if tail:
                     return tail, [("-c", False), *args[i + 1 :]], exp
-                return (args[i + 1][0], [("-c", False), *args[i + 2 :]], args[i + 1][1]) if i + 1 < len(args) else None
+                return (
+                    (args[i + 1][0], [("-c", False), *args[i + 2 :]], args[i + 1][1])
+                    if i + 1 < len(args)
+                    else None
+                )
             if ch in ("W", "X"):
                 i += int(pos == len(flags) - 1)
                 break
         i += 1
     pos = args[i:]
     if (not pos or pos[0][0] == "-") and stdin_payload is not None:
-        return stdin_payload[0], [pos[0] if pos else ("", False), *pos[1:]], stdin_payload[1]
+        return (
+            stdin_payload[0],
+            [pos[0] if pos else ("", False), *pos[1:]],
+            stdin_payload[1],
+        )
     return None
 
 
@@ -373,16 +410,24 @@ def iter_inline_python_snippets(command: str, initial_cwd: str, depth: int = 0):
                 elif cd_args[0] == ("-", False):
                     effective_cwd = prev_cwd
                 else:
-                    effective_cwd = _resolve_chdir(effective_cwd, cd_args[0][0], cd_args[0][1])
+                    effective_cwd = _resolve_chdir(
+                        effective_cwd, cd_args[0][0], cd_args[0][1]
+                    )
                 prev_cwd = old
+            elif prog in ("pushd", "popd") and not next_is_pipe:
+                effective_cwd = prev_cwd = None
             elif prog in ("bash", "sh", "zsh", "fish"):
-                c_idx = next((j for j, (f, _) in enumerate(cmd_args[:-1]) if re.fullmatch(r"-[A-Za-z]*c", f)), -1)
+                c_idx = shell_command_option_index(cmd_args)
                 if c_idx >= 0:
-                    yield from iter_inline_python_snippets(cmd_args[c_idx + 1][0], cmd_cwd, depth + 1)
+                    yield from iter_inline_python_snippets(
+                        cmd_args[c_idx + 1][0], cmd_cwd, depth + 1
+                    )
                 elif in_stdin is not None:
                     pos = [w for w, _ in cmd_args if not w.startswith("-") or w == "-"]
                     if not pos or pos == ["-"]:
-                        yield from iter_inline_python_snippets(in_stdin[0], cmd_cwd, depth + 1)
+                        yield from iter_inline_python_snippets(
+                            in_stdin[0], cmd_cwd, depth + 1
+                        )
             elif prog == "cat" and next_is_pipe and stdin_payload is not None:
                 pos = [w for w, _ in cmd_args if not w.startswith("-") or w == "-"]
                 if not pos or pos == ["-"]:

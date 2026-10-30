@@ -33,7 +33,9 @@ class InstallHooksTests(unittest.TestCase):
         self.base = Path(self.tmpdir.name)
 
         self.dummy_src = self.base / installer.CANONICAL_HOOK_NAME
-        self.dummy_src.write_text("#!/usr/bin/env python3\nprint('dummy guard')\n", encoding="utf-8")
+        self.dummy_src.write_text(
+            "#!/usr/bin/env python3\nprint('dummy guard')\n", encoding="utf-8"
+        )
         for rel in installer.REQUIRED_GUARD_RELPATHS:
             mod_path = self.base / rel
             mod_path.parent.mkdir(parents=True, exist_ok=True)
@@ -57,7 +59,9 @@ class InstallHooksTests(unittest.TestCase):
         os.makedirs(os.path.dirname(agy.config_file), exist_ok=True)
         return [claude, codex, agy]
 
-    def _invoke_guard(self, dest_hook: Path, payload: dict, env: dict) -> subprocess.CompletedProcess[str]:
+    def _invoke_guard(
+        self, dest_hook: Path, payload: dict, env: dict
+    ) -> subprocess.CompletedProcess[str]:
         proc = subprocess.run(
             [sys.executable, str(dest_hook)],
             input=json.dumps(payload),
@@ -73,7 +77,18 @@ class InstallHooksTests(unittest.TestCase):
         claude, _, _ = self._isolated_providers()
         installer.atomic_write_json(
             claude.config_file,
-            {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": str(self.dummy_dest)}]}]}},
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Bash",
+                            "hooks": [
+                                {"type": "command", "command": str(self.dummy_dest)}
+                            ],
+                        }
+                    ]
+                }
+            },
         )
         ok, msg = claude.check(str(self.dummy_dest))
         self.assertFalse(ok)
@@ -91,9 +106,20 @@ class InstallHooksTests(unittest.TestCase):
         claude, _, _ = self._isolated_providers()
         observer = {
             "matcher": "",
-            "hooks": [{"type": "command", "command": "secondary-observer-hook ingest --event PreToolUse", "timeout": 5}],
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": "secondary-observer-hook ingest --event PreToolUse",
+                    "timeout": 5,
+                }
+            ],
         }
-        post_hook = [{"matcher": "", "hooks": [{"type": "command", "command": "unrelated-post-tool-hook"}]}]
+        post_hook = [
+            {
+                "matcher": "",
+                "hooks": [{"type": "command", "command": "unrelated-post-tool-hook"}],
+            }
+        ]
         installer.atomic_write_json(
             claude.config_file,
             {
@@ -101,7 +127,14 @@ class InstallHooksTests(unittest.TestCase):
                     "PreToolUse": [
                         {
                             "matcher": "Bash",
-                            "hooks": [{"type": "command", "command": str(self.dummy_dest), "timeout": 5, "statusMessage": "prod-code build guard"}],
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": str(self.dummy_dest),
+                                    "timeout": 5,
+                                    "statusMessage": "prod-code build guard",
+                                }
+                            ],
                         },
                         observer,
                     ],
@@ -137,14 +170,24 @@ class InstallHooksTests(unittest.TestCase):
         self.assertIn("Removed", agy.uninstall(str(self.dummy_dest)))
         self.assertFalse(agy.check(str(self.dummy_dest))[0])
 
-    def test_codex_and_antigravity_install_preserve_unrelated_hooks_and_settings(self) -> None:
+    def test_codex_and_antigravity_install_preserve_unrelated_hooks_and_settings(
+        self,
+    ) -> None:
         _, codex, agy = self._isolated_providers()
-        observer = {"matcher": "", "hooks": [{"type": "command", "command": "observer-hook --pre"}]}
-        post_hook = [{"matcher": "", "hooks": [{"type": "command", "command": "post-observer"}]}]
+        observer = {
+            "matcher": "",
+            "hooks": [{"type": "command", "command": "observer-hook --pre"}],
+        }
+        post_hook = [
+            {"matcher": "", "hooks": [{"type": "command", "command": "post-observer"}]}
+        ]
 
         installer.atomic_write_json(
             codex.config_file,
-            {"customSetting": True, "hooks": {"PreToolUse": [observer], "PostToolUse": post_hook}},
+            {
+                "customSetting": True,
+                "hooks": {"PreToolUse": [observer], "PostToolUse": post_hook},
+            },
         )
         codex.install(str(self.dummy_dest))
         codex_cfg = json.loads(Path(codex.config_file).read_text(encoding="utf-8"))
@@ -157,11 +200,20 @@ class InstallHooksTests(unittest.TestCase):
             agy.config_file,
             {
                 "version": 1,
-                "other-plugin": {"enabled": True, "PreToolUse": [observer], "PostToolUse": post_hook},
+                "other-plugin": {
+                    "enabled": True,
+                    "PreToolUse": [observer],
+                    "PostToolUse": post_hook,
+                },
                 "prod-code-guard": {
                     "enabled": True,
                     "PreToolUse": [
-                        {"matcher": "run_command", "hooks": [{"type": "command", "command": str(self.dummy_dest)}]},
+                        {
+                            "matcher": "run_command",
+                            "hooks": [
+                                {"type": "command", "command": str(self.dummy_dest)}
+                            ],
+                        },
                         observer,
                     ],
                 },
@@ -174,7 +226,10 @@ class InstallHooksTests(unittest.TestCase):
         self.assertEqual(agy_cfg["other-plugin"]["PostToolUse"], post_hook)
         self.assertEqual(agy_cfg["other-plugin"]["PreToolUse"], [observer])
         self.assertEqual(agy_cfg["prod-code-guard"]["PreToolUse"][1], observer)
-        self.assertEqual(agy_cfg["prod-code-guard"]["PreToolUse"][0]["matcher"], "run_command|replace_file_content")
+        self.assertEqual(
+            agy_cfg["prod-code-guard"]["PreToolUse"][0]["matcher"],
+            "run_command|replace_file_content",
+        )
         self.assertTrue(agy.check(str(self.dummy_dest))[0])
 
     def test_deploy_canonical_script_and_custom_hook_script(self) -> None:
@@ -203,37 +258,66 @@ class InstallHooksTests(unittest.TestCase):
         self.assertIsNotNone(active_dir)
         assert active_dir is not None
         for rel in installer.REQUIRED_GUARD_RELPATHS:
-            self.assertTrue((active_dir / rel).is_file(), f"Missing deployed module {rel}")
+            self.assertTrue(
+                (active_dir / rel).is_file(), f"Missing deployed module {rel}"
+            )
         self.assertTrue(installer.check_canonical_hook(str(dest_hook))[0])
 
-        proc = subprocess.run([sys.executable, str(dest_hook)], text=True, capture_output=True, check=False)
+        proc = subprocess.run(
+            [sys.executable, str(dest_hook)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout.strip(), "CUSTOM_OK")
 
         with contextlib.redirect_stdout(io.StringIO()):
-            un_rc = installer.main(["--uninstall", "--canonical-hook", str(dest_hook)], providers=providers)
+            un_rc = installer.main(
+                ["--uninstall", "--canonical-hook", str(dest_hook)], providers=providers
+            )
         self.assertEqual(un_rc, 0)
         for p in providers:
-            self.assertFalse(p.check(str(dest_hook))[0], f"{p.name} remained registered")
+            self.assertFalse(
+                p.check(str(dest_hook))[0], f"{p.name} remained registered"
+            )
 
-    def test_normal_install_deploys_all_components_and_executes_standalone_guard(self) -> None:
+    def test_normal_install_deploys_all_components_and_executes_standalone_guard(
+        self,
+    ) -> None:
         providers = self._isolated_providers()
         dest_hook = self.base / "canonical_hooks" / installer.CANONICAL_HOOK_NAME
 
         with contextlib.redirect_stdout(io.StringIO()):
             rc = installer.main(
-                ["--hook-script", str(installer.REPO_HOOK_SRC), "--canonical-hook", str(dest_hook)],
+                [
+                    "--hook-script",
+                    str(installer.REPO_HOOK_SRC),
+                    "--canonical-hook",
+                    str(dest_hook),
+                ],
                 providers=providers,
             )
         self.assertEqual(rc, 0)
         active_dir = installer.resolve_active_version_dir(dest_hook)
         assert active_dir is not None
-        self.assertEqual((active_dir / dest_hook.name).read_bytes(), installer.REPO_HOOK_SRC.read_bytes())
+        self.assertEqual(
+            (active_dir / dest_hook.name).read_bytes(),
+            installer.REPO_HOOK_SRC.read_bytes(),
+        )
         for rel in installer.REQUIRED_GUARD_RELPATHS:
-            self.assertEqual((active_dir / rel).read_bytes(), (installer.REPO_HOOK_SRC.parent / rel).read_bytes())
+            self.assertEqual(
+                (active_dir / rel).read_bytes(),
+                (installer.REPO_HOOK_SRC.parent / rel).read_bytes(),
+            )
 
         with contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(installer.main(["--check", "--canonical-hook", str(dest_hook)], providers=providers), 0)
+            self.assertEqual(
+                installer.main(
+                    ["--check", "--canonical-hook", str(dest_hook)], providers=providers
+                ),
+                0,
+            )
 
         repo = self.base / "repo"
         (repo / ".git").mkdir(parents=True)
@@ -250,38 +334,78 @@ class InstallHooksTests(unittest.TestCase):
         )
 
         claude_out = json.loads(
-            self._invoke_guard(dest_hook, {"tool_name": "Bash", "tool_input": {"command": rewrite_cmd}, "cwd": str(repo)}, env).stdout
+            self._invoke_guard(
+                dest_hook,
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": rewrite_cmd},
+                    "cwd": str(repo),
+                },
+                env,
+            ).stdout
         )
         self.assertEqual(claude_out["hookSpecificOutput"]["permissionDecision"], "deny")
-        self.assertIn("Inline Python rewrites of repository source files are blocked", claude_out["hookSpecificOutput"]["permissionDecisionReason"])
+        self.assertIn(
+            "Inline Python rewrites of repository source files are blocked",
+            claude_out["hookSpecificOutput"]["permissionDecisionReason"],
+        )
 
         agy_out = json.loads(
             self._invoke_guard(
                 dest_hook,
-                {"toolCall": {"name": "run_command", "args": {"CommandLine": rewrite_cmd, "Cwd": str(repo)}}, "workspacePaths": [str(repo)]},
+                {
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": rewrite_cmd, "Cwd": str(repo)},
+                    },
+                    "workspacePaths": [str(repo)],
+                },
                 env,
             ).stdout
         )
         self.assertEqual(agy_out["decision"], "deny")
 
         codex_out = json.loads(
-            self._invoke_guard(dest_hook, {"tool_name": "exec_command", "tool_input": {"cmd": rewrite_cmd, "workdir": str(repo)}}, env).stdout
+            self._invoke_guard(
+                dest_hook,
+                {
+                    "tool_name": "exec_command",
+                    "tool_input": {"cmd": rewrite_cmd, "workdir": str(repo)},
+                },
+                env,
+            ).stdout
         )
         self.assertEqual(codex_out["hookSpecificOutput"]["permissionDecision"], "deny")
 
         allow_proc = self._invoke_guard(
             dest_hook,
-            {"tool_name": "Bash", "tool_input": {"command": "python3 -c 'import json; print(json.dumps({\"ok\": True}))'"}, "cwd": str(repo)},
+            {
+                "tool_name": "Bash",
+                "tool_input": {
+                    "command": "python3 -c 'import json; print(json.dumps({\"ok\": True}))'"
+                },
+                "cwd": str(repo),
+            },
             env,
         )
         self.assertEqual(allow_proc.stdout.strip(), "")
 
-    def test_health_check_fails_when_any_required_component_missing_or_empty(self) -> None:
+    def test_health_check_fails_when_any_required_component_missing_or_empty(
+        self,
+    ) -> None:
         providers = self._isolated_providers()
         dest_hook = self.base / "health_hooks" / installer.CANONICAL_HOOK_NAME
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(
-                installer.main(["--hook-script", str(installer.REPO_HOOK_SRC), "--canonical-hook", str(dest_hook)], providers=providers),
+                installer.main(
+                    [
+                        "--hook-script",
+                        str(installer.REPO_HOOK_SRC),
+                        "--canonical-hook",
+                        str(dest_hook),
+                    ],
+                    providers=providers,
+                ),
                 0,
             )
 
@@ -295,7 +419,12 @@ class InstallHooksTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("prod_code_guard/python_write_guard.py", msg)
         with contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(installer.main(["--check", "--canonical-hook", str(dest_hook)], providers=providers), 1)
+            self.assertEqual(
+                installer.main(
+                    ["--check", "--canonical-hook", str(dest_hook)], providers=providers
+                ),
+                1,
+            )
 
         missing_mod.write_bytes(b"")
         ok, msg = installer.check_canonical_hook(str(dest_hook))
@@ -313,7 +442,12 @@ class InstallHooksTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("MISSING", msg)
         with contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(installer.main(["--check", "--canonical-hook", str(dest_hook)], providers=providers), 1)
+            self.assertEqual(
+                installer.main(
+                    ["--check", "--canonical-hook", str(dest_hook)], providers=providers
+                ),
+                1,
+            )
 
 
 if __name__ == "__main__":

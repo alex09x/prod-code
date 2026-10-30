@@ -15,27 +15,125 @@ import re
 import shlex
 import time
 
-DEFAULT_RENAME_STATE_DIR = os.environ.get("PROD_CODE_RENAME_STATE_DIR") or os.path.expanduser(
-    "~/.cache/prod-code-renames"
-)
+DEFAULT_RENAME_STATE_DIR = os.environ.get(
+    "PROD_CODE_RENAME_STATE_DIR"
+) or os.path.expanduser("~/.cache/prod-code-renames")
 
 KEYWORDS = {
-    "if", "else", "elif", "for", "while", "loop", "match", "case", "switch",
-    "return", "break", "continue", "yield", "let", "mut", "var", "val", "const",
-    "fn", "func", "function", "def", "pub", "private", "protected", "class",
-    "struct", "enum", "trait", "interface", "type", "impl", "import", "from",
-    "export", "package", "use", "mod", "crate", "self", "super", "this",
-    "true", "false", "null", "nil", "none", "undefined", "async", "await",
+    "if",
+    "else",
+    "elif",
+    "for",
+    "while",
+    "loop",
+    "match",
+    "case",
+    "switch",
+    "return",
+    "break",
+    "continue",
+    "yield",
+    "let",
+    "mut",
+    "var",
+    "val",
+    "const",
+    "fn",
+    "func",
+    "function",
+    "def",
+    "pub",
+    "private",
+    "protected",
+    "class",
+    "struct",
+    "enum",
+    "trait",
+    "interface",
+    "type",
+    "impl",
+    "import",
+    "from",
+    "export",
+    "package",
+    "use",
+    "mod",
+    "crate",
+    "self",
+    "super",
+    "this",
+    "true",
+    "false",
+    "null",
+    "nil",
+    "none",
+    "undefined",
+    "async",
+    "await",
 }
 IDENT_TOKEN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-HTML_INTRINSIC_TAGS = frozenset({
-    "div", "details", "summary", "span", "section", "article", "aside", "header",
-    "footer", "nav", "main", "p", "a", "ul", "ol", "li", "dl", "dt", "dd", "table",
-    "thead", "tbody", "tfoot", "tr", "td", "th", "form", "fieldset", "legend",
-    "label", "input", "button", "select", "option", "textarea", "dialog", "figure",
-    "figcaption", "blockquote", "pre", "code", "h1", "h2", "h3", "h4", "h5", "h6",
-})
-SHELL_TOOLS = {"bash", "sh", "zsh", "fish", "exec", "exec_command", "shell", "run_shell_command", "run_command"}
+HTML_INTRINSIC_TAGS = frozenset(
+    {
+        "div",
+        "details",
+        "summary",
+        "span",
+        "section",
+        "article",
+        "aside",
+        "header",
+        "footer",
+        "nav",
+        "main",
+        "p",
+        "a",
+        "ul",
+        "ol",
+        "li",
+        "dl",
+        "dt",
+        "dd",
+        "table",
+        "thead",
+        "tbody",
+        "tfoot",
+        "tr",
+        "td",
+        "th",
+        "form",
+        "fieldset",
+        "legend",
+        "label",
+        "input",
+        "button",
+        "select",
+        "option",
+        "textarea",
+        "dialog",
+        "figure",
+        "figcaption",
+        "blockquote",
+        "pre",
+        "code",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+    }
+)
+SHELL_TOOLS = {
+    "bash",
+    "sh",
+    "zsh",
+    "fish",
+    "exec",
+    "exec_command",
+    "shell",
+    "run_shell_command",
+    "run_command",
+}
 
 
 def single_symbol_rename(old_str, new_str):
@@ -61,7 +159,12 @@ def single_symbol_rename(old_str, new_str):
     if len(removed) == 1 and len(added) == 1:
         old_sym = next(iter(removed))
         new_sym = next(iter(added))
-        if old_sym.isdigit() or new_sym.isdigit() or len(old_sym) < 2 or len(new_sym) < 2:
+        if (
+            old_sym.isdigit()
+            or new_sym.isdigit()
+            or len(old_sym) < 2
+            or len(new_sym) < 2
+        ):
             return None
         if (
             old_sym in HTML_INTRINSIC_TAGS
@@ -140,7 +243,9 @@ def check_multi_file_rename(
         except (OSError, ValueError, AttributeError):
             entries = []
 
-        entries = [e for e in entries if isinstance(e, dict) and now - e.get("ts", 0) <= 1800]
+        entries = [
+            e for e in entries if isinstance(e, dict) and now - e.get("ts", 0) <= 1800
+        ]
         abs_file = os.path.abspath(file_path)
 
         for e in entries:
@@ -153,7 +258,13 @@ def check_multi_file_rename(
                     return True, prev_file
 
         entries.append(
-            {"sym": old_sym, "new": new_sym, "file": abs_file, "repo": canon_repo, "ts": now}
+            {
+                "sym": old_sym,
+                "new": new_sym,
+                "file": abs_file,
+                "repo": canon_repo,
+                "ts": now,
+            }
         )
 
         temp_file = os.path.join(
@@ -199,7 +310,9 @@ def parse_patch_edits(patch_text, env_override=False):
     def flush_hunk():
         nonlocal current_file, old_lines, new_lines
         if current_file and (old_lines or new_lines):
-            edits.append((current_file, "\n".join(old_lines), "\n".join(new_lines), is_override))
+            edits.append(
+                (current_file, "\n".join(old_lines), "\n".join(new_lines), is_override)
+            )
             old_lines = []
             new_lines = []
 
@@ -239,13 +352,25 @@ def file_edits_from_payload(payload):
         args = call.get("args") or {}
         if name in ("replace_file_content", "edit_file", "modify_file"):
             target_file = (
-                args.get("TargetFile") or args.get("target_file") or args.get("path") or args.get("file_path") or ""
+                args.get("TargetFile")
+                or args.get("target_file")
+                or args.get("path")
+                or args.get("file_path")
+                or ""
             )
             target_content = (
-                args.get("TargetContent") or args.get("target_content") or args.get("old_string") or args.get("old_str") or ""
+                args.get("TargetContent")
+                or args.get("target_content")
+                or args.get("old_string")
+                or args.get("old_str")
+                or ""
             )
             replacement = (
-                args.get("ReplacementContent") or args.get("replacement_content") or args.get("new_string") or args.get("new_str") or ""
+                args.get("ReplacementContent")
+                or args.get("replacement_content")
+                or args.get("new_string")
+                or args.get("new_str")
+                or ""
             )
             desc = f"{args.get('Description', '')} {args.get('Instruction', '')}"
             override = env_override or ("PROD_CODE_MANUAL_RENAME=1" in desc)
@@ -258,16 +383,37 @@ def file_edits_from_payload(payload):
         return []
 
     if tool_name in ("Edit", "str_replace_editor", "edit_file", "replace_file_content"):
-        target_file = tool_input.get("file_path") or tool_input.get("path") or tool_input.get("target_file") or ""
-        target_content = tool_input.get("old_string") or tool_input.get("old_str") or tool_input.get("TargetContent") or ""
-        replacement = tool_input.get("new_string") or tool_input.get("new_str") or tool_input.get("ReplacementContent") or ""
+        target_file = (
+            tool_input.get("file_path")
+            or tool_input.get("path")
+            or tool_input.get("target_file")
+            or ""
+        )
+        target_content = (
+            tool_input.get("old_string")
+            or tool_input.get("old_str")
+            or tool_input.get("TargetContent")
+            or ""
+        )
+        replacement = (
+            tool_input.get("new_string")
+            or tool_input.get("new_str")
+            or tool_input.get("ReplacementContent")
+            or ""
+        )
         override = env_override or any(
-            isinstance(v, str) and "PROD_CODE_MANUAL_RENAME=1" in v for v in tool_input.values()
+            isinstance(v, str) and "PROD_CODE_MANUAL_RENAME=1" in v
+            for v in tool_input.values()
         )
         return [(target_file, target_content, replacement, override)]
 
     if tool_name in ("apply_patch", "patch"):
-        patch_text = tool_input.get("cmd") or tool_input.get("patch") or tool_input.get("command") or ""
+        patch_text = (
+            tool_input.get("cmd")
+            or tool_input.get("patch")
+            or tool_input.get("command")
+            or ""
+        )
         return parse_patch_edits(patch_text, env_override)
 
     return []

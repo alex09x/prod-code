@@ -44,7 +44,9 @@ def make_git_repo_root(testcase: unittest.TestCase) -> Path:
     (root / "scripts" / "hooks").mkdir(parents=True)
     lib_rs = root / "crates" / "prod-code-mcp" / "src" / "lib.rs"
     lib_rs.parent.mkdir(parents=True)
-    _ = lib_rs.write_text("// stub for remote workspace mirror without .git\n", encoding="utf-8")
+    _ = lib_rs.write_text(
+        "// stub for remote workspace mirror without .git\n", encoding="utf-8"
+    )
     return root
 
 

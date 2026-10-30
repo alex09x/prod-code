@@ -18,7 +18,9 @@ REASON = (
 )
 
 HEAVY = [
-    re.compile(r"^(\S*/)?cargo(\s+\+\S+)?\s+(test|check|clippy|build|bench|llvm-cov|nextest)\b"),
+    re.compile(
+        r"^(\S*/)?cargo(\s+\+\S+)?\s+(test|check|clippy|build|bench|llvm-cov|nextest)\b"
+    ),
     # go test / go vet stay local for now: a Go module with macOS-only cgo (the prod repo) has no
     # node to run on until a macOS node serves Go, and blocking them left its workers no way at all.
     re.compile(r"^(\S*/)?pytest\b"),
@@ -46,12 +48,16 @@ HEREDOC_UNQUOTED = re.compile(
 SCRIPT_INTERPRETER_PREFIX = re.compile(
     r"\b(?:python3?|node|ruby|perl|php|lua|awk|sed)\b"
 )
-SHELL_C = re.compile(r"^(\S*/)?(bash|sh|zsh|fish)(\s+-\w+)*\s+-l?c\s+(?P<script>.+)$", re.DOTALL)
+SHELL_C = re.compile(
+    r"^(\S*/)?(bash|sh|zsh|fish)(\s+-\w+)*\s+-l?c\s+(?P<script>.+)$", re.DOTALL
+)
 
 CODE_EXT = re.compile(
     r"\.(rs|go|ts|tsx|js|jsx|mjs|cjs|py|pyi|c|cc|cpp|cxx|h|hh|hpp|hxx|swift|m|mm|kt|java|cs|rb|php|scala)$"
 )
-NOT_CODE_EXT = re.compile(r"\.(md|txt|log|jsonl?|ya?ml|toml|lock|csv|html?|xml|ini|cfg|conf|env|sql|sh)$")
+NOT_CODE_EXT = re.compile(
+    r"\.(md|txt|log|jsonl?|ya?ml|toml|lock|csv|html?|xml|ini|cfg|conf|env|sql|sh)$"
+)
 
 
 def without_heredocs(command, extract_substs=True):
@@ -195,7 +201,9 @@ def verdict(command, depth=0):
             if verdict(script, depth + 1):
                 return REASON
             continue
-        if re.match(r"^(\S*/)?cargo\s+build\b", seg) and re.search(r"-p\s+prod-code-client\b", seg):
+        if re.match(r"^(\S*/)?cargo\s+build\b", seg) and re.search(
+            r"-p\s+prod-code-client\b", seg
+        ):
             continue
         if any(p.match(seg) for p in HEAVY):
             return REASON
@@ -309,8 +317,28 @@ def _is_source_code_path(path, cwd):
     if not path or path == "-" or path in ("/dev/stdin", "/dev/fd/0"):
         return False
     expanded = os.path.expanduser(path)
-    resolved = expanded if os.path.isabs(expanded) else os.path.join(cwd or os.getcwd(), expanded)
+    resolved = (
+        expanded
+        if os.path.isabs(expanded)
+        else os.path.join(cwd or os.getcwd(), expanded)
+    )
     return (
         CODE_EXT.search(resolved.lower()) is not None
         or CODE_EXT.search(os.path.realpath(resolved).lower()) is not None
     )
+
+
+def shell_command_option_index(args):
+    """Find a shell's command option without treating a script argument as an option."""
+    index = 0
+    while index < len(args):
+        flag = args[index][0]
+        if flag in ("--", "-") or not flag.startswith("-"):
+            return -1
+        if flag in ("-o", "-O"):
+            index += 2
+            continue
+        if re.fullmatch(r"-[A-Za-z]*c", flag):
+            return index if index + 1 < len(args) else -1
+        index += 1
+    return -1

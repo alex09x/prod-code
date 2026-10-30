@@ -20,33 +20,33 @@ _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
-from prod_code_guard_cases.classification_and_build import (  # noqa: E402
+from prod_code_guard_cases.classification_and_build import (
     BuildCommandCasesMixin,
     ClassificationCasesMixin,
 )
-from prod_code_guard_cases.grep_interception import (  # noqa: E402
+from prod_code_guard_cases.grep_interception import (
     GrepInterceptionCasesMixin,
 )
-from prod_code_guard_cases.rename_hook import (  # noqa: E402
+from prod_code_guard_cases.rename_hook import (
     MultiFileRenameHookCasesMixin,
 )
-from prod_code_guard_cases.rename_unit import (  # noqa: E402
+from prod_code_guard_cases.rename_unit import (
     MultiFileRenameUnitCasesMixin,
 )
-from prod_code_guard_cases.scripted_write_denials import (  # noqa: E402
+from prod_code_guard_cases.scripted_write_denials import (
     ScriptedSourceWriteDenialCasesMixin,
 )
-from prod_code_guard_cases.scripted_write_exemptions import (  # noqa: E402
+from prod_code_guard_cases.scripted_write_exemptions import (
     ScriptedSourceWriteExemptionCasesMixin,
 )
-from prod_code_guard_cases.sed_reads import SedSourceReadCasesMixin  # noqa: E402
-from prod_code_guard_cases.support import (  # noqa: E402
+from prod_code_guard_cases.sed_reads import SedSourceReadCasesMixin
+from prod_code_guard_cases.support import (
     HOOK_SCRIPT,
     guard,
     make_git_repo_root,
     spec,
 )
-from prod_code_guard_cases.symbol_grep_policy import (  # noqa: E402
+from prod_code_guard_cases.symbol_grep_policy import (
     SymbolGrepPolicyCasesMixin,
 )
 

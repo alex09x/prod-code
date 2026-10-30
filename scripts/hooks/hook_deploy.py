@@ -8,14 +8,19 @@
 
 """Versioned staging and atomic activation for the canonical prod-code guard hook."""
 
+import fcntl
+import json
 import os
+import re
 import shutil
 import time
 import urllib.request
 from pathlib import Path
 
 CANONICAL_HOOK_NAME = "prod-code-local-build-guard.py"
-RAW_GITHUB_HOOKS_BASE = "https://raw.githubusercontent.com/alex09x/prod-code/main/scripts/hooks"
+RAW_GITHUB_HOOKS_BASE = (
+    "https://raw.githubusercontent.com/alex09x/prod-code/main/scripts/hooks"
+)
 
 GUARD_PACKAGE_DIR = "prod_code_guard"
 REQUIRED_GUARD_RELPATHS = (
@@ -29,12 +34,25 @@ REQUIRED_GUARD_RELPATHS = (
 )
 REQUIRED_GUARD_COMPONENTS = (CANONICAL_HOOK_NAME, *REQUIRED_GUARD_RELPATHS)
 
+
+def _immutable_remote_base(base_url: str) -> str:
+    if base_url.rstrip("/") != RAW_GITHUB_HOOKS_BASE:
+        return base_url.rstrip("/")
+    with urllib.request.urlopen(
+        "https://api.github.com/repos/alex09x/prod-code/commits/main", timeout=15
+    ) as response:
+        sha = json.load(response).get("sha")
+    if not isinstance(sha, str) or re.fullmatch(r"[0-9a-fA-F]{40}", sha) is None:
+        raise ValueError(
+            "GitHub returned an invalid commit identifier for the guard bundle"
+        )
+    return f"https://raw.githubusercontent.com/alex09x/prod-code/{sha}/scripts/hooks"
+
+
 LAUNCHER_MARKER = "# prod-code-guard-launcher:v1"
 EXEC_MODE = 0o755
 FILE_MODE = 0o644
 DIR_MODE = 0o755
-KEEP_PREVIOUS_VERSIONS = 2
-MIN_PRUNE_AGE_SECS = 60.0
 
 LAUNCHER_SCRIPT = """#!/usr/bin/env python3
 # prod-code — Remote code intelligence
@@ -46,6 +64,8 @@ import sys
 
 
 def _prod_code_launch() -> None:
+    import sys
+
     mod_name = __name__
     builtins_ref = __builtins__
     orig_path = list(sys.path)
@@ -77,6 +97,11 @@ def _prod_code_launch() -> None:
         and os.path.realpath(p) not in blocked
     ]
     sys.path.insert(0, active_dir)
+    cached = {
+        name: sys.modules.pop(name)
+        for name in list(sys.modules)
+        if name == "prod_code_guard" or name.startswith("prod_code_guard.")
+    }
     if mod_name == "__main__" and sys.argv:
         sys.argv[0] = entry
 
@@ -103,6 +128,10 @@ def _prod_code_launch() -> None:
         exec(code, ns)
     finally:
         if mod_name != "__main__":
+            for name in list(sys.modules):
+                if name == "prod_code_guard" or name.startswith("prod_code_guard."):
+                    del sys.modules[name]
+            sys.modules.update(cached)
             sys.path[:] = orig_path
 
 
@@ -176,7 +205,9 @@ def _validate_bundle_dir(bundle_dir: Path, entry_name: str) -> None:
         raise ValueError(f"Staged entrypoint invalid or non-executable: {entry}")
     for rel in REQUIRED_GUARD_RELPATHS:
         if not _is_readable_nonempty_file(bundle_dir / rel):
-            raise ValueError(f"Staged guard component invalid or empty: {bundle_dir / rel}")
+            raise ValueError(
+                f"Staged guard component invalid or empty: {bundle_dir / rel}"
+            )
 
 
 def _unlink_quietly(path: Path) -> None:
@@ -203,7 +234,9 @@ def _write_launcher_tempfile(tmp_launcher: Path) -> None:
     os.chmod(tmp_launcher, EXEC_MODE)
 
 
-def _restore_current_link(current_link: Path, prev_target: str | None, suffix: str) -> None:
+def _restore_current_link(
+    current_link: Path, prev_target: str | None, suffix: str
+) -> None:
     if prev_target is None:
         _unlink_quietly(current_link)
         return
@@ -222,19 +255,27 @@ def _stage_bundle(
     stage_dir = versions_root / f".staging.{suffix}"
     release_dir = versions_root / f"v.{time.time_ns():020d}_{suffix}"
     manifest = [(src, CANONICAL_HOOK_NAME, stage_dir / dest_name, True)]
-    manifest.extend((src_dir / rel, rel, stage_dir / rel, False) for rel in REQUIRED_GUARD_RELPATHS)
+    manifest.extend(
+        (src_dir / rel, rel, stage_dir / rel, False) for rel in REQUIRED_GUARD_RELPATHS
+    )
+    use_local = src.is_file()
 
     try:
+        remote_base = base_url if use_local else _immutable_remote_base(base_url)
         stage_dir.mkdir(parents=True, exist_ok=False)
         os.chmod(stage_dir, DIR_MODE)
         for local_src, remote_rel, staged_path, is_exec in manifest:
             if staged_path.parent != stage_dir:
                 staged_path.parent.mkdir(parents=True, exist_ok=True)
                 os.chmod(staged_path.parent, DIR_MODE)
-            if local_src.is_file():
+            if use_local:
+                if not local_src.is_file():
+                    raise FileNotFoundError(
+                        f"Required local hook component missing at {local_src}"
+                    )
                 shutil.copy2(local_src, staged_path)
             else:
-                url = f"{base_url.rstrip('/')}/{remote_rel}"
+                url = f"{remote_base.rstrip('/')}/{remote_rel}"
                 try:
                     _download_component(url, staged_path)
                 except Exception as exc:
@@ -253,47 +294,22 @@ def _stage_bundle(
         raise
 
 
-def _prune_old_versions(versions_root: Path, active_name: str, prev_name: str | None) -> None:
-    try:
-        entries = list(versions_root.iterdir())
-    except OSError:
-        return
-
-    now = time.time()
-    releases = sorted(
-        (p for p in entries if p.is_dir() and not p.is_symlink() and p.name.startswith("v.")),
-        key=lambda p: p.name,
-    )
-    keep = {active_name, *(r.name for r in releases[-(KEEP_PREVIOUS_VERSIONS + 1) :])}
-    if prev_name:
-        keep.add(prev_name)
-
-    for rel_dir in releases:
-        if rel_dir.name not in keep:
-            try:
-                if now - rel_dir.stat().st_mtime >= MIN_PRUNE_AGE_SECS:
-                    shutil.rmtree(rel_dir, ignore_errors=True)
-            except OSError:
-                pass
-
-    for entry in entries:
-        if entry.name.startswith((".staging.", ".current.tmp.", ".restore.tmp.")):
-            try:
-                if now - entry.lstat().st_mtime >= MIN_PRUNE_AGE_SECS:
-                    if entry.is_dir() and not entry.is_symlink():
-                        shutil.rmtree(entry, ignore_errors=True)
-                    else:
-                        _unlink_quietly(entry)
-            except OSError:
-                pass
-
-
 def deploy_canonical_script(
     src_path: Path, dest_path: str, base_url: str = RAW_GITHUB_HOOKS_BASE
 ) -> None:
     """Stages a complete guard version directory and activates it via one pointer swap."""
     src, dest = Path(src_path), Path(dest_path)
     dest.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = dest.parent / f".{dest.name}.install.lock"
+    with lock_path.open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            _deploy_locked(src, dest, base_url)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def _deploy_locked(src: Path, dest: Path, base_url: str) -> None:
     versions_root = versions_store_dir(dest)
     versions_root_existed = versions_root.exists()
     versions_root.mkdir(parents=True, exist_ok=True)
@@ -338,8 +354,6 @@ def deploy_canonical_script(
                 _rmdir_if_empty(versions_root)
             raise
 
-    _prune_old_versions(versions_root, active_name=release_dir.name, prev_name=prev_target)
-
 
 def check_canonical_hook(hook_path: str) -> tuple[bool, str]:
     """Verifies the canonical launcher, active version pointer, entrypoint, and modules."""
@@ -353,7 +367,9 @@ def check_canonical_hook(hook_path: str) -> tuple[bool, str]:
 
     if not _has_valid_launcher_bytes(hook):
         missing_flat = [
-            rel for rel in REQUIRED_GUARD_RELPATHS if not _is_readable_nonempty_file(hook.parent / rel)
+            rel
+            for rel in REQUIRED_GUARD_RELPATHS
+            if not _is_readable_nonempty_file(hook.parent / rel)
         ]
         if missing_flat:
             msg = (
@@ -365,7 +381,10 @@ def check_canonical_hook(hook_path: str) -> tuple[bool, str]:
 
     active_dir = resolve_active_version_dir(hook)
     if active_dir is None:
-        return False, f"BROKEN ACTIVE VERSION POINTER ({versions_store_dir(hook) / 'current'})"
+        return (
+            False,
+            f"BROKEN ACTIVE VERSION POINTER ({versions_store_dir(hook) / 'current'})",
+        )
 
     entry = active_dir / hook.name
     if not _is_readable_nonempty_file(entry):
@@ -373,7 +392,17 @@ def check_canonical_hook(hook_path: str) -> tuple[bool, str]:
     if not os.access(entry, os.X_OK):
         return False, f"ACTIVE ENTRYPOINT NOT EXECUTABLE ({entry})"
 
-    missing = [rel for rel in REQUIRED_GUARD_RELPATHS if not _is_readable_nonempty_file(active_dir / rel)]
+    missing = [
+        rel
+        for rel in REQUIRED_GUARD_RELPATHS
+        if not _is_readable_nonempty_file(active_dir / rel)
+    ]
     if missing:
-        return False, f"MISSING REQUIRED COMPONENTS ({', '.join(missing)}) in {active_dir}"
-    return True, f"OK ({hook_path} -> {active_dir.name}, +{len(REQUIRED_GUARD_RELPATHS)} modules)"
+        return (
+            False,
+            f"MISSING REQUIRED COMPONENTS ({', '.join(missing)}) in {active_dir}",
+        )
+    return (
+        True,
+        f"OK ({hook_path} -> {active_dir.name}, +{len(REQUIRED_GUARD_RELPATHS)} modules)",
+    )

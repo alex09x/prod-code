@@ -43,7 +43,9 @@ class _FakeHttpResponse:
         return False
 
 
-def _write_version_bundle(bundle_dir: Path, tag: str, pause_on_stdin: bool = False) -> Path:
+def _write_version_bundle(
+    bundle_dir: Path, tag: str, pause_on_stdin: bool = False
+) -> Path:
     bundle_dir.mkdir(parents=True, exist_ok=True)
     for rel in installer.REQUIRED_GUARD_RELPATHS:
         mod_file = bundle_dir / rel
@@ -105,11 +107,20 @@ class HookDeployAtomicityTests(unittest.TestCase):
     def _assert_no_temp_artifacts(self, root: Path) -> None:
         if not root.exists():
             return
-        leftovers = [p for p in root.rglob("*") if ".tmp." in p.name or p.name.startswith(".staging.")]
+        leftovers = [
+            p
+            for p in root.rglob("*")
+            if ".tmp." in p.name or p.name.startswith(".staging.")
+        ]
         self.assertEqual(leftovers, [], f"Leftover staging artifacts: {leftovers}")
 
     def _run_hook(self, dest_hook: Path) -> subprocess.CompletedProcess[str]:
-        return subprocess.run([sys.executable, str(dest_hook)], text=True, capture_output=True, check=False)
+        return subprocess.run(
+            [sys.executable, str(dest_hook)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
 
     def _inject_every_call_failure(
         self,
@@ -126,11 +137,15 @@ class HookDeployAtomicityTests(unittest.TestCase):
             count += 1
             return real_fn(*args, **kwargs)  # type: ignore[operator]
 
-        probe_dir = self.base / f"probe_{target_attr.replace('.', '_')}_{os.urandom(3).hex()}"
+        probe_dir = (
+            self.base / f"probe_{target_attr.replace('.', '_')}_{os.urandom(3).hex()}"
+        )
         probe_src = _write_version_bundle(probe_dir / "src", "probe")
         probe_dest = probe_dir / "dest" / installer.CANONICAL_HOOK_NAME
         if steady_state:
-            installer.deploy_canonical_script(_write_version_bundle(probe_dir / "v0", "v0"), str(probe_dest))
+            installer.deploy_canonical_script(
+                _write_version_bundle(probe_dir / "v0", "v0"), str(probe_dest)
+            )
         with mock.patch(target_attr, side_effect=counting_fn):
             installer.deploy_canonical_script(probe_src, str(probe_dest))
         self.assertGreater(count, 0)
@@ -148,11 +163,16 @@ class HookDeployAtomicityTests(unittest.TestCase):
             return failing_fn
 
         for fail_on in range(1, count + 1):
-            with mock.patch(target_attr, side_effect=make_failing_fn(fail_on)), self.assertRaises(OSError):
+            with (
+                mock.patch(target_attr, side_effect=make_failing_fn(fail_on)),
+                self.assertRaises(OSError),
+            ):
                 run_deploy()  # type: ignore[operator]
             verify_intact()  # type: ignore[operator]
 
-    def test_second_component_and_every_step_failure_preserve_active_version(self) -> None:
+    def test_second_component_and_every_step_failure_preserve_active_version(
+        self,
+    ) -> None:
         v1_src = _write_version_bundle(self.base / "v1", "v1")
         v2_src = _write_version_bundle(self.base / "v2", "v2")
         dest_hook = self.base / "installed" / installer.CANONICAL_HOOK_NAME
@@ -185,7 +205,9 @@ class HookDeployAtomicityTests(unittest.TestCase):
         installer.deploy_canonical_script(v2_src, str(dest_hook))
         self.assertEqual(self._run_hook(dest_hook).stdout.strip(), "HOMOGENEOUS:v2")
 
-    def test_failures_preserve_first_install_and_legacy_single_file_upgrade(self) -> None:
+    def test_failures_preserve_first_install_and_legacy_single_file_upgrade(
+        self,
+    ) -> None:
         v2_src = _write_version_bundle(self.base / "v2", "v2")
         first_dest = self.base / "first_install" / installer.CANONICAL_HOOK_NAME
 
@@ -210,7 +232,9 @@ class HookDeployAtomicityTests(unittest.TestCase):
 
         legacy_dest = self.base / "legacy_install" / installer.CANONICAL_HOOK_NAME
         legacy_dest.parent.mkdir(parents=True, exist_ok=True)
-        legacy_dest.write_text("#!/usr/bin/env python3\nprint('LEGACY_SINGLE_FILE')\n", encoding="utf-8")
+        legacy_dest.write_text(
+            "#!/usr/bin/env python3\nprint('LEGACY_SINGLE_FILE')\n", encoding="utf-8"
+        )
         legacy_dest.chmod(0o755)
 
         def verify_legacy_usable() -> None:
@@ -233,34 +257,57 @@ class HookDeployAtomicityTests(unittest.TestCase):
                 verify_legacy_usable,
             )
 
-    def test_update_repairs_legacy_single_file_install_and_ignores_stale_outer_modules(self) -> None:
+    def test_update_repairs_legacy_single_file_install_and_ignores_stale_outer_modules(
+        self,
+    ) -> None:
         providers = self._isolated_providers()
         dest_hook = self.base / "legacy_hooks" / installer.CANONICAL_HOOK_NAME
         dest_hook.parent.mkdir(parents=True, exist_ok=True)
-        dest_hook.write_text("#!/usr/bin/env python3\nprint('LEGACY')\n", encoding="utf-8")
+        dest_hook.write_text(
+            "#!/usr/bin/env python3\nprint('LEGACY')\n", encoding="utf-8"
+        )
         dest_hook.chmod(0o755)
 
         stale_pkg = dest_hook.parent / "prod_code_guard"
         stale_pkg.mkdir(parents=True, exist_ok=True)
-        (stale_pkg / "__init__.py").write_text("raise RuntimeError('STALE_OUTER')\n", encoding="utf-8")
-        (stale_pkg / "shell.py").write_text("raise RuntimeError('STALE_OUTER')\n", encoding="utf-8")
+        (stale_pkg / "__init__.py").write_text(
+            "raise RuntimeError('STALE_OUTER')\n", encoding="utf-8"
+        )
+        (stale_pkg / "shell.py").write_text(
+            "raise RuntimeError('STALE_OUTER')\n", encoding="utf-8"
+        )
         for p in providers:
             p.install(str(dest_hook))
 
         with contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(installer.main(["--check", "--canonical-hook", str(dest_hook)], providers=providers), 1)
+            self.assertEqual(
+                installer.main(
+                    ["--check", "--canonical-hook", str(dest_hook)], providers=providers
+                ),
+                1,
+            )
             v2_src = _write_version_bundle(self.base / "v2_repair", "v2")
             self.assertEqual(
-                installer.main(["--hook-script", str(v2_src), "--canonical-hook", str(dest_hook)], providers=providers),
+                installer.main(
+                    ["--hook-script", str(v2_src), "--canonical-hook", str(dest_hook)],
+                    providers=providers,
+                ),
                 0,
             )
-            self.assertEqual(installer.main(["--check", "--canonical-hook", str(dest_hook)], providers=providers), 0)
+            self.assertEqual(
+                installer.main(
+                    ["--check", "--canonical-hook", str(dest_hook)], providers=providers
+                ),
+                0,
+            )
 
         proc = self._run_hook(dest_hook)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout.strip(), "HOMOGENEOUS:v2")
 
-    def test_fallback_download_fetches_all_components_and_preserves_previous_on_failure(self) -> None:
+    def test_fallback_download_fetches_all_components_and_preserves_previous_on_failure(
+        self,
+    ) -> None:
         missing_src = self.base / "missing_repo" / installer.CANONICAL_HOOK_NAME
         dest_hook = self.base / "downloaded_hooks" / installer.CANONICAL_HOOK_NAME
         base_url = "https://example.invalid/prod-code/hooks"
@@ -273,34 +320,60 @@ class HookDeployAtomicityTests(unittest.TestCase):
             return _FakeHttpResponse((dl_v1 / url[len(base_url) + 1 :]).read_bytes())
 
         with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen_ok):
-            installer.deploy_canonical_script(missing_src, str(dest_hook), base_url=base_url)
+            installer.deploy_canonical_script(
+                missing_src, str(dest_hook), base_url=base_url
+            )
 
-        self.assertEqual(requested_urls, [f"{base_url}/{rel}" for rel in installer.REQUIRED_GUARD_COMPONENTS])
+        self.assertEqual(
+            requested_urls,
+            [f"{base_url}/{rel}" for rel in installer.REQUIRED_GUARD_COMPONENTS],
+        )
         self.assertTrue(installer.check_canonical_hook(str(dest_hook))[0])
         self.assertEqual(self._run_hook(dest_hook).stdout.strip(), "HOMOGENEOUS:dl_v1")
 
         dl_v2 = self.base / "dl_v2_template"
         _write_version_bundle(dl_v2, "dl_v2")
-        for bad_suffix, empty_resp in (("shell.py", False), ("python_write_guard.py", False), ("rename_guard.py", True)):
+        for bad_suffix, empty_resp in (
+            ("shell.py", False),
+            ("python_write_guard.py", False),
+            ("rename_guard.py", True),
+        ):
+
             def fake_urlopen_fail(
-                url: str, timeout: int = 15, suffix: str = bad_suffix, empty: bool = empty_resp
+                url: str,
+                timeout: int = 15,
+                suffix: str = bad_suffix,
+                empty: bool = empty_resp,
             ) -> _FakeHttpResponse:
                 if url.endswith(suffix):
                     if empty:
                         return _FakeHttpResponse(b"")
                     raise OSError(f"simulated timeout on {suffix}")
-                return _FakeHttpResponse((dl_v2 / url[len(base_url) + 1 :]).read_bytes())
+                return _FakeHttpResponse(
+                    (dl_v2 / url[len(base_url) + 1 :]).read_bytes()
+                )
 
-            with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen_fail), self.assertRaises(FileNotFoundError):
-                installer.deploy_canonical_script(missing_src, str(dest_hook), base_url=base_url)
+            with (
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen_fail),
+                self.assertRaises(FileNotFoundError),
+            ):
+                installer.deploy_canonical_script(
+                    missing_src, str(dest_hook), base_url=base_url
+                )
 
-            self.assertEqual(self._run_hook(dest_hook).stdout.strip(), "HOMOGENEOUS:dl_v1")
+            self.assertEqual(
+                self._run_hook(dest_hook).stdout.strip(), "HOMOGENEOUS:dl_v1"
+            )
             self.assertTrue(installer.check_canonical_hook(str(dest_hook))[0])
             self._assert_no_temp_artifacts(dest_hook.parent)
 
-    def test_running_and_concurrent_hook_processes_never_observe_mixed_versions(self) -> None:
+    def test_running_and_concurrent_hook_processes_never_observe_mixed_versions(
+        self,
+    ) -> None:
         dest_hook = self.base / "concurrent_hooks" / installer.CANONICAL_HOOK_NAME
-        v1_paused = _write_version_bundle(self.base / "v1_paused", "v1", pause_on_stdin=True)
+        v1_paused = _write_version_bundle(
+            self.base / "v1_paused", "v1", pause_on_stdin=True
+        )
         v2_src = _write_version_bundle(self.base / "v2_live", "v2")
         installer.deploy_canonical_script(v1_paused, str(dest_hook))
 
@@ -323,15 +396,22 @@ class HookDeployAtomicityTests(unittest.TestCase):
         self.assertEqual(inflight.returncode, 0, err)
         self.assertEqual(out.strip(), "HOMOGENEOUS:v1")
 
-        sources = [_write_version_bundle(self.base / f"roll_{i}", f"v{i}") for i in range(3, 10)]
+        sources = [
+            _write_version_bundle(self.base / f"roll_{i}", f"v{i}")
+            for i in range(3, 10)
+        ]
         stop = threading.Event()
         failures: list[str] = []
 
         def worker() -> None:
             while not stop.is_set():
                 proc = self._run_hook(dest_hook)
-                if proc.returncode != 0 or not proc.stdout.strip().startswith("HOMOGENEOUS:v"):
-                    failures.append(f"rc={proc.returncode} out={proc.stdout!r} err={proc.stderr!r}")
+                if proc.returncode != 0 or not proc.stdout.strip().startswith(
+                    "HOMOGENEOUS:v"
+                ):
+                    failures.append(
+                        f"rc={proc.returncode} out={proc.stdout!r} err={proc.stderr!r}"
+                    )
 
         threads = [threading.Thread(target=worker) for _ in range(2)]
         for t in threads:
@@ -352,9 +432,13 @@ class HookDeployAtomicityTests(unittest.TestCase):
         for rel in installer.REQUIRED_GUARD_RELPATHS:
             p = hostile_cwd / rel
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text("raise RuntimeError('IMPORTED_GUARD_FROM_CWD')\n", encoding="utf-8")
+            p.write_text(
+                "raise RuntimeError('IMPORTED_GUARD_FROM_CWD')\n", encoding="utf-8"
+            )
         for helper in ("hook_providers.py", "hook_deploy.py"):
-            (hostile_cwd / helper).write_text("raise RuntimeError('IMPORTED_INSTALLER_FROM_CWD')\n", encoding="utf-8")
+            (hostile_cwd / helper).write_text(
+                "raise RuntimeError('IMPORTED_INSTALLER_FROM_CWD')\n", encoding="utf-8"
+            )
 
         dest_hook = self.base / "isolated_dest" / installer.CANONICAL_HOOK_NAME
         fake_home = self.base / "fake_home"
@@ -379,7 +463,13 @@ class HookDeployAtomicityTests(unittest.TestCase):
         (repo / "src" / "lib.rs").write_text("pub fn f() {}\n", encoding="utf-8")
         hook_proc = subprocess.run(
             [sys.executable, str(dest_hook)],
-            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "sed -n '1,10p' src/lib.rs"}, "cwd": str(repo)}),
+            input=json.dumps(
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "sed -n '1,10p' src/lib.rs"},
+                    "cwd": str(repo),
+                }
+            ),
             cwd=str(hostile_cwd),
             env=env,
             text=True,
@@ -387,7 +477,10 @@ class HookDeployAtomicityTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(hook_proc.returncode, 0, hook_proc.stderr)
-        self.assertEqual(json.loads(hook_proc.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertEqual(
+            json.loads(hook_proc.stdout)["hookSpecificOutput"]["permissionDecision"],
+            "deny",
+        )
 
 
 if __name__ == "__main__":

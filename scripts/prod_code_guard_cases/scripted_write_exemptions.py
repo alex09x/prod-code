@@ -19,7 +19,6 @@ from .support import HOOKS_DIR
 
 
 class ScriptedSourceWriteExemptionCasesMixin(ScriptedSourceWriteFixtureBase):
-
     def test_data_stdin_temp_scratch_ssh_sed_inplace_and_text_mentions_allowed(
         self,
     ) -> None:
@@ -33,8 +32,8 @@ class ScriptedSourceWriteExemptionCasesMixin(ScriptedSourceWriteFixtureBase):
             allowed_commands = [
                 "python3 -c 'p=\"crates/prod-code-mcp/src/lib.rs\"; print(len(open(p).read()))'",
                 "cat crates/prod-code-mcp/src/lib.rs | python3 -c 'import sys; print(sys.stdin.read().count(\"fn \"))'",
-                "python3 -c 'import json; json.dump({\"ok\": True}, open(\"target/report.json\", \"w\"))'",
-                "python3 -c 'from pathlib import Path; Path(\"docs/notes.md\").write_text(\"# Notes\\n\")'",
+                'python3 -c \'import json; json.dump({"ok": True}, open("target/report.json", "w"))\'',
+                'python3 -c \'from pathlib import Path; Path("docs/notes.md").write_text("# Notes\\n")\'',
                 (
                     "python3 -c 'import json; "
                     'open("summary.json", "w").write(json.dumps({"source": "crates/prod-code-mcp/src/lib.rs"}))\''
@@ -64,7 +63,7 @@ class ScriptedSourceWriteExemptionCasesMixin(ScriptedSourceWriteFixtureBase):
                 ),
                 (
                     "python3 -m json.tool <<'EOF'\n"
-                    "{\"file\": \"crates/prod-code-mcp/src/lib.rs\"}\n"
+                    '{"file": "crates/prod-code-mcp/src/lib.rs"}\n'
                     "EOF"
                 ),
                 (
@@ -79,12 +78,12 @@ class ScriptedSourceWriteExemptionCasesMixin(ScriptedSourceWriteFixtureBase):
                 ),
                 f'python3 -c \'open("{scratch_json}", "w").write("{{}}")\'',
                 f'python3 -c \'open("{scratch_py}", "w").write("print(1)\\n")\'',
-                f"cd {scratch_dir} && python3 -c 'open(\"scratch_helper.py\", \"w\").write(\"x = 1\\n\")'",
-                "python3 -c 'import tempfile; f = tempfile.NamedTemporaryFile(\"w\", suffix=\".py\", delete=False); f.write(\"x=1\\n\")'",
-                "python3 -c 'import tempfile; from pathlib import Path\nwith tempfile.TemporaryDirectory() as d:\n    Path(d, \"repro.rs\").write_text(\"fn main() {}\\n\")'",
-                'python3 -c "open(\'$TMPDIR/scratch.py\', \'w\').write(\'x = 1\\n\')"',
-                "ssh remote-node \"python3 -c 'p=\\\"src/lib.rs\\\"; open(p, \\\"w\\\").write(\\\"x\\\")'\"",
-                "ssh remote-node python3 -c 'open(\"src/lib.rs\", \"w\").write(\"x\")'",
+                f'cd {scratch_dir} && python3 -c \'open("scratch_helper.py", "w").write("x = 1\\n")\'',
+                'python3 -c \'import tempfile; f = tempfile.NamedTemporaryFile("w", suffix=".py", delete=False); f.write("x=1\\n")\'',
+                'python3 -c \'import tempfile; from pathlib import Path\nwith tempfile.TemporaryDirectory() as d:\n    Path(d, "repro.rs").write_text("fn main() {}\\n")\'',
+                "python3 -c \"open('$TMPDIR/scratch.py', 'w').write('x = 1\\n')\"",
+                'ssh remote-node "python3 -c \'p=\\"src/lib.rs\\"; open(p, \\"w\\").write(\\"x\\")\'"',
+                'ssh remote-node python3 -c \'open("src/lib.rs", "w").write("x")\'',
                 "sed -i '' 's/old/new/' src/main.rs",
                 "sed -i.bak 's/old/new/' src/main.rs",
             ]
@@ -101,12 +100,12 @@ class ScriptedSourceWriteExemptionCasesMixin(ScriptedSourceWriteFixtureBase):
 
     def test_opaque_or_ambiguous_python_programs_fail_open(self) -> None:
         opaque_commands = [
-            "python3 -c 'import os; p = os.environ[\"TARGET_PATH\"]; open(p, \"w\").write(\"x\")'",
-            "python3 -c 'import glob; [open(p, \"w\").write(\"x\") for p in glob.glob(\"out/*\")]'",
-            "python3 -c 'p = \"src/lib.rs\"; import glob; [open(p, \"w\").write(\"x\") for p in glob.glob(\"out/*\")]'",
-            "python3 -c 'import os; p = \"src/lib.rs\" if os.getenv(\"A\") else \"out.json\"; open(p, \"w\").write(\"x\")'",
+            'python3 -c \'import os; p = os.environ["TARGET_PATH"]; open(p, "w").write("x")\'',
+            'python3 -c \'import glob; [open(p, "w").write("x") for p in glob.glob("out/*")]\'',
+            'python3 -c \'p = "src/lib.rs"; import glob; [open(p, "w").write("x") for p in glob.glob("out/*")]\'',
+            'python3 -c \'import os; p = "src/lib.rs" if os.getenv("A") else "out.json"; open(p, "w").write("x")\'',
             "python3 -c 'exec(os.environ[\"DYNAMIC_CODE\"])'",
-            "d=$(mktemp -d) && cd \"$d\" && python3 -c 'open(\"generated.py\", \"w\").write(\"x = 1\\n\")'",
+            'd=$(mktemp -d) && cd "$d" && python3 -c \'open("generated.py", "w").write("x = 1\\n")\'',
             "python3 - <<\\EOF\ns = '`grep -rn someIdentifier src/`'\nEOF\n",
             "python3 - <<EOF\ndoc = '`rg my_symbol crates/`'\nEOF\n",
         ]

@@ -77,8 +77,14 @@ class ClaudeCodeProvider(Provider):
                 cmd = h.get("command", "")
                 if CANONICAL_HOOK_NAME in cmd:
                     if "Edit" in matcher:
-                        return True, f"Configured ({self.config_file}, matcher: {matcher})"
-                    return False, f"Outdated matcher '{matcher}' in {self.config_file} (requires 'Bash|Edit')"
+                        return (
+                            True,
+                            f"Configured ({self.config_file}, matcher: {matcher})",
+                        )
+                    return (
+                        False,
+                        f"Outdated matcher '{matcher}' in {self.config_file} (requires 'Bash|Edit')",
+                    )
         return False, f"Hook not registered in {self.config_file}"
 
     def install(self, hook_path: str) -> str:
@@ -127,7 +133,9 @@ class ClaudeCodeProvider(Provider):
         new_ptu = [
             e
             for e in pre_tool_use
-            if not any(CANONICAL_HOOK_NAME in h.get("command", "") for h in e.get("hooks", []))
+            if not any(
+                CANONICAL_HOOK_NAME in h.get("command", "") for h in e.get("hooks", [])
+            )
         ]
         if len(new_ptu) != len(pre_tool_use):
             data["hooks"]["PreToolUse"] = new_ptu
@@ -195,7 +203,9 @@ class CodexProvider(Provider):
         new_ptu = [
             e
             for e in pre_tool_use
-            if not any(CANONICAL_HOOK_NAME in h.get("command", "") for h in e.get("hooks", []))
+            if not any(
+                CANONICAL_HOOK_NAME in h.get("command", "") for h in e.get("hooks", [])
+            )
         ]
         if len(new_ptu) != len(pre_tool_use):
             data["hooks"]["PreToolUse"] = new_ptu
@@ -234,7 +244,10 @@ class AntigravityProvider(Provider):
             for h in entry.get("hooks", []):
                 if CANONICAL_HOOK_NAME in h.get("command", ""):
                     if "replace_file_content" in matcher:
-                        return True, f"Configured ({self.config_file}, matcher: {matcher})"
+                        return (
+                            True,
+                            f"Configured ({self.config_file}, matcher: {matcher})",
+                        )
                     return False, f"Outdated matcher '{matcher}' in {self.config_file}"
         return False, f"prod-code-guard not registered in {self.config_file}"
 

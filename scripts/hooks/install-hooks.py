@@ -22,7 +22,20 @@ Usage:
 import sys
 
 if __name__ == "__main__":
-    sys.path[:] = [p for p in sys.path if p not in ("", ".")]
+    import posix as _posix
+
+    _cwd_stat = _posix.stat(".")
+
+    def _is_workdir(path: str) -> bool:
+        if path in ("", "."):
+            return True
+        try:
+            info = _posix.stat(path)
+            return (info.st_dev, info.st_ino) == (_cwd_stat.st_dev, _cwd_stat.st_ino)
+        except OSError:
+            return False
+
+    sys.path[:] = [p for p in sys.path if not _is_workdir(p)]
 
 import argparse
 import importlib.util
@@ -107,7 +120,9 @@ REPO_HOOK_SRC = SCRIPT_DIR / CANONICAL_HOOK_NAME
 
 def _run_verification(canonical_path: str, providers: list[Provider]) -> bool:
     hook_ok, hook_msg = check_canonical_hook(canonical_path)
-    hook_sym = "[+]" if hook_ok else ("[-]" if hook_msg.startswith("MISSING (") else "[!]")
+    hook_sym = (
+        "[+]" if hook_ok else ("[-]" if hook_msg.startswith("MISSING (") else "[!]")
+    )
     print(f"{hook_sym} Canonical hook script : {hook_msg}")
     all_ok = hook_ok
 
@@ -191,7 +206,9 @@ def main(argv: list[str] | None = None, providers: list[Provider] | None = None)
     print("Deploying canonical hook script and configuring agent providers:\n")
     try:
         deploy_canonical_script(hook_src, canonical_path)
-        print(f"[+] Canonical script   : Deployed and verified executable at {canonical_path}")
+        print(
+            f"[+] Canonical script   : Deployed and verified executable at {canonical_path}"
+        )
     except (OSError, ValueError) as e:
         print(f"[!] Error deploying hook script: {e}", file=sys.stderr)
         return 1
