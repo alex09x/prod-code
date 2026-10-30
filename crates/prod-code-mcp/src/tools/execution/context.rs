@@ -77,9 +77,8 @@ pub(super) fn resolve_workspace_root(
 }
 
 fn explicit_workspace_root(configured: &Path, raw: &str) -> Result<PathBuf> {
-    let trimmed = raw.trim();
-    ensure!(!trimmed.is_empty(), "workspace path cannot be empty");
-    let selected = Path::new(trimmed);
+    ensure!(!raw.trim().is_empty(), "workspace path cannot be empty");
+    let selected = Path::new(raw);
     ensure!(
         selected.is_absolute(),
         "workspace must be an absolute path to a worktree"
@@ -96,14 +95,14 @@ fn explicit_workspace_root(configured: &Path, raw: &str) -> Result<PathBuf> {
         selected.is_dir(),
         "workspace path '{raw}' is not a directory"
     );
+    if selected == configured {
+        return Ok(selected);
+    }
     let (configured_top, configured_common) = git_identity(configured)?;
     ensure!(
         configured_top == configured,
         "configured workspace root is not a Git worktree root"
     );
-    if selected == configured {
-        return Ok(selected);
-    }
     let (selected_top, selected_common) = git_identity(&selected)?;
     ensure!(
         selected_top == selected,
@@ -233,4 +232,36 @@ fn git_path(root: &Path, args: &[&str]) -> Result<PathBuf> {
 /// (#1558).
 pub(crate) fn routed_path<'a>(tool_name: &str, path: Option<&'a str>) -> Option<&'a str> {
     (tool_name != "code_grep").then_some(path).flatten()
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_current_non_git_workspace_remains_valid() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        for tool in ["code_exec", "code_test", "code_grep"] {
+            let mut args = serde_json::json!({ "workspace": root.to_str().unwrap() });
+            assert_eq!(
+                resolve_workspace_root(&root, tool, &mut args).unwrap(),
+                root
+            );
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn explicit_workspace_preserves_trailing_spaces_in_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("project ");
+        std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let mut args = serde_json::json!({ "workspace": root.to_str().unwrap() });
+        assert_eq!(
+            resolve_workspace_root(&root, "code_exec", &mut args).unwrap(),
+            root
+        );
+    }
 }

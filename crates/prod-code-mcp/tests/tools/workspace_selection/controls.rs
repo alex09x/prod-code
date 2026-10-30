@@ -107,7 +107,7 @@ async fn navigation_workspace_selector_rejects_unrelated_and_invalid_roots() {
         );
     }
 
-    // Configured root that is not itself a Git worktree root is rejected even when selected == configured.
+    // The already configured root remains valid even when it is not a Git checkout.
     let plain_canon = std::fs::canonicalize(plain_dir.path()).unwrap();
     let err = execute_tool(
         nowhere(),
@@ -119,8 +119,8 @@ async fn navigation_workspace_selector_rejects_unrelated_and_invalid_roots() {
         }),
     )
     .await
-    .expect_err("non-git configured root cannot be selected via workspace");
-    assert!(format!("{err:#}").contains("Git worktree"), "{err:#}");
+    .expect_err("the placeholder gateway cannot be reached");
+    assert!(!format!("{err:#}").contains("Git worktree"), "{err:#}");
 
     // Unsupported tools continue to reject explicit workspace selection.
     for unsupported in ["code_rename", "code_check", "code_slice", "code_source"] {
