@@ -32,8 +32,8 @@ pub fn list_tools() -> Vec<McpTool> {
 
 pub(crate) mod schemas;
 pub use schemas::{
-    COMPILE_DESCRIPTION, POSITION_ARGUMENTS, SYMBOL_ADDRESSABLE, build_tools_raw,
-    relax_position_schema,
+    COMPILE_DESCRIPTION, POSITION_ARGUMENTS, SYMBOL_ADDRESSABLE, WORKSPACE_SELECTABLE,
+    build_tools_raw, relax_position_schema,
 };
 
 pub mod outline;
