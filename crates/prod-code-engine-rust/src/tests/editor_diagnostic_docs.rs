@@ -15,7 +15,7 @@ fn editor_rust_errors_link_to_the_official_explanation() {
     let (_temp, path) = super::create_test_fixture();
     std::fs::write(
         &path,
-        "pub fn f(value: Option<u32>) { let _: u32 = \"not a number\"; let _ = value.missing; }\n",
+        "pub enum Kind { Unit {} }\npub fn f(value: Option<u32>) { let _: u32 = \"not a number\"; let _ = value.missing; let _ = Kind::Unit { unknown: 1 }; }\npub fn incomplete(\n",
     )
     .unwrap();
     let engine = RustEngine::load(path.parent().unwrap().parent().unwrap()).unwrap();
@@ -45,12 +45,22 @@ fn editor_rust_errors_link_to_the_official_explanation() {
         missing_field["codeDescription"]["href"],
         "https://doc.rust-lang.org/error_codes/E0609.html"
     );
-    for diagnostic in diagnostics.as_array().unwrap() {
-        if diagnostic["code"]
-            .as_str()
-            .is_some_and(|code| !code.starts_with('E'))
-        {
-            assert!(diagnostic.get("codeDescription").is_none());
-        }
-    }
+    let enum_field = diagnostics
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "E0559")
+        .unwrap_or_else(|| panic!("expected an invalid enum variant field: {diagnostics}"));
+    assert_eq!(enum_field["message"], "no such field");
+    assert_eq!(
+        enum_field["codeDescription"]["href"],
+        "https://doc.rust-lang.org/error_codes/E0559.html"
+    );
+    let syntax_error = diagnostics
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "syntax-error")
+        .unwrap_or_else(|| panic!("expected a syntax error: {diagnostics}"));
+    assert!(syntax_error.get("codeDescription").is_none());
 }
