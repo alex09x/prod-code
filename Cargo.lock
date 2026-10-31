@@ -2409,7 +2409,7 @@ dependencies = [
 
 [[package]]
 name = "prod-code-client"
-version = "0.3.45"
+version = "0.3.46"
 dependencies = [
  "anyhow",
  "clap",
@@ -2432,7 +2432,7 @@ dependencies = [
 
 [[package]]
 name = "prod-code-engine-generic"
-version = "0.3.45"
+version = "0.3.46"
 dependencies = [
  "anyhow",
  "prod-code-protocol",
@@ -2447,7 +2447,7 @@ dependencies = [
 
 [[package]]
 name = "prod-code-engine-go"
-version = "0.3.45"
+version = "0.3.46"
 dependencies = [
  "anyhow",
  "prod-code-protocol",
@@ -2462,7 +2462,7 @@ dependencies = [
 
 [[package]]
 name = "prod-code-engine-rust"
-version = "0.3.45"
+version = "0.3.46"
 dependencies = [
  "anyhow",
  "base-db",
@@ -2488,7 +2488,7 @@ dependencies = [
 
 [[package]]
 name = "prod-code-gateway"
-version = "0.3.45"
+version = "0.3.46"
 dependencies = [
  "anyhow",
  "clap",
@@ -2518,7 +2518,7 @@ dependencies = [
 
 [[package]]
 name = "prod-code-mcp"
-version = "0.3.45"
+version = "0.3.46"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -2551,7 +2551,7 @@ dependencies = [
 
 [[package]]
 name = "prod-code-protocol"
-version = "0.3.45"
+version = "0.3.46"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2577,7 +2577,7 @@ dependencies = [
 
 [[package]]
 name = "prod-code-testkit"
-version = "0.3.45"
+version = "0.3.46"
 dependencies = [
  "anyhow",
  "futures-util",
