@@ -89,11 +89,11 @@ fn snapshot_writer_child() {
     let query_while_writing = case == "overlay-query";
     let writer = std::thread::spawn(move || {
         started_tx.send(()).unwrap();
-        let text = Some("pub fn updated() {}\n".to_owned());
+        let text = "pub fn updated() {}\n".to_owned();
         let result = match case.as_str() {
-            "overlay-query" => engine.set_session_overlay(1, &writer_path, text),
-            "base" => engine.update_base(&writer_path, text),
-            "direct" | "active" => engine.apply_file_change(&writer_path, text.unwrap()),
+            "overlay-query" => engine.set_session_overlay(1, &writer_path, Some(text)),
+            "base" => engine.update_base(&writer_path, Some(text)),
+            "direct" | "active" => engine.apply_file_change(&writer_path, text),
             _ => unreachable!(),
         };
         done_tx.send(result).unwrap();

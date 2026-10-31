@@ -222,7 +222,7 @@ set RUST_ANALYZER_INTERNALS_DO_NOT_USE=this is unstable
             && !meta.file_type().is_symlink()
             && meta.uid() == uid
             && (meta.mode() & 0o777) == 0o700
-            && std::fs::read_to_string(&wrapper_path).map_or(false, |content| content == script)
+            && std::fs::read_to_string(&wrapper_path).is_ok_and(|content| content == script)
         {
             return Ok(wrapper_path);
         }
