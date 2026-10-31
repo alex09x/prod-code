@@ -55,13 +55,27 @@ impl RustEngine {
                     "weak" => 4,
                     _ => 3,
                 };
+                // rust-analyzer uses E0559 for field access, while rustc uses E0609.
+                let code = if d.code == "E0559" && d.message.starts_with("no field `") {
+                    "E0609"
+                } else {
+                    &d.code
+                };
                 let mut out = json!({
                     "range": lines.range(TextRange::new(start, end.max(start))),
                     "severity": severity,
-                    "code": d.code,
+                    "code": code,
                     "source": "prod-code",
                     "message": d.message,
                 });
+                if let Some(digits) = code.strip_prefix('E')
+                    && digits.len() == 4
+                    && digits.bytes().all(|byte| byte.is_ascii_digit())
+                {
+                    out["codeDescription"] = json!({
+                        "href": format!("https://doc.rust-lang.org/error_codes/{code}.html")
+                    });
+                }
                 if d.unused {
                     out["tags"] = json!([1]);
                 }

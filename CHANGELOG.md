@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Rust Editor Diagnostic Explanations** (`crates/prod-code-engine-rust`, #1767): The shared-engine editor fallback links Rust error codes to their explanations and reports missing field access as E0609.
+
 ## v0.3.45 — 2026-10-30
 
 ### Fixed
