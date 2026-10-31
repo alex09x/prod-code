@@ -325,3 +325,10 @@ async fn a_filtered_compile_failure_is_not_reported_as_no_tests_matched() {
     assert!(!text.contains("No Rust tests matched"), "{text}");
     assert!(text.contains("could not compile"), "{text}");
 }
+
+#[path = "workspace_selection/controls.rs"]
+mod controls;
+#[path = "workspace_selection/fixture.rs"]
+mod fixture;
+#[path = "workspace_selection/navigation.rs"]
+mod navigation;

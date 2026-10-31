@@ -17,7 +17,8 @@ pub mod types;
 pub mod utility;
 
 pub use types::{
-    COMPILE_DESCRIPTION, POSITION_ARGUMENTS, SYMBOL_ADDRESSABLE, relax_position_schema,
+    COMPILE_DESCRIPTION, POSITION_ARGUMENTS, SYMBOL_ADDRESSABLE, WORKSPACE_SELECTABLE,
+    WORKSPACE_SELECTOR_DESCRIPTION, relax_position_schema,
 };
 
 use crate::protocol::McpTool;
@@ -57,6 +58,19 @@ pub fn build_tools_raw() -> Vec<McpTool> {
         }
         if SYMBOL_ADDRESSABLE.contains(&tool.name.as_str()) {
             relax_position_schema(&mut tool.input_schema);
+        }
+        if WORKSPACE_SELECTABLE.contains(&tool.name.as_str())
+            && let Some(properties) = tool
+                .input_schema
+                .get_mut("properties")
+                .and_then(|v| v.as_object_mut())
+        {
+            properties.entry("workspace").or_insert_with(|| {
+                serde_json::json!({
+                    "type": "string",
+                    "description": WORKSPACE_SELECTOR_DESCRIPTION
+                })
+            });
         }
     }
     tools

@@ -52,6 +52,28 @@ pub const SYMBOL_ADDRESSABLE: &[&str] = &[
     "code_extract_interface",
 ];
 
+/// Tools that accept `workspace` to select the configured Git checkout root or a verified sibling
+/// Git worktree sharing the same common Git directory (#1759).
+pub const WORKSPACE_SELECTABLE: &[&str] = &[
+    "code_test",
+    "code_exec",
+    "code_definition",
+    "code_symbols",
+    "code_outline",
+    "code_grep",
+    "code_references",
+    "code_callers",
+    "code_callees",
+    "code_hover",
+    "code_implementations",
+    "code_supertypes",
+    "code_type_at",
+];
+
+pub const WORKSPACE_SELECTOR_DESCRIPTION: &str = "Absolute path to the configured Git checkout \
+     or a sibling Git worktree of this repository; defaults to the MCP server's configured \
+     workspace.";
+
 /// Symbol-addressable tools accept `symbol` instead of a position: advertise the property and
 /// stop requiring path/line/character, otherwise a schema-validating client cannot use the
 /// name-based form at all.

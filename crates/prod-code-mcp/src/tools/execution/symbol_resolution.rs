@@ -19,8 +19,9 @@ use super::super::schemas::SYMBOL_ADDRESSABLE;
 use super::super::symbols::{
     DEFAULT_AMBIGUOUS_CANDIDATE_LIMIT, resolve_symbol, resolve_symbol_candidates,
 };
-use super::budgets::{references_busy_message, references_subrequest_timeout_message};
-use super::context::DefinitionBudget;
+use super::budgets::{
+    DefinitionBudget, references_busy_message, references_subrequest_timeout_message,
+};
 use super::validate_position_arguments;
 use crate::protocol::{McpContentItem, McpToolCallResult};
 

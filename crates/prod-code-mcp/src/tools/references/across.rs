@@ -14,7 +14,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use crate::protocol::McpToolCallResult;
-use crate::tools::{execute_tool, resolve_file_path};
+use crate::tools::{PATH_HINT_KEYS, execute_tool, resolve_file_path};
 
 /// `code_references` in this checkout and in each directory of `also_in`, the name resolved in
 /// each, every answer under its checkout's directory; a checkout that fails says why without
@@ -51,11 +51,11 @@ pub(crate) async fn references_across(
     for (index, root) in roots.iter().enumerate() {
         let mut asked = args.clone();
         if let Some(obj) = asked.as_object_mut() {
-            obj.remove("also_in");
             // A file hint names a file of the first checkout.
-            if index > 0 {
-                obj.remove("path");
-            }
+            obj.retain(|k, _| {
+                !matches!(k.as_str(), "also_in" | "workspace")
+                    && (index == 0 || !PATH_HINT_KEYS.contains(&k.as_str()))
+            });
         }
         // Each checkout is asked on the node its own workspace is placed on.
         let node = if index == 0 || !root.is_dir() {

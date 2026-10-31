@@ -9,36 +9,41 @@
  */
 
 use super::super::compile_gate::resolve_file_path;
+use super::super::schemas::WORKSPACE_SELECTABLE;
+use super::confinement::validate_workspace_paths;
 use anyhow::{Context, Result, bail, ensure};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+
+pub(crate) const PATH_HINT_KEYS: &[&str] = &["path", "file_path", "file", "package", "crate"];
 
 pub(super) fn resolve_workspace_root(
     configured_root: &Path,
     tool_name: &str,
     args: &mut serde_json::Value,
 ) -> Result<PathBuf> {
-    let supported = matches!(tool_name, "code_test" | "code_exec");
+    let supported = WORKSPACE_SELECTABLE.contains(&tool_name);
     let explicit = match args.get("workspace") {
         None | Some(serde_json::Value::Null) => None,
-        Some(value) => Some(
-            value
-                .as_str()
-                .context("workspace must be an absolute path to a worktree")?
-                .to_string(),
-        ),
+        Some(serde_json::Value::Bool(_)) if tool_name == "code_coverage" => None,
+        Some(value) => {
+            ensure!(
+                supported,
+                "workspace is supported only by {}",
+                WORKSPACE_SELECTABLE.join(", ")
+            );
+            Some(
+                value
+                    .as_str()
+                    .context("workspace must be an absolute path to a worktree")?
+                    .to_string(),
+            )
+        }
     };
     let configured = std::fs::canonicalize(configured_root)
         .with_context(|| "configured workspace root cannot be read")?;
-    if explicit.is_some() {
-        ensure!(
-            supported,
-            "workspace is supported only by code_test and code_exec"
-        );
-    }
     let has_explicit_workspace = explicit.is_some();
-    let hint = workspace_hint(tool_name, args);
+    let hint = implicit_workspace_hint(tool_name, args);
     let selected = if let Some(raw) = explicit {
         explicit_workspace_root(&configured, &raw)?
     } else if let Some((_, raw)) = &hint {
@@ -67,7 +72,7 @@ pub(super) fn resolve_workspace_root(
     {
         object.insert(key, serde_json::Value::String(path));
     }
-    validate_workspace_hint(&selected, tool_name, args)?;
+    validate_workspace_paths(&selected, tool_name, args, has_explicit_workspace)?;
     Ok(selected)
 }
 
@@ -77,6 +82,12 @@ fn explicit_workspace_root(configured: &Path, raw: &str) -> Result<PathBuf> {
     ensure!(
         selected.is_absolute(),
         "workspace must be an absolute path to a worktree"
+    );
+    ensure!(
+        !selected
+            .components()
+            .any(|component| matches!(component, Component::ParentDir)),
+        "workspace path '{raw}' must not contain '..' segments"
     );
     let selected = std::fs::canonicalize(selected)
         .with_context(|| format!("workspace path '{raw}' cannot be read"))?;
@@ -88,6 +99,10 @@ fn explicit_workspace_root(configured: &Path, raw: &str) -> Result<PathBuf> {
         return Ok(selected);
     }
     let (configured_top, configured_common) = git_identity(configured)?;
+    ensure!(
+        configured_top == configured,
+        "configured workspace root is not a Git worktree root"
+    );
     let (selected_top, selected_common) = git_identity(&selected)?;
     ensure!(
         selected_top == selected,
@@ -97,24 +112,24 @@ fn explicit_workspace_root(configured: &Path, raw: &str) -> Result<PathBuf> {
         configured_common == selected_common,
         "workspace must be a worktree of the same Git repository as the configured workspace"
     );
-    ensure!(
-        configured_top == configured,
-        "configured workspace root is not a Git worktree root"
-    );
     Ok(selected)
 }
 
-fn workspace_hint(tool_name: &str, args: &serde_json::Value) -> Option<(String, String)> {
-    let keys: &[&str] = if tool_name == "code_test" {
-        &["path", "file_path", "file", "package", "crate"]
-    } else if tool_name == "code_exec" {
-        &["cwd"]
-    } else {
-        return None;
+fn implicit_workspace_hint(tool_name: &str, args: &serde_json::Value) -> Option<(String, String)> {
+    let keys: &[&str] = match tool_name {
+        "code_test" => PATH_HINT_KEYS,
+        "code_exec" => &["cwd"],
+        _ => return None,
     };
-    let key = keys.iter().find(|key| args.get(**key).is_some())?;
-    let raw = args.get(*key)?.as_str()?.trim();
-    (!raw.is_empty()).then(|| ((*key).to_string(), raw.to_string()))
+    for key in keys {
+        if let Some(raw) = args.get(*key).and_then(|v| v.as_str()) {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() {
+                return Some(((*key).to_string(), trimmed.to_string()));
+            }
+        }
+    }
+    None
 }
 
 fn infer_workspace_from_hint(configured: &Path, raw: &str) -> Result<PathBuf> {
@@ -162,42 +177,7 @@ fn infer_workspace_from_hint(configured: &Path, raw: &str) -> Result<PathBuf> {
     }
 }
 
-fn validate_workspace_hint(root: &Path, tool_name: &str, args: &serde_json::Value) -> Result<()> {
-    let Some((_, raw)) = workspace_hint(tool_name, args) else {
-        return Ok(());
-    };
-    let resolved = resolve_file_path(root, &raw);
-    if !resolved.exists() {
-        ensure!(
-            !Path::new(&raw).is_absolute() || resolved.starts_with(root),
-            "path or cwd '{raw}' is outside the selected workspace"
-        );
-        return Ok(());
-    }
-    let resolved = std::fs::canonicalize(resolved)
-        .with_context(|| format!("path or cwd '{raw}' cannot be read"))?;
-    ensure!(
-        resolved.starts_with(root),
-        "path or cwd '{raw}' is outside the selected workspace"
-    );
-    let directory = if resolved.is_dir() {
-        resolved.as_path()
-    } else {
-        resolved.parent().context("path has no parent directory")?
-    };
-    match git_identity(directory) {
-        Ok((top, _common)) if top != root => bail!(
-            "path or cwd '{raw}' lies inside a nested Git worktree or repository; select that checkout as `workspace`"
-        ),
-        Err(_) if nested_git_marker(root, &resolved) => bail!(
-            "path or cwd '{raw}' is inside a nested Git worktree or repository; select that checkout directly"
-        ),
-        _ => {}
-    }
-    Ok(())
-}
-
-fn nested_git_marker(root: &Path, path: &Path) -> bool {
+pub(super) fn nested_git_marker(root: &Path, path: &Path) -> bool {
     let mut directory = if path.is_dir() {
         path
     } else if let Some(parent) = path.parent() {
@@ -217,7 +197,7 @@ fn nested_git_marker(root: &Path, path: &Path) -> bool {
     false
 }
 
-fn git_identity(root: &Path) -> Result<(PathBuf, PathBuf)> {
+pub(super) fn git_identity(root: &Path) -> Result<(PathBuf, PathBuf)> {
     let top = git_path(root, &["rev-parse", "--show-toplevel"])?;
     let top = std::fs::canonicalize(top).context("Git worktree root cannot be resolved")?;
     let common = git_path(root, &["rev-parse", "--git-common-dir"])?;
@@ -254,90 +234,34 @@ pub(crate) fn routed_path<'a>(tool_name: &str, path: Option<&'a str>) -> Option<
     (tool_name != "code_grep").then_some(path).flatten()
 }
 
-const DEFAULT_DEFINITION_BUDGET_MS: u64 = 120_000;
-const MAX_DEFINITION_BUDGET_MS: u64 = 120_000;
-
-#[derive(Clone, Copy)]
-pub(crate) struct DefinitionBudget {
-    pub(crate) deadline: tokio::time::Instant,
-    pub(crate) duration: Duration,
-}
-
-pub(crate) fn definition_budget(
-    tool_name: &str,
-    args: &serde_json::Value,
-) -> Option<DefinitionBudget> {
-    if tool_name != "code_definition" || super::super::batch::extract_batch_symbols(args).len() > 1
-    {
-        // The batch runner apportions its own shared budget and preserves partial successes.
-        return None;
-    }
-    let milliseconds = args
-        .get("budget_ms")
-        .and_then(|value| value.as_u64())
-        .or_else(|| args.get("timeout_millis").and_then(|value| value.as_u64()))
-        .or_else(|| {
-            args.get("budget_secs")
-                .or_else(|| args.get("timeout_secs"))
-                .and_then(|value| value.as_u64())
-                .map(|seconds| seconds.saturating_mul(1000))
-        })
-        .unwrap_or(DEFAULT_DEFINITION_BUDGET_MS)
-        .clamp(1, MAX_DEFINITION_BUDGET_MS);
-    let duration = Duration::from_millis(milliseconds);
-    Some(DefinitionBudget {
-        deadline: tokio::time::Instant::now() + duration,
-        duration,
-    })
-}
-
-pub(crate) fn definition_busy_message(budget: DefinitionBudget) -> String {
-    format!(
-        "code_definition did not finish within {} ms; the analyzer may be busy indexing or compiling. Retry, or pass a specific path and position.",
-        budget.duration.as_millis()
-    )
-}
-
-pub(crate) fn definition_subrequest_timeout_message(budget: DefinitionBudget) -> String {
-    format!(
-        "A code_definition LSP request timed out before the shared {} ms budget completed; the analyzer may be busy indexing or compiling. Retry or pass a specific path and position.",
-        budget.duration.as_millis()
-    )
-}
-
 #[cfg(test)]
-mod definition_timeout_tests {
+mod workspace_tests {
     use super::*;
 
-    fn budget(args: serde_json::Value) -> Option<DefinitionBudget> {
-        definition_budget("code_definition", &args)
-    }
-
     #[test]
-    fn definition_timeout_uses_supported_aliases() {
-        for (args, expected_ms) in [
-            (serde_json::json!({ "budget_ms": 250 }), 250),
-            (
-                serde_json::json!({ "budget_ms": 250, "timeout_millis": 900 }),
-                250,
-            ),
-            (serde_json::json!({ "timeout_millis": 500 }), 500),
-            (serde_json::json!({ "budget_secs": 3 }), 3_000),
-            (serde_json::json!({ "timeout_secs": 4 }), 4_000),
-        ] {
-            let actual = budget(args).expect("single definition call has a budget");
-            assert_eq!(actual.duration, Duration::from_millis(expected_ms));
+    fn explicit_current_non_git_workspace_remains_valid() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        for tool in ["code_exec", "code_test", "code_grep"] {
+            let mut args = serde_json::json!({ "workspace": root.to_str().unwrap() });
+            assert_eq!(
+                resolve_workspace_root(&root, tool, &mut args).unwrap(),
+                root
+            );
         }
     }
 
+    #[cfg(not(windows))]
     #[test]
-    fn definition_timeout_batch_uses_its_partial_result_budget() {
-        assert!(
-            budget(serde_json::json!({
-                "symbols": ["Fast", "Slow"],
-                "budget_ms": 200
-            }))
-            .is_none()
+    fn explicit_workspace_preserves_trailing_spaces_in_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("project ");
+        std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let mut args = serde_json::json!({ "workspace": root.to_str().unwrap() });
+        assert_eq!(
+            resolve_workspace_root(&root, "code_exec", &mut args).unwrap(),
+            root
         );
     }
 }

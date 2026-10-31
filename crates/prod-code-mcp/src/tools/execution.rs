@@ -22,18 +22,17 @@ use super::workspace_writer::{WorkspaceMutationGuard, workspace_writer_gate};
 use crate::protocol::McpToolCallResult;
 
 mod budgets;
+mod confinement;
 mod context;
 mod positions;
 mod symbol_resolution;
 use self::budgets::{
-    is_timeout_error, references_budget, references_busy_message,
-    references_subrequest_timeout_message,
+    DefinitionBudget, definition_budget, definition_busy_message,
+    definition_subrequest_timeout_message, is_timeout_error, references_budget,
+    references_busy_message, references_subrequest_timeout_message,
 };
 use self::context::resolve_workspace_root;
-pub(crate) use self::context::routed_path;
-use self::context::{
-    definition_budget, definition_busy_message, definition_subrequest_timeout_message,
-};
+pub(crate) use self::context::{PATH_HINT_KEYS, routed_path};
 use positions::validate_position_arguments;
 use symbol_resolution::{
     SymbolResolution, is_multi_candidate_navigation_tool, resolve_symbol_args,
@@ -143,13 +142,13 @@ fn execute_tool_inner<'a>(
     configured_workspace_root: &'a Path,
     tool_name: &'a str,
     args: serde_json::Value,
-    reference_budget: Option<self::context::DefinitionBudget>,
+    reference_budget: Option<DefinitionBudget>,
 ) -> impl std::future::Future<Output = Result<McpToolCallResult>> + Send + 'a {
     Box::pin(async move {
         let mut reference_budget = reference_budget;
         let mut args = args;
         let workspace_root =
-            resolve_workspace_root(&configured_workspace_root, tool_name, &mut args)?;
+            resolve_workspace_root(configured_workspace_root, tool_name, &mut args)?;
         let workspace_root = workspace_root.as_path();
         // Invalid explicit positions are refused before symbol lookup, routing or any write.
         validate_position_arguments(tool_name, &args)?;

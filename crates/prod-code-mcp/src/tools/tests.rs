@@ -371,3 +371,27 @@ fn declared_at_matches_var_let_val_declarations() {
     assert_eq!(super::declared_at("let count = 42;", "count"), Some(4));
     assert_eq!(super::declared_at("val items = listOf()", "items"), Some(4));
 }
+
+#[test]
+fn workspace_selectable_tools_advertise_workspace_selector() {
+    let tools = list_tools();
+    for expected in super::WORKSPACE_SELECTABLE {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == *expected)
+            .unwrap_or_else(|| panic!("missing tool {expected}"));
+        assert_eq!(
+            tool.input_schema["properties"]["workspace"]["type"], "string",
+            "{expected} must advertise a string workspace selector"
+        );
+    }
+    let coverage = tools.iter().find(|t| t.name == "code_coverage").unwrap();
+    assert_eq!(
+        coverage.input_schema["properties"]["workspace"]["type"],
+        "boolean"
+    );
+    for unsupported in ["code_rename", "code_check", "code_slice", "code_source"] {
+        let tool = tools.iter().find(|t| t.name == unsupported).unwrap();
+        assert!(tool.input_schema["properties"].get("workspace").is_none());
+    }
+}

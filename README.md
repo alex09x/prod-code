@@ -237,6 +237,13 @@ rust-analyzer.
 Tools use the node that holds the workspace. The tables describe current source; check
 [CHANGELOG.md](CHANGELOG.md) for the version that contains a change.
 
+For a Git worktree, run the CLI from that worktree to select it. In an existing MCP
+session, supported navigation and grep calls can select another worktree of the same
+repository with `workspace: "/absolute/path/to/worktree"`. Relative paths in the call
+resolve against that worktree. Omitting `workspace` uses the MCP session's configured
+workspace. For these calls, use filesystem paths without `..` components; file URIs are
+not accepted.
+
 **Find code**
 
 | tool | what it does |
@@ -309,6 +316,10 @@ and SVG vector graphics are validated directly through built-in syntax parsers.
 | `code_replace_inheritance_with_delegation` | refactor class inheritance hierarchies into composition and delegation |
 | `code_replace_conditional_with_polymorphism` | replace `switch`/`match`/`if-else` conditionals with polymorphic dispatch |
 | `code_shadow_run` | compare hypotheses and return the winning diff; concurrent overlays where supported (RAM optional), otherwise serialized in-place execution on the worker mirror |
+
+For a small one-off source change, use a contextual editor or patch and inspect the diff.
+For repeated structural changes, preview `code_codemod` or use the relevant refactoring
+tool before applying it.
 
 **Run it**
 
