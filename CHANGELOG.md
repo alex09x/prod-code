@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## v0.3.45 — 2026-10-30
+
 ### Fixed
 - **MCP Navigation Can Select a Git Worktree** (`crates/prod-code-mcp`, #1759): Navigation and grep tools accept an explicit `workspace` root for a sibling worktree of the same repository, so symbol-only and relative-path requests use the intended checkout. Unrelated workspaces and paths outside the selected root are refused.
 - **Guard Detects Inline Python Source Rewrites** (`scripts/hooks`, #1760): The guard redirects identifiable inline Python writes to repository source files to contextual editing tools. Data processing and opaque programs remain available. Hook components are staged as a versioned bundle before activation.
