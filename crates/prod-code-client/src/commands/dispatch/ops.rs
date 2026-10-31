@@ -24,7 +24,11 @@ pub async fn dispatch_ops(cmd: Commands, cx: &DispatchContext<'_>) -> Result<()>
             reconnect,
             watchdog_secs,
             ..
-        } => run_lsp_bridge(cx.remote, cx.lsp_engine, reconnect, watchdog_secs).await,
+        } => {
+            // Reconnect by default; an explicit environment value of false opts out.
+            let reconnect = reconnect || env::var_os("PROD_CODE_RECONNECT").is_none();
+            run_lsp_bridge(cx.remote, cx.lsp_engine, reconnect, watchdog_secs).await
+        }
         Commands::Status { .. } => unreachable!("handled before placement"),
         Commands::Cluster { json, rebalance } => {
             run_cluster(

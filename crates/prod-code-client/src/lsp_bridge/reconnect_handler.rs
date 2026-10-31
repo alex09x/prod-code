@@ -104,6 +104,12 @@ pub async fn handle_reconnect(
             *closed_rx = new_closed_rx;
         }
         Err(rec_err) => {
+            if let Some(stopped) = rec_err.downcast_ref::<super::reconnect_wait::EditorStopped>()
+                && stopped.clean
+            {
+                keeper.abort();
+                std::process::exit(0);
+            }
             fail_pending_requests(
                 ctx.pending_requests,
                 ctx.editor_out,

@@ -16,7 +16,7 @@ use super::state::{LspStateTracker, fail_pending_requests};
 use super::sync::{keep_checkout_synced, push_checkout};
 use super::transport::{
     PendingRequests, lsp_trace, refuse_lsp, spawn_editor_frame_reader, spawn_editor_stdout_task,
-    trace_message,
+    trace_client_version, trace_message,
 };
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
@@ -39,6 +39,8 @@ pub async fn run_lsp_bridge(
     let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
     let cwd_str = cwd.to_string_lossy().to_string();
     let identity = prod_code_mcp::sync::workspace_identity(&cwd);
+    let trace = lsp_trace();
+    trace_client_version(&trace);
 
     let (framed, handshake_resp, effective_remote) =
         match open_editor_session(remote, engine, &cwd, cwd_str.clone(), identity.clone(), 0).await
@@ -65,7 +67,6 @@ pub async fn run_lsp_bridge(
         Path::new(&handshake_resp.server_workspace_root),
         &prod_code_client::editor_files::default_cache(),
     ));
-    let trace = lsp_trace();
     let pushing = Arc::new(Mutex::new(()));
     let (mut socket_tx, socket_rx) = framed.split();
     let mut keeper = tokio::spawn(keep_checkout_synced(

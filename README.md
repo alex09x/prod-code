@@ -227,6 +227,14 @@ protocol both ways:
 - Files the server points at that exist only on the node (the standard library, dependency
   caches, generated files) are mirrored read-only under the user's cache directory.
 - `--language` picks the server for one language of a mixed checkout.
+- After a gateway interruption, the bridge retries for up to two minutes and restores
+  open documents, including unsaved edits. Set `PROD_CODE_RECONNECT=false` to disable
+  retries for ordinary disconnects; redirects and workspace model changes still reconnect.
+  While reconnecting, up to 2,048 editor messages and 32 MiB are queued; exceeding either
+  limit ends the session rather than silently discarding edits.
+  `PROD_CODE_LSP_TRACE` can name a local trace file containing the client version, message
+  metadata and reconnect events without document contents. A running bridge keeps its current client
+  executable until its editor language-server session is restarted.
 
 For Zed there is an extension in [`editors/zed`](editors/zed/README.md). Or point Zed's own
 rust-analyzer at `prod-code lsp --language rust`, which keeps everything Zed wires to

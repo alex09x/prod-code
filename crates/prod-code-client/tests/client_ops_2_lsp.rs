@@ -27,7 +27,7 @@ fn spawn(
         .env("HOME", cache)
         .env("XDG_CACHE_HOME", cache)
         .env_remove("PROD_CODE_CLUSTER")
-        .env_remove("PROD_CODE_RECONNECT")
+        .env("PROD_CODE_RECONNECT", "false")
         .current_dir(ws.root())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

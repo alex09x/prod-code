@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Editor LSP Recovery** (`crates/prod-code-client`, #1773): Editor sessions retry gateway interruptions by default, preserve queued edits and avoid replaying stale pending requests.
+
 ## v0.3.46 — 2026-10-31
 
 ### Fixed
