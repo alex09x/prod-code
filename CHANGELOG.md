@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## v0.3.46 — 2026-10-31
+
 ### Fixed
 - **Rust Editor Diagnostic Explanations** (`crates/prod-code-engine-rust`, #1767): The shared-engine editor fallback links Rust error codes to their explanations and reports missing field access as E0609.
 - **Rust Engine Strict Lint** (`crates/prod-code-engine-rust`, #1770): Removed two existing Clippy warnings while preserving the sandbox and snapshot cancellation behavior.
