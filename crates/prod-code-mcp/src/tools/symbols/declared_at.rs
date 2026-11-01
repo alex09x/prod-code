@@ -213,10 +213,85 @@ fn declared_identifiers_on_line(line: &str) -> Vec<(String, usize)> {
     out
 }
 
+/// Returns `true` when `path` is a standard Cargo target root (`src/lib.rs`, `src/main.rs`,
+/// `build.rs`, or `{tests,examples,benches,src/bin}/<name>.rs` or `<name>/main.rs`) under a
+/// package directory containing `Cargo.toml` (#1777).
+pub(crate) fn is_cargo_target_root(path: &Path) -> bool {
+    if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+        return false;
+    }
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    if file_name == "build.rs" && parent.join("Cargo.toml").is_file() {
+        return true;
+    }
+    let Some(grandparent) = parent.parent() else {
+        return false;
+    };
+    let parent_name = parent
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    if parent_name == "src"
+        && matches!(file_name, "lib.rs" | "main.rs")
+        && grandparent.join("Cargo.toml").is_file()
+    {
+        return true;
+    }
+    if matches!(parent_name, "tests" | "examples" | "benches")
+        && grandparent.join("Cargo.toml").is_file()
+    {
+        return true;
+    }
+    if let Some(great_grandparent) = grandparent.parent() {
+        let gp_name = grandparent
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if parent_name == "bin"
+            && gp_name == "src"
+            && great_grandparent.join("Cargo.toml").is_file()
+        {
+            return true;
+        }
+        if file_name == "main.rs"
+            && matches!(gp_name, "tests" | "examples" | "benches")
+            && great_grandparent.join("Cargo.toml").is_file()
+        {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn cargo_target_root_detection_recognizes_integration_tests_and_rejects_unlinked_modules() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"demo\"\n").unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("tests")).unwrap();
+        let lib = root.join("src/lib.rs");
+        let unlinked = root.join("src/orphan.rs");
+        let int_test = root.join("tests/lsp_reconnect.rs");
+        std::fs::write(&lib, "").unwrap();
+        std::fs::write(&unlinked, "").unwrap();
+        std::fs::write(&int_test, "").unwrap();
+
+        assert!(is_cargo_target_root(&lib));
+        assert!(is_cargo_target_root(&int_test));
+        assert!(!is_cargo_target_root(&unlinked));
+    }
 
     #[test]
     fn scan_timeout_fallback_declarations_matches_rust_prefix_and_exact_symbols() {

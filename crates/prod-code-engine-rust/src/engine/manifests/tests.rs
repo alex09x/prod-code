@@ -170,3 +170,30 @@ fn reload_failures_name_the_missing_manifest() {
     let err = engine.reload_base().unwrap_err().to_string();
     assert!(err.starts_with("Manifest discovery failed:"), "{err}");
 }
+
+#[test]
+fn new_integration_test_target_in_worktree_triggers_reload_and_indexes_symbols() {
+    let (_d, _base, copy, mut engine) = fixture();
+    engine.attach_worktree(&copy).expect("attach");
+    assert!(!engine.is_worktree_stale(&copy));
+
+    let tests_dir = copy.join("tests");
+    std::fs::create_dir_all(&tests_dir).unwrap();
+    let new_test = tests_dir.join("lsp_reconnect.rs");
+    std::fs::write(&new_test, "pub fn integration_only_helper() -> u32 { 7 }\n").unwrap();
+
+    assert!(
+        engine.is_worktree_stale(&copy),
+        "new integration test target in worktree must mark worktree stale even when Cargo.toml is unchanged"
+    );
+    assert!(engine.ensure_fresh_for_path(&new_test).unwrap());
+    assert!(!engine.is_worktree_stale(&copy));
+
+    let syms = engine
+        .workspace_symbols_for(&copy, "integration_only_helper", 32)
+        .unwrap();
+    assert!(
+        syms.iter().any(|s| s.name == "integration_only_helper"),
+        "reloaded worktree must index integration test symbols: {syms:?}"
+    );
+}
