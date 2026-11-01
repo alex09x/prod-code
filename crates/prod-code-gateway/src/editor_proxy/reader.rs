@@ -104,6 +104,7 @@ pub(crate) fn spawn_stdout_reader_task(
             }
 
             let editor = translator.translate_lsp_to_client(&body);
+            let editor = super::diagnostic_rewrite::normalize_server_diagnostics(&editor);
             let deadline = Instant::now() + write_budget;
             timeout_at(
                 deadline,
