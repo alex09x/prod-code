@@ -154,3 +154,95 @@ pub(crate) fn read_file_or_contained_symlink(
         Ok(None)
     }
 }
+
+/// If `canonical_root.join(rel_path)` is a symlink targeting a directory inside `canonical_root`,
+/// returns the relative paths of all contained files reachable beneath that symlink prefix.
+///
+/// Returns `None` when `rel_path` is not a symlink or points to a regular file (handled directly
+/// by [`read_file_or_contained_symlink`]). Returns `Some(Vec::new())` when `rel_path` is a broken
+/// symlink or a directory symlink escaping `canonical_root` (#1769).
+pub(crate) fn expand_contained_dir_symlink(
+    canonical_root: &Path,
+    rel_path: &str,
+) -> Option<Vec<String>> {
+    let link_path = canonical_root.join(rel_path);
+    let sym_meta = link_path.symlink_metadata().ok()?;
+    if !sym_meta.file_type().is_symlink() {
+        return None;
+    }
+    let Ok(canonical_target) = std::fs::canonicalize(&link_path) else {
+        return Some(Vec::new());
+    };
+    if !canonical_target.is_dir() {
+        return None;
+    }
+    if !canonical_target.starts_with(canonical_root) {
+        return Some(Vec::new());
+    }
+
+    let mut out = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(canonical_target.clone());
+    collect_contained_dir_entries(
+        canonical_root,
+        &canonical_target,
+        rel_path.trim_end_matches('/'),
+        &mut visited,
+        &mut out,
+    );
+    out.sort();
+    out.dedup();
+    Some(out)
+}
+
+fn collect_contained_dir_entries(
+    canonical_root: &Path,
+    dir: &Path,
+    prefix: &str,
+    visited: &mut std::collections::HashSet<std::path::PathBuf>,
+    out: &mut Vec<String>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name_str) = name.to_str() else {
+            continue;
+        };
+        if matches!(name_str, ".git" | "target" | ".build" | "node_modules") {
+            continue;
+        }
+        let child_rel = format!("{prefix}/{name_str}");
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        if ft.is_dir() {
+            if let Ok(canon_dir) = std::fs::canonicalize(entry.path())
+                && canon_dir.starts_with(canonical_root)
+                && visited.insert(canon_dir.clone())
+            {
+                collect_contained_dir_entries(canonical_root, &canon_dir, &child_rel, visited, out);
+            }
+        } else if ft.is_file() {
+            out.push(child_rel);
+        } else if ft.is_symlink()
+            && let Ok(canon_target) = std::fs::canonicalize(entry.path())
+            && canon_target.starts_with(canonical_root)
+        {
+            if canon_target.is_dir() {
+                if visited.insert(canon_target.clone()) {
+                    collect_contained_dir_entries(
+                        canonical_root,
+                        &canon_target,
+                        &child_rel,
+                        visited,
+                        out,
+                    );
+                }
+            } else if canon_target.is_file() {
+                out.push(child_rel);
+            }
+        }
+    }
+}

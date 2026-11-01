@@ -11,7 +11,9 @@
 use crate::sync::cache::{load_sync_cache_for, save_sync_cache_for};
 use crate::sync::entry::{fits_sync, is_executable, sync_file_entry};
 use crate::sync::filter_path::{SyncPathFilter, is_filesystem_root, is_synced_git_path};
-use crate::sync::git::{changed_paths, git_head, git_listed_paths, git_output};
+use crate::sync::git::{
+    changed_paths, git_head, git_listed_paths, git_output, tracked_contained_dir_symlink_files,
+};
 use crate::sync::read::read_file_or_contained_symlink;
 use crate::sync::scan::scan_workspace_files;
 use crate::sync::types::{RELEVANCE_VERSION, SyncCache, SyncPlan};
@@ -89,6 +91,15 @@ pub fn prepare_workspace_sync_for(
                 changes.insert(rel.to_string(), false);
             }
             tracked_set.insert(rel.into_owned());
+        }
+        for exp in tracked_contained_dir_symlink_files(&canonical_root) {
+            if !state.files.contains_key(&exp)
+                && !changes.contains_key(&exp)
+                && is_synced_git_path(&exp)
+            {
+                changes.insert(exp.clone(), false);
+            }
+            tracked_set.insert(exp);
         }
         state
             .files
