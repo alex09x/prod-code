@@ -58,6 +58,71 @@ impl SaveGate {
         }
         vec![message]
     }
+
+    pub async fn sync_and_flush(
+        &mut self,
+        client_method: Option<&str>,
+        json_payload: &str,
+        remote: std::net::SocketAddr,
+        cwd: &std::path::Path,
+        pushing: &tokio::sync::Mutex<()>,
+        editor_out: &tokio::sync::Mutex<tokio::io::Stdout>,
+        trace: &super::transport::LspTrace,
+        files: &prod_code_client::editor_files::RemoteFiles,
+        socket_tx: &mut futures_util::stream::SplitSink<
+            tokio_util::codec::Framed<
+                prod_code_protocol::AnyStream,
+                prod_code_protocol::ProdCodeCodec,
+            >,
+            prod_code_protocol::WireMessage,
+        >,
+    ) -> bool {
+        use futures_util::SinkExt;
+        let is_save = client_method == Some("textDocument/didSave");
+        let saves_or_watches = is_save || client_method == Some("workspace/didChangeWatchedFiles");
+        if !self.needs_sync(saves_or_watches) {
+            return true;
+        }
+        let generation = prod_code_mcp::watch::current_generation(cwd);
+        let pushed = {
+            let _one_at_a_time = pushing.lock().await;
+            super::sync::push_checkout(remote, cwd).await
+        };
+        let synced = match pushed {
+            Ok(()) => {
+                prod_code_mcp::watch::mark_synced(cwd, generation);
+                true
+            }
+            Err(err) => {
+                tracing::debug!(error = %format!("{err:#}"), "sync before a save failed");
+                if saves_or_watches {
+                    let warning = prod_code_client::editor_files::push_failed_warning(&err);
+                    super::transport::trace_message(trace, "<-", &warning);
+                    let mut stdout = editor_out.lock().await;
+                    let _ =
+                        prod_code_client::editor_files::write_frame(&mut *stdout, &warning).await;
+                }
+                false
+            }
+        };
+        let mut outgoing = self.after_sync(synced, is_save, json_payload.to_string());
+        if outgoing.pop().is_none() {
+            return false;
+        }
+        for held in outgoing {
+            super::transport::trace_message(trace, "->", &held);
+            if socket_tx
+                .send(prod_code_protocol::WireMessage::LspPayload(
+                    files.to_node(&held),
+                ))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+        true
+    }
 }
 
 #[cfg(test)]

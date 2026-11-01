@@ -12,8 +12,8 @@ use super::encoding::POSITION_ENCODING_UTF16;
 use super::reconnect::{replay_lsp_workspace_state, should_reconnect_after_close};
 use super::reconnect_handler::{ReconnectContext, handle_reconnect};
 use super::session::open_editor_session;
-use super::state::{LspStateTracker, fail_pending_requests};
-use super::sync::{keep_checkout_synced, push_checkout};
+use super::state::{LspStateTracker, fail_pending_requests, track_pending_request};
+use super::sync::keep_checkout_synced;
 use super::transport::{
     PendingRequests, lsp_trace, refuse_lsp, spawn_editor_frame_reader, spawn_editor_stdout_task,
     trace_client_version, trace_message,
@@ -42,6 +42,10 @@ pub async fn run_lsp_bridge(
     let trace = lsp_trace();
     trace_client_version(&trace);
 
+    let mut resumed = super::hot_reload::load_resume_state();
+    if let Some(ref state) = resumed {
+        remote = state.remote;
+    }
     let (framed, handshake_resp, effective_remote) =
         match open_editor_session(remote, engine, &cwd, cwd_str.clone(), identity.clone(), 0).await
         {
@@ -62,7 +66,7 @@ pub async fn run_lsp_bridge(
         &prod_code_client::editor_files::default_cache(),
     ));
     let pushing = Arc::new(Mutex::new(()));
-    let (mut socket_tx, socket_rx) = framed.split();
+    let (mut socket_tx, mut socket_rx) = framed.split();
     let mut keeper = tokio::spawn(keep_checkout_synced(
         remote,
         cwd.clone(),
@@ -72,8 +76,30 @@ pub async fn run_lsp_bridge(
     let pending_requests: PendingRequests = Arc::new(Mutex::new(Vec::new()));
     let mut outstanding_ping = Arc::new(AtomicBool::new(false));
     let position_encoding = Arc::new(AtomicU8::new(POSITION_ENCODING_UTF16));
-
     let editor_out = Arc::new(Mutex::new(tokio::io::stdout()));
+    let mut tracker = LspStateTracker::default();
+    let mut replay_state_after_initialize = false;
+    let (editor_frame_reader, editor_frames) = spawn_editor_frame_reader();
+    let mut deferred_editor_frames = VecDeque::new();
+    if let Some(state) = resumed.take() {
+        tracker = state.tracker;
+        position_encoding.store(state.position_encoding, Ordering::Release);
+        deferred_editor_frames = state.deferred_editor_frames.into();
+        *pending_requests.lock().await = state.pending_requests;
+        replay_state_after_initialize = super::hot_reload::restore_resumed_session(
+            &mut socket_tx,
+            &mut socket_rx,
+            &tracker,
+            &files,
+            &position_encoding,
+            &editor_frames,
+            &mut deferred_editor_frames,
+            &pending_requests,
+            &editor_out,
+            &trace,
+        )
+        .await?;
+    }
     let (mut stdout_task, mut closed_rx) = spawn_editor_stdout_task(
         socket_rx,
         Arc::clone(&files),
@@ -84,11 +110,7 @@ pub async fn run_lsp_bridge(
         Arc::clone(&outstanding_ping),
         Arc::clone(&position_encoding),
     );
-
-    let mut tracker = LspStateTracker::default();
-    let mut replay_state_after_initialize = false;
-    let (editor_frame_reader, editor_frames) = spawn_editor_frame_reader();
-    let mut deferred_editor_frames = VecDeque::new();
+    let (watcher_task, mut reload_rx) = super::hot_reload::spawn_executable_watcher();
     let mut save_gate = super::save_gate::SaveGate::default();
     let mut teardown = super::teardown::Teardown::default();
 
@@ -227,6 +249,27 @@ pub async fn run_lsp_bridge(
                     }
                     continue;
                 }
+                Ok(updated_exe) = &mut reload_rx, if !teardown.shutdown_requested() => {
+                    if let Err(err) = super::hot_reload::hot_reload_on_executable_update(
+                        &updated_exe,
+                        remote,
+                        position_encoding.load(Ordering::Acquire),
+                        &tracker,
+                        &editor_frame_reader,
+                        &editor_frames,
+                        &mut deferred_editor_frames,
+                        &pending_requests,
+                        &keeper,
+                        &stdout_task,
+                        &mut socket_tx,
+                        &trace,
+                    )
+                    .await
+                    {
+                        tracing::warn!(%err, "hot-reload exec failed; continuing on existing process");
+                    }
+                    continue;
+                }
             }
         };
 
@@ -242,71 +285,24 @@ pub async fn run_lsp_bridge(
         let client_method = prod_code_client::editor_files::method_of(&json_payload);
         teardown.observe(client_method.as_deref());
         tracker.record_client_message(&json_payload, position_encoding.load(Ordering::Acquire));
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_payload) {
-            if let (Some(id), Some(method)) =
-                (val.get("id"), val.get("method").and_then(|m| m.as_str()))
-            {
-                if !method.starts_with("prod-code/") {
-                    pending_requests.lock().await.push((
-                        id.clone(),
-                        method.to_string(),
-                        json_payload.clone(),
-                    ));
-                }
-            } else if val.get("method").and_then(|m| m.as_str()) == Some("$/cancelRequest") {
-                if let Some(cancel_id) = val.pointer("/params/id") {
-                    for (id, method, _) in pending_requests.lock().await.iter_mut() {
-                        if id == cancel_id {
-                            *method = "$/cancelRequest".to_string();
-                        }
-                    }
-                }
-            }
-        }
+        track_pending_request(&pending_requests, &json_payload).await;
         trace_message(&trace, "->", &json_payload);
 
-        let is_save = client_method.as_deref() == Some("textDocument/didSave");
-        let saves_or_watches =
-            is_save || client_method.as_deref() == Some("workspace/didChangeWatchedFiles");
-        if save_gate.needs_sync(saves_or_watches) {
-            let generation = prod_code_mcp::watch::current_generation(&cwd);
-            let pushed = {
-                let _one_at_a_time = pushing.lock().await;
-                push_checkout(remote, &cwd).await
-            };
-            let synced = match pushed {
-                Ok(()) => {
-                    prod_code_mcp::watch::mark_synced(&cwd, generation);
-                    true
-                }
-                Err(err) => {
-                    tracing::debug!(error = %format!("{err:#}"), "sync before a save failed");
-                    if saves_or_watches {
-                        let warning = prod_code_client::editor_files::push_failed_warning(&err);
-                        trace_message(&trace, "<-", &warning);
-                        let mut stdout = editor_out.lock().await;
-                        let _ = prod_code_client::editor_files::write_frame(&mut *stdout, &warning)
-                            .await;
-                    }
-                    false
-                }
-            };
-            // A save whose file did not reach the node waits for a sync that succeeds, and
-            // then goes out before the message that found it (#1517).
-            let mut outgoing = save_gate.after_sync(synced, is_save, json_payload.clone());
-            if outgoing.pop().is_none() {
-                continue;
-            }
-            for held in outgoing {
-                trace_message(&trace, "->", &held);
-                if socket_tx
-                    .send(WireMessage::LspPayload(files.to_node(&held)))
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
-            }
+        if !save_gate
+            .sync_and_flush(
+                client_method.as_deref(),
+                &json_payload,
+                remote,
+                &cwd,
+                &pushing,
+                &editor_out,
+                &trace,
+                &files,
+                &mut socket_tx,
+            )
+            .await
+        {
+            continue;
         }
 
         if let Err(err) = socket_tx
@@ -373,6 +369,7 @@ pub async fn run_lsp_bridge(
         }
     }
 
+    watcher_task.abort();
     editor_frame_reader.abort();
     keeper.abort();
     let _ = stdout_task.await;
