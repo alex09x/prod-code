@@ -66,13 +66,69 @@ pub(super) fn pattern(extension: &str) -> Option<&'static Regex> {
         .map(|(_, regex)| regex)
 }
 
-/// Generic language, library and English vocabulary is useful in a neutral reproduction.
-/// Only identifiers use this exception: tracked filenames and stems are always checked.
+/// Returns true if `name` is a compound identifier (snake_case, camelCase, PascalCase,
+/// SCREAMING_SNAKE_CASE, or contains digits). Compound identifiers are never generic.
+fn is_compound(name: &str) -> bool {
+    if name.contains('_') || name.chars().any(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    let mut chars = name.chars();
+    if chars.next().is_some_and(|c| c.is_ascii_lowercase()) && chars.any(|c| c.is_ascii_uppercase())
+    {
+        return true;
+    }
+    if name.chars().filter(|c| c.is_ascii_uppercase()).count() > 1 {
+        return true;
+    }
+    false
+}
+
+/// Generic language, library, technical and ordinary English vocabulary is useful in a neutral
+/// reproduction. Compound identifiers and project domain identifiers are always blocked.
 pub(super) fn generic(name: &str) -> bool {
-    name.chars().count() < 4
-        || GENERIC
-            .split_whitespace()
-            .any(|word| name.eq_ignore_ascii_case(word))
+    if is_compound(name) {
+        return false;
+    }
+    if name.chars().count() < 4 {
+        return true;
+    }
+    if is_in_generic(name) {
+        return true;
+    }
+    is_derivational(name)
+}
+
+fn is_in_generic(name: &str) -> bool {
+    GENERIC
+        .split_whitespace()
+        .any(|word| name.eq_ignore_ascii_case(word))
+}
+
+fn is_derivational(name: &str) -> bool {
+    if !name.chars().all(|c| c.is_ascii_lowercase()) {
+        return false;
+    }
+    if name == "oversized" {
+        return false;
+    }
+    const SUFFIXES: &[&str] = &[
+        "tions", "tion", "sions", "sion", "ments", "ment", "nesses", "ness", "ities", "ity",
+        "ables", "able", "ibles", "ible", "ances", "ance", "ences", "ence", "ings", "ing", "ed",
+        "ly", "ives", "ive", "ous", "ful", "less", "al",
+    ];
+    for suffix in SUFFIXES {
+        if let Some(stem) = name.strip_suffix(suffix)
+            && stem.len() >= 3
+            && (is_in_generic(stem)
+                || is_in_generic(&format!("{stem}e"))
+                || (stem.len() >= 4
+                    && stem.as_bytes()[stem.len() - 1] == stem.as_bytes()[stem.len() - 2]
+                    && is_in_generic(&stem[..stem.len() - 1])))
+        {
+            return true;
+        }
+    }
+    false
 }
 
 const GENERIC: &str = "
@@ -103,4 +159,65 @@ const GENERIC: &str = "
     were what when which who will word work working would wrong you your
     api app cli common constants errors handler handlers helper helpers lib model models
     schema schemas service services tests types util utils
+    available current requested verification expected observed actual behavior commands
+    outputs releases gateway gateways clients servers cluster clusters workspace workspaces
+    worktree worktrees session sessions timeout timeouts diagnostic diagnostics symbols
+    references definition definitions rename check checks lint lints syncs probe probes
+    languages editor editors bridge bridges processes thread threads disks volume volumes
+    external fallback fallbacks
+    action actions connection connections condition conditions exception exceptions
+    collection collections operation operations validation notification notifications
+    generation integration registration documentation mutation completion assertion
+    specification representation migration extension extensions conversion division permission
+    element elements environment statement statements placement implement implements document
+    documents comment comments replacement assignment development requirement requirements
+    management correctness readiness completeness capacity severity priority authority security
+    quality properties utilities visibility compatibility complexity functionality validity
+    flexibility entity entities readable writable nullable iterable scalable capable acceptable
+    comparable executable reliable reusable accessible possible performance clearance instance
+    instances distance allowance balance maintenance sequence sequences difference differences
+    presence inference evidence sentence pending holding fixed resolved needed required started
+    stopped skipped closed opened added removed saved defined named configured connected
+    disconnected received sent blocked wrapped mapped dropped emitted committed pushed pulled
+    merged cloned deployed verified deeply newly strictly typically normally naturally recently
+    previously currently correctly properly active relative derivative primitive positive
+    negative effective collective recursive interactive selective continuous asynchronous
+    synchronous obvious anonymous rigorous useful successful helpful powerful careful stateless
+    headless endless harmless useless internal literal canonical signal signals initial optional
+    general central partial formal visual conditional original practical functional manual
 ";
+
+#[cfg(test)]
+mod tests {
+    use super::generic;
+
+    #[test]
+    fn ordinary_english_prose_words_are_generic_while_compound_and_domain_names_are_not() {
+        for word in [
+            "available",
+            "current",
+            "requested",
+            "verification",
+            "expected",
+            "observed",
+            "actual",
+            "behavior",
+            "diagnostic",
+            "diagnostics",
+            "workspace",
+            "worktree",
+        ] {
+            assert!(generic(word), "`{word}` should be recognized as generic");
+        }
+        for blocked in [
+            "sample_record",
+            "SampleRecord",
+            "sampleRecord",
+            "SAMPLE_RECORD",
+            "oversized",
+            "tako",
+        ] {
+            assert!(!generic(blocked), "`{blocked}` must remain non-generic");
+        }
+    }
+}
