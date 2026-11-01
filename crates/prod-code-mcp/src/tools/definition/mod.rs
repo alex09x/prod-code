@@ -187,13 +187,28 @@ pub(crate) async fn handle_definition(
             }
         }
     } else {
+        let mut syntax_only = args
+            .get("syntax_only_unindexed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let is_def = if args.get("symbol").is_some() {
             true
+        } else if is_outline_definition(remote, workspace_root, &file_path, line, character).await {
+            true
+        } else if is_lexical_rust_declaration(&file_path, line, character) {
+            syntax_only = true;
+            true
         } else {
-            is_outline_definition(remote, workspace_root, &file_path, line, character).await
+            false
         };
         if is_def {
-            out.push_str(&format!("📍 Definition: {file_uri}:{line}:{character}"));
+            if syntax_only {
+                out.push_str(&format!(
+                    "📍 Definition: {file_uri}:{line}:{character} (syntax-only, outside analyzer module graph)"
+                ));
+            } else {
+                out.push_str(&format!("📍 Definition: {file_uri}:{line}:{character}"));
+            }
             if body {
                 match definition_body(remote, workspace_root, &file_uri, line, character).await {
                     Ok(text) => {

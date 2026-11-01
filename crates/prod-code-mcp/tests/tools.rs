@@ -2943,7 +2943,11 @@ async fn a_name_declared_in_a_file_the_analyzer_does_not_load_says_where() {
         ("src/lib.rs", "pub fn a() {\n    fn inner_helper() {}\n}\n"),
         (
             "src/orphan.rs",
-            "use crate::a;\n\npub struct Lost {\n    pub at: u64,\n}\n",
+            "use crate::a;\n\npub struct Lost {\n    pub at: u64,\n}\n\npub struct Duplicate {\n    pub first: u32,\n}\n",
+        ),
+        (
+            "src/orphan_two.rs",
+            "pub struct Duplicate {\n    pub second: u32,\n}\n",
         ),
     ]);
     let remote = scripted_gateway(Arc::new(|method, params| {
@@ -2958,15 +2962,90 @@ async fn a_name_declared_in_a_file_the_analyzer_does_not_load_says_where() {
     }))
     .await;
     let root = ws.root();
-    let lost = execute_tool(
+    let lost_def = text_of(
+        &execute_tool(
+            remote,
+            &root,
+            "code_definition",
+            serde_json::json!({ "symbol": "Lost" }),
+        )
+        .await
+        .expect("single unindexed Rust declaration returns syntax-only definition body (#1754)"),
+    );
+    assert!(
+        lost_def.contains("src/orphan.rs:3:12 (syntax-only, outside analyzer module graph)"),
+        "{lost_def}"
+    );
+    assert!(lost_def.contains("pub struct Lost {"), "{lost_def}");
+    assert!(lost_def.contains("pub at: u64,"), "{lost_def}");
+
+    let lost_pos_def = text_of(
+        &execute_tool(
+            remote,
+            &root,
+            "code_definition",
+            serde_json::json!({ "path": "src/orphan.rs", "line": 3, "character": 12 }),
+        )
+        .await
+        .expect("positional definition on unindexed Rust declaration succeeds"),
+    );
+    assert!(
+        lost_pos_def.contains("src/orphan.rs:3:12 (syntax-only, outside analyzer module graph)"),
+        "{lost_pos_def}"
+    );
+    assert!(lost_pos_def.contains("pub struct Lost {"), "{lost_pos_def}");
+
+    let dup_ambiguous = text_of(
+        &execute_tool(
+            remote,
+            &root,
+            "code_definition",
+            serde_json::json!({ "symbol": "Duplicate" }),
+        )
+        .await
+        .expect("multiple unindexed Rust declarations report ambiguity"),
+    );
+    assert!(
+        dup_ambiguous.contains(
+            "`Duplicate` is ambiguous (2 candidates); qualify it (Type::name) or pass `path`:"
+        ),
+        "{dup_ambiguous}"
+    );
+    assert!(dup_ambiguous.contains("src/orphan.rs"), "{dup_ambiguous}");
+    assert!(
+        dup_ambiguous.contains("src/orphan_two.rs"),
+        "{dup_ambiguous}"
+    );
+
+    let dup_disambiguated = text_of(
+        &execute_tool(
+            remote,
+            &root,
+            "code_definition",
+            serde_json::json!({ "symbol": "Duplicate", "path": "src/orphan_two.rs" }),
+        )
+        .await
+        .expect("path disambiguates unindexed Rust declaration"),
+    );
+    assert!(
+        dup_disambiguated
+            .contains("src/orphan_two.rs:1:12 (syntax-only, outside analyzer module graph)"),
+        "{dup_disambiguated}"
+    );
+    assert!(
+        dup_disambiguated.contains("pub second: u32,"),
+        "{dup_disambiguated}"
+    );
+
+    let lost_refs = execute_tool(
         remote,
         &root,
-        "code_definition",
+        "code_references",
         serde_json::json!({ "symbol": "Lost" }),
     )
     .await
-    .expect_err("no symbol in the index");
-    let text = format!("{lost:#}");
+    .expect_err("no symbol in the index for references");
+    let text = format!("{lost_refs:#}");
     assert!(
         text.starts_with("no symbol named `Lost` in the workspace index"),
         "{text}"

@@ -191,7 +191,7 @@ pub(crate) fn scan_timeout_fallback_declarations(
     hits
 }
 
-fn declared_identifiers_on_line(line: &str) -> Vec<(String, usize)> {
+pub(crate) fn declared_identifiers_on_line(line: &str) -> Vec<(String, usize)> {
     let mut out = Vec::new();
     let chars: Vec<char> = line.chars().collect();
     let mut i = 0usize;
