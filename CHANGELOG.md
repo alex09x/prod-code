@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## v0.3.48 — 2026-10-31
+
+### Added
+- **Editor LSP Bridge Hot-Reload on Client Update** (`crates/prod-code-client`, #1774): Running `prod-code lsp` bridge processes watch their executable on disk, serialize tracked session and open-document state when the binary is updated, `exec` the new executable in-place, and replay `initialize` and `textDocument/didOpen` state to the gateway without dropping the editor connection.
+- **Rust Declaration Bodies Outside the Analyzer Module Graph** (`crates/prod-code-mcp`, #1754): `code_definition` returns declaration bodies for Rust files outside the Cargo module graph (such as standalone or unreferenced `.rs` files) using the AST span fallback.
+
+### Fixed
+- **Python `code_move` Function Selection** (`crates/prod-code-mcp`, #1762): Moving a Python function by line or cursor inside its signature selects the enclosing `def` / `async def` declaration rather than a parameter name, preserving the full function body.
+- **Git-Tracked Directory Symlinks in Workspace Sync** (`crates/prod-code-mcp`, #1769): Workspace sync expands git-tracked directory symlinks whose targets stay within the repository root so remote nodes receive the referenced files.
+- **Ordinary English Words in Issue Reporting Sanitizer** (`crates/prod-code-mcp`, #1755): The issue-reporting privacy guard recognizes common English prose words and grammatical inflections so ordinary descriptions are not rejected as checkout-specific identifiers.
+- **Native Rust Editor Proxy Missing-Field Diagnostic Code** (`crates/prod-code-gateway`, #1771): The native `rust-analyzer` editor proxy normalizes `no field ... on type ...` diagnostics mislabeled as `E0559` to `E0609` on both pull and push diagnostic paths while preserving `codeAction/resolve` round-trips.
+- **macOS External Volume Gateway Execution Fallback** (`crates/prod-code-gateway`, #1776): When macOS TCC denies working-directory access on an external volume (`EPERM` / `os error 1`) and the workspace is healthy on another cluster node, `exec` delegates transparently to that peer and otherwise reports an actionable Full Disk Access / `PROD_CODE_STORAGE_DIR` diagnostic.
+- **New Auto-Discovered Cargo Integration Tests** (`crates/prod-code-engine-rust`, `crates/prod-code-mcp`, #1777): Base and worktree manifest change detection hashes auto-discovered `tests/*.rs`, `benches/*.rs`, `examples/*.rs`, and `src/bin/**` targets so newly added integration tests trigger a project-model reload instead of being reported as outside any Cargo target.
+- **Swift Settings Probe Target Selection and Bounded Wait** (`crates/prod-code-gateway`, `crates/prod-code-engine-generic`, #1766): Swift warm-up probes select `.swift` sources belonging to declared `Package.swift` targets, bound the probe and cold-index diagnostic waits, and avoid re-probing after the first probe attempt.
+- **Bounded Swift Post-Rename Validation** (`crates/prod-code-mcp`, `crates/prod-code-gateway`, #1780): Post-refactor validation bounds non-Rust diagnostic waits and converts incomplete validation into a structured error explaining how to proceed or override with `force: true`.
+
 ## v0.3.47 — 2026-10-31
 
 ### Fixed
