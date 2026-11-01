@@ -10,6 +10,7 @@
 
 pub mod bridge;
 pub mod encoding;
+pub mod hot_reload;
 pub mod reconnect;
 mod reconnect_deferred;
 pub mod reconnect_handler;

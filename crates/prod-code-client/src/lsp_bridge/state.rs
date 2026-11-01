@@ -10,9 +10,10 @@
 
 use super::encoding::lsp_offset;
 use super::transport::PendingRequests;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct TrackedDocument {
     pub uri: String,
     pub language_id: String,
@@ -20,7 +21,7 @@ pub struct TrackedDocument {
     pub text: String,
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct LspStateTracker {
     pub initialize_req: Option<String>,
     pub initialized_sent: bool,
@@ -245,5 +246,28 @@ pub async fn fail_pending_requests(
         });
         let _ =
             prod_code_client::editor_files::write_frame(&mut *stdout, &err_resp.to_string()).await;
+    }
+}
+
+pub async fn track_pending_request(pending_requests: &PendingRequests, json_payload: &str) {
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(json_payload) else {
+        return;
+    };
+    if let (Some(id), Some(method)) = (val.get("id"), val.get("method").and_then(|m| m.as_str())) {
+        if !method.starts_with("prod-code/") {
+            pending_requests.lock().await.push((
+                id.clone(),
+                method.to_string(),
+                json_payload.to_string(),
+            ));
+        }
+    } else if val.get("method").and_then(|m| m.as_str()) == Some("$/cancelRequest")
+        && let Some(cancel_id) = val.pointer("/params/id")
+    {
+        for (id, method, _) in pending_requests.lock().await.iter_mut() {
+            if id == cancel_id {
+                *method = "$/cancelRequest".to_string();
+            }
+        }
     }
 }
