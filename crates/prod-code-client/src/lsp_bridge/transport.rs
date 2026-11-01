@@ -8,7 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use super::encoding::lsp_position_encoding;
+use super::encoding::update_server_capabilities;
 use super::session::resolve_redirect_target;
 use anyhow::Result;
 use futures_util::StreamExt;
@@ -55,6 +55,39 @@ pub fn trace_message(trace: &LspTrace, direction: &str, raw: &str) {
     }
 }
 
+/// Record recovery progress without recording document contents or credentials.
+pub fn trace_reconnect(trace: &LspTrace, event: &str, attempt: u32) {
+    let Some(file) = trace else {
+        return;
+    };
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    if let Ok(mut file) = file.lock() {
+        let _ = std::io::Write::write_all(
+            &mut *file,
+            format!("{millis} reconnect {event} attempt={attempt}\n").as_bytes(),
+        );
+    }
+}
+
+pub fn trace_client_version(trace: &LspTrace) {
+    let Some(file) = trace else {
+        return;
+    };
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    if let Ok(mut file) = file.lock() {
+        let _ = std::io::Write::write_all(
+            &mut *file,
+            format!("{millis} client_version={}\n", env!("CARGO_PKG_VERSION")).as_bytes(),
+        );
+    }
+}
+
 /// Tells the editor why its language server could not start.
 pub async fn refuse_lsp(err: &anyhow::Error) -> Result<()> {
     let message = prod_code_client::editor_files::startup_error_message(err);
@@ -69,7 +102,8 @@ pub type PendingRequests = Arc<tokio::sync::Mutex<Vec<(serde_json::Value, String
 pub type EditorFrameReceiver = Arc<
     tokio::sync::Mutex<tokio::sync::mpsc::Receiver<std::result::Result<Option<String>, String>>>,
 >;
-pub const MAX_DEFERRED_EDITOR_FRAMES: usize = 128;
+pub const MAX_DEFERRED_EDITOR_FRAMES: usize = 2048;
+pub const MAX_DEFERRED_EDITOR_BYTES: usize = 32 * 1024 * 1024;
 
 pub fn spawn_editor_stdout_task(
     mut socket_rx: SplitStream<Framed<prod_code_protocol::AnyStream, ProdCodeCodec>>,
@@ -92,8 +126,8 @@ pub fn spawn_editor_stdout_task(
                 Some(Ok(msg)) => match msg {
                     WireMessage::LspPayload(json) => {
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
-                            if let Some(encoding) = lsp_position_encoding(&val) {
-                                position_encoding.store(encoding, Ordering::Release);
+                            if val.pointer("/result/capabilities").is_some() {
+                                update_server_capabilities(&position_encoding, &val, false);
                             }
                             if val.get("id").is_some() && val.get("method").is_none() {
                                 if let Some(id) = val.get("id") {

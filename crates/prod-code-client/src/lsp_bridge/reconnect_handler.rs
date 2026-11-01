@@ -38,6 +38,7 @@ pub struct ReconnectContext<'a> {
     pub deferred_editor_frames: &'a mut VecDeque<String>,
     pub trace: &'a LspTrace,
     pub pushing: &'a Arc<Mutex<()>>,
+    pub shutdown_requested: bool,
 }
 
 pub async fn handle_reconnect(
@@ -53,6 +54,31 @@ pub async fn handle_reconnect(
     replay_state_after_initialize: &mut bool,
     outstanding_ping: &mut Arc<AtomicBool>,
 ) {
+    let shutdown_id = {
+        let mut pending = ctx.pending_requests.lock().await;
+        pending
+            .iter()
+            .position(|(_, method, _)| method == "shutdown")
+            .map(|index| pending.remove(index).0)
+    };
+    if let Some(id) = shutdown_id {
+        let _ =
+            super::reconnect_deferred::fail_deferred(ctx.deferred_editor_frames, ctx.editor_out)
+                .await;
+        let result = super::reconnect_wait::shutdown_during_reconnect::<()>(
+            &id,
+            ctx.editor_frames,
+            ctx.editor_out,
+            ctx.pending_requests,
+        )
+        .await;
+        keeper.abort();
+        let clean = result
+            .err()
+            .and_then(|err| err.downcast::<super::reconnect_wait::EditorStopped>().ok())
+            .is_some_and(|stopped| stopped.clean);
+        std::process::exit(if clean { 0 } else { 1 });
+    }
     if is_redirect {
         eprintln!("prod-code lsp: following gateway redirect to {target_remote}; reconnecting...");
     } else {
@@ -104,6 +130,47 @@ pub async fn handle_reconnect(
             *closed_rx = new_closed_rx;
         }
         Err(rec_err) => {
+            if rec_err.is::<super::reconnect_wait::ReconnectTimeout>() {
+                keeper.abort();
+                eprintln!("prod-code lsp: {rec_err}");
+                std::process::exit(1);
+            }
+            if let Some(shutdown) = rec_err.downcast_ref::<super::reconnect_wait::EditorShutdown>()
+            {
+                let _ = super::reconnect_deferred::fail_deferred(
+                    ctx.deferred_editor_frames,
+                    ctx.editor_out,
+                )
+                .await;
+                let result = super::reconnect_wait::shutdown_during_reconnect::<()>(
+                    &shutdown.0,
+                    ctx.editor_frames,
+                    ctx.editor_out,
+                    ctx.pending_requests,
+                )
+                .await;
+                keeper.abort();
+                let clean = result
+                    .err()
+                    .and_then(|err| err.downcast::<super::reconnect_wait::EditorStopped>().ok())
+                    .is_some_and(|stopped| stopped.clean);
+                std::process::exit(if clean { 0 } else { 1 });
+            }
+            if ctx.shutdown_requested && rec_err.is::<super::reconnect_wait::EditorExit>() {
+                keeper.abort();
+                std::process::exit(0);
+            }
+            if let Some(stopped) = rec_err.downcast_ref::<super::reconnect_wait::EditorStopped>()
+                && stopped.clean
+            {
+                keeper.abort();
+                std::process::exit(0);
+            }
+            let _ = super::reconnect_deferred::fail_deferred(
+                ctx.deferred_editor_frames,
+                ctx.editor_out,
+            )
+            .await;
             fail_pending_requests(
                 ctx.pending_requests,
                 ctx.editor_out,

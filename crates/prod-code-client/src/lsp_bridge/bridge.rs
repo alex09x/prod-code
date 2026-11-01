@@ -16,7 +16,7 @@ use super::state::{LspStateTracker, fail_pending_requests};
 use super::sync::{keep_checkout_synced, push_checkout};
 use super::transport::{
     PendingRequests, lsp_trace, refuse_lsp, spawn_editor_frame_reader, spawn_editor_stdout_task,
-    trace_message,
+    trace_client_version, trace_message,
 };
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
@@ -39,6 +39,8 @@ pub async fn run_lsp_bridge(
     let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
     let cwd_str = cwd.to_string_lossy().to_string();
     let identity = prod_code_mcp::sync::workspace_identity(&cwd);
+    let trace = lsp_trace();
+    trace_client_version(&trace);
 
     let (framed, handshake_resp, effective_remote) =
         match open_editor_session(remote, engine, &cwd, cwd_str.clone(), identity.clone(), 0).await
@@ -53,19 +55,12 @@ pub async fn run_lsp_bridge(
         engine = handshake_resp.detected_engine,
         "Connected to remote gateway"
     );
-    prod_code_mcp::sync::resend_lost_files(
-        &cwd,
-        &prod_code_mcp::sync::gateway_node(&framed),
-        &handshake_resp.stale_paths,
-    );
-
     let files = Arc::new(prod_code_client::editor_files::RemoteFiles::new(
         remote,
         &cwd,
         Path::new(&handshake_resp.server_workspace_root),
         &prod_code_client::editor_files::default_cache(),
     ));
-    let trace = lsp_trace();
     let pushing = Arc::new(Mutex::new(()));
     let (mut socket_tx, socket_rx) = framed.split();
     let mut keeper = tokio::spawn(keep_checkout_synced(
@@ -124,6 +119,7 @@ pub async fn run_lsp_bridge(
                 deferred_editor_frames: &mut deferred_editor_frames,
                 trace: &trace,
                 pushing: &pushing,
+                shutdown_requested: teardown.shutdown_requested(),
             };
 
             tokio::select! {
@@ -259,10 +255,11 @@ pub async fn run_lsp_bridge(
                 }
             } else if val.get("method").and_then(|m| m.as_str()) == Some("$/cancelRequest") {
                 if let Some(cancel_id) = val.pointer("/params/id") {
-                    pending_requests
-                        .lock()
-                        .await
-                        .retain(|(p_id, _, _)| p_id != cancel_id);
+                    for (id, method, _) in pending_requests.lock().await.iter_mut() {
+                        if id == cancel_id {
+                            *method = "$/cancelRequest".to_string();
+                        }
+                    }
                 }
             }
         }
@@ -316,6 +313,11 @@ pub async fn run_lsp_bridge(
             .send(WireMessage::LspPayload(files.to_node(&json_payload)))
             .await
         {
+            if let Some(code) = teardown.expected_exit() {
+                keeper.abort();
+                stdout_task.abort();
+                std::process::exit(code);
+            }
             if reconnect {
                 stdout_task.abort();
                 let why = format!("broke the connection: {err}");
@@ -333,6 +335,7 @@ pub async fn run_lsp_bridge(
                     deferred_editor_frames: &mut deferred_editor_frames,
                     trace: &trace,
                     pushing: &pushing,
+                    shutdown_requested: teardown.shutdown_requested(),
                 };
                 handle_reconnect(
                     &mut ctx,

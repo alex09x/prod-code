@@ -8,11 +8,14 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+use super::super::encoding::POSITION_ENCODING_UTF16;
 use super::super::test_support::socket_pair;
+use super::super::transport::MAX_DEFERRED_EDITOR_FRAMES;
 use super::*;
 use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 #[test]
 fn a_workspace_model_change_reconnects_even_when_reconnect_is_disabled() {
@@ -43,6 +46,8 @@ async fn replay_case(
     frames: Vec<std::result::Result<Option<String>, String>>,
     response: Option<WireMessage>,
     queued: usize,
+    initialized: bool,
+    expect_original_encoding: bool,
 ) -> (Result<Option<String>>, VecDeque<String>, u8) {
     let (socket, mut peer) = socket_pair().await;
     let (mut tx, mut rx) = socket.split();
@@ -55,6 +60,7 @@ async fn replay_case(
     );
     let tracker = LspStateTracker {
         initialize_req: init.map(str::to_string),
+        initialized_sent: initialized,
         ..Default::default()
     };
     let encoding = AtomicU8::new(0);
@@ -81,10 +87,12 @@ async fn replay_case(
             &mut tx,
             &mut rx,
             &tracker,
+            expect_original_encoding,
             &files,
             &encoding,
             &frames,
             &mut deferred,
+            &Arc::new(tokio::sync::Mutex::new(Vec::new())),
             &tokio::sync::Mutex::new(tokio::io::stdout()),
             &None,
         ),
@@ -94,12 +102,53 @@ async fn replay_case(
     drop(tx);
     drop(rx);
     peer_task.await.unwrap();
-    (result, deferred, encoding.load(Ordering::Acquire))
+    (result, deferred, encoding.load(Ordering::Acquire) & 3)
+}
+
+#[tokio::test]
+async fn replay_rejects_initialize_error_response() {
+    let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+    let error = WireMessage::LspPayload(
+        r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"failed"}}"#.into(),
+    );
+    let (result, _, _) = replay_case(Some(initialize), vec![], Some(error), 0, false, false).await;
+    assert!(
+        result.is_err(),
+        "an initialize error must not count as success"
+    );
+}
+
+#[tokio::test]
+async fn replay_stops_when_editor_exits_during_initialize() {
+    let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+    let exit = r#"{"jsonrpc":"2.0","method":"exit"}"#.to_string();
+    let (result, _, _) = replay_case(
+        Some(initialize),
+        vec![Ok(Some(exit))],
+        None,
+        0,
+        false,
+        false,
+    )
+    .await;
+    assert!(
+        result
+            .unwrap_err()
+            .is::<crate::lsp_bridge::reconnect_wait::EditorExit>()
+    );
 }
 
 #[tokio::test]
 async fn replay_rejects_missing_initialize_id_and_unexpected_wire_messages() {
-    let (result, _, _) = replay_case(Some(r#"{"method":"initialize"}"#), vec![], None, 0).await;
+    let (result, _, _) = replay_case(
+        Some(r#"{"method":"initialize"}"#),
+        vec![],
+        None,
+        0,
+        false,
+        false,
+    )
+    .await;
     assert_eq!(
         result.unwrap_err().to_string(),
         "recorded initialize request has no JSON-RPC id"
@@ -115,7 +164,7 @@ async fn replay_rejects_missing_initialize_id_and_unexpected_wire_messages() {
             "connection closed while awaiting initialize replay response",
         ),
     ] {
-        let (result, _, _) = replay_case(Some(init), vec![], message, 0).await;
+        let (result, _, _) = replay_case(Some(init), vec![], message, 0, false, false).await;
         assert_eq!(result.unwrap_err().to_string(), expected);
     }
 }
@@ -163,10 +212,12 @@ async fn replay_reports_editor_read_failure_eof_and_queue_overflow() {
             &mut tx,
             &mut rx,
             &tracker,
+            false,
             &files,
             &AtomicU8::new(0),
             &Arc::new(tokio::sync::Mutex::new(receiver)),
             &mut deferred,
+            &Arc::new(tokio::sync::Mutex::new(Vec::new())),
             &tokio::sync::Mutex::new(tokio::io::stdout()),
             &None,
         )
@@ -186,11 +237,47 @@ async fn replay_returns_the_matching_initialize_response_and_updates_encoding() 
         vec![],
         Some(WireMessage::LspPayload(response.clone())),
         0,
+        false,
+        false,
     )
     .await;
     assert_eq!(result.unwrap(), Some(response));
     assert_eq!(encoding, 1);
     assert!(deferred.is_empty());
+}
+
+#[tokio::test]
+async fn replay_rejects_a_changed_position_encoding_after_initialization() {
+    let response =
+        json!({"id":1,"result":{"capabilities":{"positionEncoding":"utf-8"}}}).to_string();
+    let (result, _, encoding) = replay_case(
+        Some(r#"{"id":1,"method":"initialize"}"#),
+        vec![],
+        Some(WireMessage::LspPayload(response)),
+        0,
+        true,
+        true,
+    )
+    .await;
+    assert!(result.unwrap_err().is::<IncompatiblePositionEncoding>());
+    assert_eq!(encoding, POSITION_ENCODING_UTF16);
+}
+
+#[tokio::test]
+async fn replay_preserves_encoding_even_before_initialized_notification_arrives() {
+    let response =
+        json!({"id":1,"result":{"capabilities":{"positionEncoding":"utf-8"}}}).to_string();
+    let (result, _, encoding) = replay_case(
+        Some(r#"{"id":1,"method":"initialize"}"#),
+        vec![],
+        Some(WireMessage::LspPayload(response)),
+        0,
+        false,
+        true,
+    )
+    .await;
+    assert!(result.unwrap_err().is::<IncompatiblePositionEncoding>());
+    assert_eq!(encoding, POSITION_ENCODING_UTF16);
 }
 
 #[tokio::test]
@@ -262,10 +349,12 @@ async fn replay_answers_server_requests_and_defers_unrelated_editor_messages() {
             &mut tx,
             &mut rx,
             &tracker,
+            false,
             &files,
             &AtomicU8::new(2),
             &editor_frames,
             &mut deferred,
+            &Arc::new(tokio::sync::Mutex::new(Vec::new())),
             &tokio::sync::Mutex::new(tokio::io::stdout()),
             &trace,
         ),

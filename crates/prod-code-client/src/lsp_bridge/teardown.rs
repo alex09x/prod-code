@@ -19,6 +19,9 @@ pub struct Teardown {
 }
 
 impl Teardown {
+    pub fn shutdown_requested(&self) -> bool {
+        self.shutdown
+    }
     /// Notes a message the editor sent, by its method.
     pub fn observe(&mut self, method: Option<&str>) {
         match method {

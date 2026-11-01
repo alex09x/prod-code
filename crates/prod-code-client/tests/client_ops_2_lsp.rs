@@ -27,7 +27,7 @@ fn spawn(
         .env("HOME", cache)
         .env("XDG_CACHE_HOME", cache)
         .env_remove("PROD_CODE_CLUSTER")
-        .env_remove("PROD_CODE_RECONNECT")
+        .env("PROD_CODE_RECONNECT", "false")
         .current_dir(ws.root())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -38,7 +38,7 @@ fn spawn(
 }
 
 #[tokio::test]
-async fn watchdog_failure_answers_only_uncancelled_requests() {
+async fn watchdog_failure_answers_pending_and_cancelled_requests() {
     for cancel in [false, true] {
         let ws = Workspace::new(&[("src/lib.rs", "pub fn sample() {}\n")]);
         let cache = tempfile::tempdir().unwrap();
@@ -74,7 +74,12 @@ async fn watchdog_failure_answers_only_uncancelled_requests() {
             .unwrap();
         assert_eq!(status.code(), Some(1));
         if cancel {
-            assert_eq!(read_frame(&mut stdout).await.unwrap(), None);
+            let reply: Value =
+                serde_json::from_str(&read_frame(&mut stdout).await.unwrap().unwrap()).unwrap();
+            assert_eq!(
+                reply,
+                json!({"jsonrpc":"2.0","id":7,"error":{"code":-32800,"message":"request cancelled"}})
+            );
         } else {
             let reply: Value =
                 serde_json::from_str(&read_frame(&mut stdout).await.unwrap().unwrap()).unwrap();

@@ -226,13 +226,21 @@ pub async fn fail_pending_requests(
         return;
     }
     let mut stdout = editor_out.lock().await;
-    for (id, _method, _) in pending {
+    for (id, method, _) in pending {
+        let (code, message) = if method == "$/cancelRequest" {
+            (-32800, "request cancelled".to_string())
+        } else {
+            (
+                -32097,
+                format!("prod-code lsp: gateway connection lost ({error_msg})"),
+            )
+        };
         let err_resp = serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
             "error": {
-                "code": -32097,
-                "message": format!("prod-code lsp: gateway connection lost ({error_msg})"),
+                "code": code,
+                "message": message,
             }
         });
         let _ =
