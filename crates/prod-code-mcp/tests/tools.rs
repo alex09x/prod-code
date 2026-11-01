@@ -4652,6 +4652,61 @@ async fn a_rename_that_does_not_compile_is_refused_unless_forced() {
         std::fs::read_to_string(&lib).unwrap(),
         "pub fn a() {}\npub fn a() {}\n"
     );
+
+    // #1780: when post-rename validation cannot complete (e.g., sourcekit-lsp never publishes
+    // diagnostics on the proposal), code_rename returns a structured diagnostic rather than
+    // failing raw, and `force: true` still writes the rename.
+    let swift_file = write(&ws, "Sources/App.swift", "func oldName() {}\n");
+    let swift_path = swift_file.clone();
+    let unvalidated_remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "textDocument/rename" => {
+            answers::whole_file(&swift_path, "func oldName() {}\n", "func newName() {}\n")
+        }
+        "textDocument/diagnostic" => {
+            answers::failure("timed out waiting for diagnostics on Sources/App.swift")
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let swift_refused = execute_tool(
+        unvalidated_remote,
+        &ws.root(),
+        "code_rename",
+        serde_json::json!({ "path": "Sources/App.swift", "line": 1, "character": 6, "new_name": "newName" }),
+    )
+    .await
+    .expect("swift rename returns structured error on incomplete validation");
+    let swift_refused_text = text_of(&swift_refused);
+    assert!(swift_refused.is_error, "{swift_refused_text}");
+    assert!(
+        swift_refused_text.contains("post-rename validation could not complete")
+            && swift_refused_text.contains("force: true"),
+        "{swift_refused_text}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&swift_file).unwrap(),
+        "func oldName() {}\n"
+    );
+
+    let swift_forced = execute_tool(
+        unvalidated_remote,
+        &ws.root(),
+        "code_rename",
+        serde_json::json!({ "path": "Sources/App.swift", "line": 1, "character": 6, "new_name": "newName", "force": true }),
+    )
+    .await
+    .expect("swift rename with force succeeds when validation is incomplete");
+    let swift_forced_text = text_of(&swift_forced);
+    assert!(!swift_forced.is_error, "{swift_forced_text}");
+    assert!(
+        swift_forced_text
+            .contains("written with `force`, although post-rename validation could not complete"),
+        "{swift_forced_text}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&swift_file).unwrap(),
+        "func newName() {}\n"
+    );
 }
 
 #[tokio::test]
