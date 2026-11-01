@@ -2,8 +2,11 @@
 
 ## [Unreleased]
 
+## v0.3.47 — 2026-10-31
+
 ### Fixed
-- **Editor LSP Recovery** (`crates/prod-code-client`, #1773): Editor sessions retry gateway interruptions by default, preserve queued edits and avoid replaying stale pending requests.
+- **Editor LSP Recovery** (`crates/prod-code-client`, `crates/prod-code-gateway`, #1773): Editor sessions retry gateway interruptions by default, preserve queued edits and post-handshake workspace sync frames, and avoid replaying stale pending requests.
+- **Explicit File Verification in Mixed Projects** (`crates/prod-code-mcp`, `crates/prod-code-client`, #1778): Explicitly scoped `check`, `lint`, and `test` runs on a root-level source file of another language (such as `sample.py` beside `tsconfig.json`) select that file's language checker and narrow `basedpyright`, `ruff`, and `pytest` to the target path.
 
 ## v0.3.46 — 2026-10-31
 
