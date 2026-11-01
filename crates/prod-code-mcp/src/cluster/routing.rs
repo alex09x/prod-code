@@ -199,7 +199,7 @@ pub fn engine_for_path(root: &Path, path: &str) -> Option<&'static str> {
     } else {
         root.join(p)
     };
-    if let (_, Some(engine)) = crate::sync::engine_project(root, &hint) {
+    if let (_, Some(engine)) = crate::verify::verify_project(root, Some(&hint)) {
         return Some(engine);
     }
     if let Some(engine) = crate::sync::engine_for_file(&hint) {

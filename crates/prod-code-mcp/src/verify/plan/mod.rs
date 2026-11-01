@@ -21,7 +21,7 @@ use super::types::{
 pub use basic::{clang_tidy_script, fix_command, plan_command_basic, strs};
 pub use scope::{
     cargo_package_name, has_xcode_project, is_xcodegen_spec, member_dir_named, narrow_scope,
-    plan_xcode_command, plan_xcodegen_command,
+    plan_xcode_command, plan_xcodegen_command, verify_project,
 };
 
 /// The command a verification kind maps to for `language` with default tooling

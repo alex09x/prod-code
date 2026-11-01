@@ -18,7 +18,7 @@ use crate::verify::detect::detect_tools;
 use crate::verify::parse::{event_of_line, parse_verification_output, relativize_diagnostics};
 use crate::verify::plan::{
     has_xcode_project, is_xcodegen_spec, narrow_scope, plan_command_with, plan_xcode_command,
-    plan_xcodegen_command,
+    plan_xcodegen_command, verify_project,
 };
 use crate::verify::types::{RunEvent, VerifyKind, VerifyReport};
 
@@ -64,9 +64,10 @@ pub async fn run_verify_with(
         }
     });
     let project_hint = normalized_hint.as_deref();
-    // A nested project of another language (a SwiftPM package in a Rust repository) is
-    // verified in its own directory with its own tooling.
-    let (subdir, language) = crate::sync::engine_project(root, project_hint.unwrap_or(root));
+    // A nested project of another language (a SwiftPM package in a Rust repository), or an
+    // explicitly scoped source file of another language (#1778), is verified with its own
+    // language's tooling.
+    let (subdir, language) = verify_project(root, project_hint);
     let language = language.ok_or_else(|| {
         anyhow!(
             "no project manifest (Cargo.toml, go.mod, package.json, pyproject.toml, CMakeLists.txt, Package.swift) at {}",

@@ -29,7 +29,7 @@ pub async fn check_and_fix(
     if before.language != "rust" {
         return tool_fix(remote, root, hint, kind, timeout_secs, before).await;
     }
-    let (subdir, _) = crate::sync::engine_project(root, hint.unwrap_or(root));
+    let (subdir, _) = crate::verify::verify_project(root, hint);
     let project = subdir.as_ref().map_or(root.to_path_buf(), |s| root.join(s));
     let (files, outcomes) = plan_in(root, &project, &before.fixes);
     if files.is_empty() {
@@ -73,15 +73,23 @@ async fn tool_fix(
             format!("fixes: only `lint --fix` applies fixes for {language}"),
         ));
     }
-    let (subdir, _) = crate::sync::engine_project(root, hint.unwrap_or(root));
+    let (subdir, _) = crate::verify::verify_project(root, hint);
     let project = subdir.as_ref().map_or(root.to_path_buf(), |s| root.join(s));
     let tools = crate::verify::detect_tools(&project);
-    let Some(command) = crate::verify::fix_command(&tools, &language)? else {
+    let Some(mut command) = crate::verify::fix_command(&tools, &language)? else {
         return Ok(nothing(
             before,
             format!("fixes: the {language} linter has no fix mode; nothing was changed"),
         ));
     };
+    if let Some(hint) = hint {
+        let normalized = if hint.is_absolute() || hint.starts_with(root) {
+            hint.to_path_buf()
+        } else {
+            root.join(hint)
+        };
+        crate::verify::narrow_scope(&mut command, &language, &project, &normalized);
+    }
     let mut tail = crate::exec::TailBuffer::new(8 * 1024);
     let outcome = crate::exec::run_remote(
         remote,

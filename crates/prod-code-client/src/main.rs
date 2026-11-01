@@ -95,7 +95,19 @@ async fn run_cli() -> Result<()> {
                 let tokens = command_path_tokens(cli.command.as_ref());
                 let cwd = env::current_dir().unwrap_or_else(|_| root.to_path_buf());
                 let hint = placement_hint(root, &cwd, &tokens);
-                prod_code_mcp::sync::engine_project(root, &hint)
+                if matches!(
+                    cli.command,
+                    Some(
+                        Commands::Check { .. }
+                            | Commands::Lint { .. }
+                            | Commands::Test { .. }
+                            | Commands::Benchmarks { .. }
+                    )
+                ) {
+                    prod_code_mcp::verify::verify_project(root, Some(&hint))
+                } else {
+                    prod_code_mcp::sync::engine_project(root, &hint)
+                }
             })
             .unwrap_or((None, None))
     };
@@ -103,6 +115,14 @@ async fn run_cli() -> Result<()> {
     // displace the checkout's own placement and back again on the next query (#125).
     let placement_key = match (&cwd_subproject, cwd_engine) {
         (Some(_), Some(engine)) => format!("{cwd_workspace}#{engine}"),
+        (None, Some(engine))
+            if cwd_root
+                .as_deref()
+                .and_then(prod_code_mcp::sync::expected_engine)
+                != Some(engine) =>
+        {
+            format!("{cwd_workspace}#{engine}")
+        }
         _ => cwd_workspace.clone(),
     };
     // An editor's server names its language, which may not be the root's: a Swift package's

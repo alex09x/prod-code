@@ -319,3 +319,52 @@ async fn wave2_go_shadow_rejects_invalid_paths_and_evidence() {
     );
     assert_eq!(std::fs::read_to_string(source).unwrap(), "package sample\n");
 }
+
+#[tokio::test]
+async fn issue_1778_mixed_project_checks_and_lints_explicitly_scoped_python_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::write(root.join("tsconfig.json"), "{}\n").unwrap();
+    let py_file = root.join("sample.py");
+    std::fs::write(&py_file, "x: int = 'bad'\n").unwrap();
+
+    assert_eq!(
+        prod_code_mcp::verify::verify_project(root, Some(&py_file)),
+        (None, Some("python"))
+    );
+    assert_eq!(
+        prod_code_mcp::cluster::routing::engine_for_path(root, "sample.py"),
+        Some("python")
+    );
+
+    let (addr, server) = execution_gateway(
+        vec![(
+            false,
+            r#"{"generalDiagnostics":[{"file":"/srv/checkout/sample.py","severity":"error","message":"Type \"Literal['bad']\" is not assignable to declared type \"int\"","range":{"start":{"line":0,"character":9}},"rule":"reportAssignmentType"}],"summary":{}}"#,
+        )],
+        None,
+    )
+    .await;
+    let report = run_verify(addr, root, Some(&py_file), VerifyKind::Check, None, 10)
+        .await
+        .unwrap();
+    let req = server.await.unwrap();
+    assert_eq!(req.subdir, None);
+    assert_eq!(req.command, ["basedpyright", "--outputjson", "sample.py"]);
+    assert_eq!(report.language, "python");
+    assert_eq!(report.diagnostics.len(), 1);
+    assert_eq!(report.diagnostics[0].file.as_deref(), Some("sample.py"));
+
+    let (addr, server) =
+        execution_gateway(vec![(false, "sample.py:1:1: F401 unused\n")], None).await;
+    let lint_report = run_verify(addr, root, Some(&py_file), VerifyKind::Lint, None, 10)
+        .await
+        .unwrap();
+    let lint_req = server.await.unwrap();
+    assert_eq!(lint_req.subdir, None);
+    assert_eq!(
+        lint_req.command,
+        ["ruff", "check", "sample.py", "--output-format", "concise"]
+    );
+    assert_eq!(lint_report.language, "python");
+}
