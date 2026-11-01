@@ -23,6 +23,52 @@ use crate::config::ProdCodeConfig;
 use crate::vfs::normalize_vfs_path;
 
 impl RustEngine {
+    /// Returns `true` when any local Cargo package under `root` (`self.workspace_root` or an
+    /// attached worktree copy) has a standard auto-discovered target root on disk (`tests/*.rs`,
+    /// `tests/*/main.rs`, `examples/*.rs`, `benches/*.rs`, `src/bin/*.rs`) that is not yet
+    /// indexed as a crate target in `root`'s analyzer view (#1777).
+    fn has_unregistered_auto_targets_at(&self, root: &Path) -> bool {
+        let base = self.worktrees.base();
+        let ProjectWorkspaceKind::Cargo { cargo, .. } = &base.kind else {
+            return false;
+        };
+        let snap = self.snapshot_for(root);
+        for pkg in cargo.packages() {
+            if !cargo[pkg].is_local {
+                continue;
+            }
+            let Some(base_pkg_dir) = Path::new(cargo[pkg].manifest.as_str()).parent() else {
+                continue;
+            };
+            let pkg_dir = if root == self.workspace_root {
+                base_pkg_dir.to_path_buf()
+            } else if let Ok(rel) = base_pkg_dir.strip_prefix(&self.workspace_root) {
+                root.join(rel)
+            } else {
+                continue;
+            };
+            for rel_dir in ["tests", "examples", "benches", "src/bin"] {
+                let dir = pkg_dir.join(rel_dir);
+                let Ok(entries) = std::fs::read_dir(&dir) else {
+                    continue;
+                };
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("rs") && path.is_file() {
+                        if snap.file_id_for_path(&path).is_none() {
+                            return true;
+                        }
+                    } else if path.is_dir() {
+                        let main_rs = path.join("main.rs");
+                        if main_rs.is_file() && snap.file_id_for_path(&main_rs).is_none() {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
     /// Collect all manifest and lockfile paths that determine the base workspace crate graph.
     pub(crate) fn collect_base_manifest_paths(&self) -> Vec<PathBuf> {
         let base = self.worktrees.base();
@@ -127,7 +173,7 @@ impl RustEngine {
                 return true;
             }
         }
-        false
+        self.has_unregistered_auto_targets_at(&self.workspace_root)
     }
 
     /// Check if a worktree's manifests or lockfiles have changed on disk.
@@ -147,7 +193,7 @@ impl RustEngine {
                 return true;
             }
         }
-        false
+        self.has_unregistered_auto_targets_at(copy_root)
     }
 
     /// Reload the base workspace when its manifests or dependencies have changed.

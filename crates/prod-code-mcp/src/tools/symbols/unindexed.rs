@@ -9,8 +9,8 @@
  */
 
 use super::across_projects::{names_word, read_name_scan_text};
-use super::declared_at::code_declarations;
 pub(crate) use super::declared_at::declared_at;
+use super::declared_at::{code_declarations, is_cargo_target_root};
 use super::matching::{bare_symbol_name, owner_segments};
 use super::nested_projects::{MAX_SCANNED_FILES, source_files};
 use super::type_members::member_at;
@@ -355,8 +355,13 @@ pub(crate) async fn unindexed_declarations(remote: SocketAddr, root: &Path, name
             };
 
             let why = if hover.is_null() {
-                "in a file the analyzer does not load: no target includes it (for Rust, no `mod` \
-                 chain from a crate root reaches it)"
+                if is_cargo_target_root(&path) {
+                    "in a Cargo target root that the analyzer has not loaded into its crate graph \
+                     yet"
+                } else {
+                    "in a file the analyzer does not load: no target includes it (for Rust, no \
+                     `mod` chain from a crate root reaches it)"
+                }
             } else {
                 "which the analyzer sees but its index does not list (an item inside a function \
                  body is not indexed): ask by its position"
