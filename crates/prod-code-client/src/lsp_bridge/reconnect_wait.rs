@@ -149,6 +149,7 @@ where
     tokio::pin!(future);
     loop {
         tokio::select! {
+            biased;
             result = &mut future => return result,
             frame = async { frames.lock().await.recv().await } => {
                 let json = match frame {

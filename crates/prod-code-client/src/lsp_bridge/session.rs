@@ -25,6 +25,17 @@ pub fn resolve_redirect_target(target: &str) -> Result<SocketAddr> {
         .context("redirect address resolved to no socket addresses")
 }
 
+#[derive(Debug)]
+pub(super) struct RedirectTlsRequired;
+
+impl std::fmt::Display for RedirectTlsRequired {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("refusing gateway redirect without server-authenticated TLS; configure a trusted CA or certificate pin")
+    }
+}
+
+impl std::error::Error for RedirectTlsRequired {}
+
 async fn connect_to_redirect_target(remote: SocketAddr) -> Result<prod_code_protocol::AnyStream> {
     let client_tls = match prod_code_protocol::transport::default_client_tls_built() {
         Some(cached) => cached,
@@ -32,9 +43,7 @@ async fn connect_to_redirect_target(remote: SocketAddr) -> Result<prod_code_prot
             .map(prod_code_protocol::ClientTlsConfig::build)
             .transpose()?,
     }
-    .context(
-        "refusing gateway redirect without server-authenticated TLS; configure a trusted CA or certificate pin",
-    )?;
+    .ok_or(RedirectTlsRequired)?;
     let token = prod_code_protocol::transport::try_auth_token()?;
     let stream = prod_code_protocol::transport::connect_stream_with_client_config(
         remote,
@@ -50,6 +59,27 @@ async fn connect_to_redirect_target(remote: SocketAddr) -> Result<prod_code_prot
         "refusing unauthenticated plaintext connection to redirected gateway {remote}"
     );
     Ok(stream)
+}
+
+async fn sync_after_handshake(
+    remote: SocketAddr,
+    cwd: &Path,
+    identity: &prod_code_mcp::sync::WorkspaceIdentity,
+    redirected: bool,
+) -> Result<()> {
+    let stream = if redirected {
+        connect_to_redirect_target(remote).await?
+    } else {
+        prod_code_protocol::transport::connect(remote).await?
+    };
+    let mut sync = Framed::new(stream, ProdCodeCodec::new());
+    prod_code_mcp::sync::push_workspace_sync(&mut sync, cwd, identity, None).await?;
+    let _ = sync
+        .send(WireMessage::Disconnect {
+            reason: "sync finished".into(),
+        })
+        .await;
+    Ok(())
 }
 
 pub async fn open_editor_session(
@@ -133,7 +163,7 @@ pub async fn open_editor_session(
             .context("gateway returned an incompatible editor handshake response")?;
         if redirect_count > 0 {
             let generation = prod_code_mcp::watch::current_generation(cwd);
-            prod_code_mcp::sync::push_workspace_sync(&mut framed, cwd, &identity, None)
+            sync_after_handshake(remote, cwd, &identity, true)
                 .await
                 .context("workspace sync after gateway redirect failed")?;
             prod_code_mcp::watch::mark_synced(cwd, generation);
@@ -145,7 +175,7 @@ pub async fn open_editor_session(
                 &prod_code_mcp::sync::gateway_node(&framed),
                 &handshake_resp.stale_paths,
             );
-            prod_code_mcp::sync::push_workspace_sync(&mut framed, cwd, &identity, None)
+            sync_after_handshake(remote, cwd, &identity, redirect_count > 0)
                 .await
                 .context("workspace sync after gateway reported stale files failed")?;
             prod_code_mcp::watch::mark_synced(cwd, generation);

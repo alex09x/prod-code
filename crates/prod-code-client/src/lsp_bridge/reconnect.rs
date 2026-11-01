@@ -15,7 +15,7 @@ use super::reconnect_wait::{
     defer_editor_message, while_reconnecting,
 };
 pub use super::reconnect_workspace::replay_lsp_workspace_state;
-use super::session::open_editor_session;
+use super::session::{RedirectTlsRequired, open_editor_session};
 use super::state::LspStateTracker;
 use super::transport::{
     EditorFrameReceiver, LspTrace, PendingRequests, trace_message, trace_reconnect,
@@ -260,7 +260,10 @@ pub async fn reconnect_editor_session(
         )
         .await;
         if opened.as_ref().err().is_some_and(|err| {
-            err.is::<EditorStopped>() || err.is::<EditorExit>() || err.is::<EditorShutdown>()
+            err.is::<EditorStopped>()
+                || err.is::<EditorExit>()
+                || err.is::<EditorShutdown>()
+                || err.is::<RedirectTlsRequired>()
         }) {
             return Err(opened.err().expect("checked for an editor stop"));
         }
