@@ -97,6 +97,26 @@ fn a_target_with_a_custom_path_has_a_probe_file() {
         ["App/Code"],
         "`../elsewhere` is outside the package"
     );
+
+    // #1766: undeclared directories under `Sources/` (e.g. `Sources/RenderDemo/main.swift`) and
+    // paths listed in `exclude:` are skipped in favor of declared SwiftPM targets.
+    let tako_manifest = "// swift-tools-version: 5.9\nimport PackageDescription\nlet package = Package(\n    name: \"Tako\",\n    targets: [\n        .binaryTarget(name: \"TakoCoreFFI\", path: \"../TakoCore.xcframework\"),\n        .executableTarget(name: \"TakoApp\", dependencies: [\"TakoCoreFFI\"], path: \"Sources/Tako\", exclude: [\"Shaders/Excluded.swift\"]),\n        .testTarget(name: \"TakoTests\", dependencies: [\"TakoApp\"], path: \"Tests\")\n    ]\n)\n";
+    let tako_dir = package(&[
+        ("Package.swift", tako_manifest),
+        ("Sources/RenderDemo/main.swift", "import Foundation\n"),
+        ("Sources/Tako/Shaders/Excluded.swift", "excluded\n"),
+        (
+            "Sources/Tako/App/AppDelegate.swift",
+            "class AppDelegate {}\n",
+        ),
+    ]);
+    let (probe_path, probe_text) =
+        swift_probe_file(tako_dir.path()).expect("declared target probe file");
+    assert_eq!(
+        probe_path,
+        tako_dir.path().join("Sources/Tako/App/AppDelegate.swift")
+    );
+    assert_eq!(probe_text, "class AppDelegate {}\n");
 }
 
 #[tokio::test]
