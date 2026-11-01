@@ -159,3 +159,13 @@ fn disk_headroom_on_a_missing_path_falls_back_to_the_storage_root() {
         }
     }
 }
+
+#[test]
+fn external_volume_access_denial_formats_actionable_tcc_diagnostic() {
+    let external_ws = std::path::Path::new("/Volumes/data/workspace");
+    let err = std::io::Error::from_raw_os_error(1);
+    let diag = runner::format_volume_access_diagnostic(external_ws, &err).expect("diagnostic");
+    assert!(diag.contains("macOS TCC (Privacy and Security -> Full Disk Access or Removable Volumes for prod-code-server)"));
+    assert!(diag.contains("blocked access to the external volume"));
+    assert!(diag.contains("recommends keeping gateway storage on the internal APFS volume or granting Full Disk Access to the gateway binary"));
+}

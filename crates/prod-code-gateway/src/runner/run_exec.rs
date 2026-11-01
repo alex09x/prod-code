@@ -56,6 +56,12 @@ pub async fn run_exec_with_ram(
     };
     // Held while the command runs: no pruner takes the copy from under it (#1524).
     let _in_use = workspace::WorkspaceUse::enter(&workspace);
+    if let Err(e) = std::fs::metadata(&workspace) {
+        if let Some(diag) = format_volume_access_diagnostic(&workspace, &e) {
+            framed.send(WireMessage::ExecExit(fail(diag))).await?;
+            return Ok(());
+        }
+    }
     if !workspace.is_dir() {
         framed
             .send(WireMessage::ExecExit(fail(format!(
@@ -134,6 +140,12 @@ pub async fn run_exec_with_ram(
             if !sub.is_empty() && !sub.starts_with('/') && !sub.split('/').any(|c| c == "..") =>
         {
             let target = workspace.join(sub);
+            if let Err(e) = std::fs::metadata(&target) {
+                if let Some(diag) = format_volume_access_diagnostic(&target, &e) {
+                    framed.send(WireMessage::ExecExit(fail(diag))).await?;
+                    return Ok(());
+                }
+            }
             if !target.is_dir() {
                 framed
                     .send(WireMessage::ExecExit(fail(format!(
@@ -183,11 +195,8 @@ pub async fn run_exec_with_ram(
     let child = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => {
-            framed
-                .send(WireMessage::ExecExit(fail(format!(
-                    "failed to start {program}: {e}"
-                ))))
-                .await?;
+            let err_msg = format_spawn_error(&run_dir, program, &e);
+            framed.send(WireMessage::ExecExit(fail(err_msg))).await?;
             return Ok(());
         }
     };
