@@ -11,9 +11,11 @@
 pub mod bridge;
 pub mod encoding;
 pub mod reconnect;
+mod reconnect_deferred;
 pub mod reconnect_handler;
 mod reconnect_pending;
 mod reconnect_wait;
+mod reconnect_workspace;
 pub mod save_gate;
 pub mod session;
 pub mod state;

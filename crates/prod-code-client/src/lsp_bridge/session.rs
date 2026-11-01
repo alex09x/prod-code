@@ -138,6 +138,18 @@ pub async fn open_editor_session(
                 .context("workspace sync after gateway redirect failed")?;
             prod_code_mcp::watch::mark_synced(cwd, generation);
         }
+        if !handshake_resp.stale_paths.is_empty() {
+            let generation = prod_code_mcp::watch::current_generation(cwd);
+            prod_code_mcp::sync::resend_lost_files(
+                cwd,
+                &prod_code_mcp::sync::gateway_node(&framed),
+                &handshake_resp.stale_paths,
+            );
+            prod_code_mcp::sync::push_workspace_sync(&mut framed, cwd, &identity, None)
+                .await
+                .context("workspace sync after gateway reported stale files failed")?;
+            prod_code_mcp::watch::mark_synced(cwd, generation);
+        }
         return Ok((framed, handshake_resp, remote));
     }
 }

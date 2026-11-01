@@ -251,7 +251,7 @@ async fn editor_can_shutdown_cleanly_while_gateway_is_unavailable() {
 }
 
 #[tokio::test]
-async fn pending_semantic_token_delta_is_replaced_by_full_request_after_reconnect() {
+async fn interrupted_semantic_token_request_is_rejected_and_can_be_retried() {
     let ws = Workspace::new(&[("src/lib.rs", "pub fn sample() {}\n")]);
     let cache = tempfile::tempdir().unwrap();
     let delta_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -299,8 +299,10 @@ async fn pending_semantic_token_delta_is_replaced_by_full_request_after_reconnec
     down.send(1).unwrap();
     tokio::time::sleep(Duration::from_secs(1)).await;
     down.send(0).unwrap();
+    assert_eq!(response(&mut stdout, 9).await["error"]["code"], -32801);
+    write_frame(&mut stdin, &json!({"jsonrpc":"2.0","id":10,"method":"textDocument/semanticTokens/full","params":{"textDocument":{"uri":uri}}}).to_string()).await.unwrap();
     assert_eq!(
-        response(&mut stdout, 9).await["result"]["data"],
+        response(&mut stdout, 10).await["result"]["data"],
         json!([0, 0, 1, 1, 0])
     );
     assert_eq!(

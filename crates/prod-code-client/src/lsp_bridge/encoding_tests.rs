@@ -54,3 +54,18 @@ fn offsets_follow_encoding_units_and_crlf_lines() {
         text.len()
     );
 }
+
+#[test]
+fn capability_replay_preserves_editor_sync_contract() {
+    use std::sync::atomic::{AtomicU8, Ordering};
+    let state = AtomicU8::new(0);
+    let response = |sync| serde_json::json!({"result":{"capabilities":{"positionEncoding":"utf-8","textDocumentSync":{"change":sync}}}});
+    assert!(update_server_capabilities(&state, &response(1), false));
+    assert!(update_server_capabilities(&state, &response(2), true));
+    // The editor still sends full changes even if a later server supports incremental ones.
+    assert!(update_server_capabilities(&state, &response(1), true));
+    assert_eq!(lsp_offset("😀a", 0, 4, state.load(Ordering::Acquire)), 4);
+    assert!(!update_server_capabilities(&state, &response(0), true));
+    assert!(update_server_capabilities(&state, &response(2), false));
+    assert!(!update_server_capabilities(&state, &response(1), true));
+}

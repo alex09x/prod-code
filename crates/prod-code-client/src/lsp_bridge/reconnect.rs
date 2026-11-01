@@ -8,12 +8,13 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use super::encoding::{POSITION_ENCODING_UTF16, lsp_position_encoding};
+use super::encoding::update_server_capabilities;
 use super::reconnect_pending::replay_pending_requests;
 use super::reconnect_wait::{
-    EditorStopped, IncompatiblePositionEncoding, defer_editor_message, shutdown_during_reconnect,
-    while_reconnecting,
+    EditorExit, EditorShutdown, EditorStopped, IncompatiblePositionEncoding, ReconnectTimeout,
+    defer_editor_message, while_reconnecting,
 };
+pub use super::reconnect_workspace::replay_lsp_workspace_state;
 use super::session::open_editor_session;
 use super::state::LspStateTracker;
 use super::transport::{
@@ -25,7 +26,7 @@ use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{ProdCodeCodec, WireMessage};
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::AtomicU8;
 use tokio_util::codec::Framed;
 
 pub(super) fn should_reconnect_after_close(
@@ -39,6 +40,9 @@ pub(super) fn should_reconnect_after_close(
 }
 
 #[cfg(test)]
+#[path = "reconnect_capability_tests.rs"]
+mod capability_tests;
+#[cfg(test)]
 #[path = "reconnect_tests.rs"]
 mod tests;
 
@@ -51,6 +55,7 @@ pub async fn replay_lsp_state(
     position_encoding: &AtomicU8,
     editor_frames: &EditorFrameReceiver,
     deferred_editor_frames: &mut std::collections::VecDeque<String>,
+    pending_requests: &PendingRequests,
     editor_out: &tokio::sync::Mutex<tokio::io::Stdout>,
     trace: &LspTrace,
 ) -> Result<Option<String>> {
@@ -77,11 +82,12 @@ pub async fn replay_lsp_state(
                             let parsed = serde_json::from_str::<serde_json::Value>(&json).ok();
                             if let Some(value) = &parsed {
                                 if value.get("id") == Some(&initialize_id) && value.get("method").is_none() {
-                                    let encoding = lsp_position_encoding(value).unwrap_or(POSITION_ENCODING_UTF16);
-                                    if expect_original_encoding && position_encoding.load(Ordering::Acquire) != encoding {
+                                    if value.get("error").is_some() || !value.get("result").is_some_and(serde_json::Value::is_object) {
+                                        anyhow::bail!("server rejected the replayed initialize request");
+                                    }
+                                    if !update_server_capabilities(position_encoding, value, expect_original_encoding) {
                                         return Err(IncompatiblePositionEncoding.into());
                                     }
-                                    position_encoding.store(encoding, Ordering::Release);
                                     initialize_response = Some(json);
                                     if server_request_ids.is_empty() {
                                         return Ok(());
@@ -109,10 +115,13 @@ pub async fn replay_lsp_state(
                     frame = async { editor_frames.lock().await.recv().await } => match frame {
                         Some(Ok(Some(json))) => {
                             let value = serde_json::from_str::<serde_json::Value>(&json).ok();
+                            if value.as_ref().and_then(|value| value.get("method")).and_then(|method| method.as_str()) == Some("exit") {
+                                return Err(EditorExit.into());
+                            }
                             if value.as_ref().and_then(|value| value.get("method")).and_then(|method| method.as_str()) == Some("shutdown")
                                 && let Some(id) = value.as_ref().and_then(|value| value.get("id"))
                             {
-                                return shutdown_during_reconnect(id, editor_frames, editor_out).await;
+                                return Err(EditorShutdown(id.clone()).into());
                             }
                             let id = value.as_ref().and_then(|value| {
                                     (value.get("method").is_none()).then(|| value.get("id").cloned()).flatten()
@@ -157,48 +166,24 @@ pub async fn replay_lsp_state(
             "method": "initialized",
             "params": {}
         });
-        socket_tx
-            .send(WireMessage::LspPayload(initialized.to_string()))
-            .await
-            .context("failed to send replayed initialized notification")?;
-        replay_lsp_workspace_state(socket_tx, tracker, files).await?;
+        let replay = async {
+            socket_tx
+                .send(WireMessage::LspPayload(initialized.to_string()))
+                .await
+                .context("failed to send replayed initialized notification")?;
+            replay_lsp_workspace_state(socket_tx, tracker, files).await
+        };
+        while_reconnecting(
+            replay,
+            editor_frames,
+            deferred_editor_frames,
+            pending_requests,
+            editor_out,
+        )
+        .await?;
     }
 
     Ok(replayed_initialize)
-}
-
-pub async fn replay_lsp_workspace_state(
-    socket_tx: &mut SplitSink<Framed<prod_code_protocol::AnyStream, ProdCodeCodec>, WireMessage>,
-    tracker: &LspStateTracker,
-    files: &prod_code_client::editor_files::RemoteFiles,
-) -> Result<()> {
-    for config in &tracker.configuration_notifications {
-        socket_tx
-            .send(WireMessage::LspPayload(files.to_node(config)))
-            .await
-            .context("failed to send replayed configuration notification")?;
-    }
-    for doc in tracker.open_documents.values() {
-        let did_open = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": doc.uri,
-                    "languageId": doc.language_id,
-                    "version": doc.version,
-                    "text": doc.text,
-                }
-            }
-        });
-        socket_tx
-            .send(WireMessage::LspPayload(
-                files.to_node(&did_open.to_string()),
-            ))
-            .await
-            .context("failed to send replayed didOpen notification")?;
-    }
-    Ok(())
 }
 
 pub async fn reconnect_editor_session(
@@ -274,15 +259,16 @@ pub async fn reconnect_editor_session(
             editor_out,
         )
         .await;
-        if opened
-            .as_ref()
-            .err()
-            .is_some_and(|err| err.is::<EditorStopped>())
-        {
+        if opened.as_ref().err().is_some_and(|err| {
+            err.is::<EditorStopped>() || err.is::<EditorExit>() || err.is::<EditorShutdown>()
+        }) {
             return Err(opened.err().expect("checked for an editor stop"));
         }
         match opened {
             Ok((framed, handshake_resp, effective_remote)) => {
+                let replay_deadline = (tokio::time::Instant::now()
+                    + tokio::time::Duration::from_secs(30))
+                .min(deadline);
                 files.set_node(
                     effective_remote,
                     Path::new(&handshake_resp.server_workspace_root),
@@ -295,8 +281,8 @@ pub async fn reconnect_editor_session(
                         .find(|(_, method, _)| method == "initialize")
                         .map(|(id, _, _)| id.clone())
                 };
-                match tokio::time::timeout_at(
-                    deadline,
+                let replay = tokio::time::timeout_at(
+                    replay_deadline,
                     replay_lsp_state(
                         &mut new_tx,
                         &mut new_rx,
@@ -306,13 +292,20 @@ pub async fn reconnect_editor_session(
                         position_encoding,
                         editor_frames,
                         deferred_editor_frames,
+                        pending_requests,
                         editor_out,
                         trace,
                     ),
                 )
-                .await
-                .context("timed out restoring editor state")?
-                {
+                .await;
+                let replay = match replay {
+                    Ok(result) => result,
+                    Err(_) => {
+                        trace_reconnect(trace, "replay_timeout", attempt);
+                        return Err(ReconnectTimeout("timed out restoring editor state").into());
+                    }
+                };
+                match replay {
                     Ok(replayed_initialize) => {
                         if let Some(initialize_id) = pending_initialize_id {
                             let Some(response) = replayed_initialize else {
@@ -335,20 +328,30 @@ pub async fn reconnect_editor_session(
                                 id != &initialize_id || method != "initialize"
                             });
                         }
-                        if let Err(err) = replay_pending_requests(
-                            &mut new_tx,
-                            files,
-                            pending_requests,
-                            editor_out,
-                            deferred_editor_frames,
+                        tokio::time::timeout_at(
+                            replay_deadline,
+                            replay_pending_requests(
+                                &mut new_tx,
+                                files,
+                                pending_requests,
+                                editor_out,
+                                deferred_editor_frames,
+                            ),
                         )
                         .await
-                        {
-                            tracing::warn!(%err, "failed to replay in-flight requests during reconnect");
-                            last_err = Some(err);
-                            continue;
-                        }
+                        .map_err(|_| {
+                            ReconnectTimeout("timed out answering interrupted requests")
+                        })??;
 
+                        tokio::time::timeout_at(
+                            replay_deadline,
+                            super::reconnect_deferred::prepare_deferred(
+                                deferred_editor_frames,
+                                editor_out,
+                            ),
+                        )
+                        .await
+                        .map_err(|_| ReconnectTimeout("timed out preparing queued requests"))??;
                         tracing::info!(
                             "successfully reconnected to gateway and replayed LSP state"
                         );
@@ -356,7 +359,11 @@ pub async fn reconnect_editor_session(
                         return Ok((new_tx, new_rx, !tracker.initialized_sent, effective_remote));
                     }
                     Err(err) => {
-                        if err.is::<EditorStopped>() || err.is::<IncompatiblePositionEncoding>() {
+                        if err.is::<EditorStopped>()
+                            || err.is::<EditorExit>()
+                            || err.is::<EditorShutdown>()
+                            || err.is::<IncompatiblePositionEncoding>()
+                        {
                             return Err(err);
                         }
                         tracing::warn!(%err, "LSP state replay failed during reconnect attempt");

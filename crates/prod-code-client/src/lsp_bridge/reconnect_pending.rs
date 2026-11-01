@@ -11,12 +11,33 @@
 use super::state::is_idempotent_lsp_request;
 use super::transport::PendingRequests;
 use anyhow::Result;
-use futures_util::{SinkExt, stream::SplitSink};
+use futures_util::stream::SplitSink;
 use prod_code_protocol::{ProdCodeCodec, WireMessage};
 use std::collections::VecDeque;
 use tokio_util::codec::Framed;
 
-fn replay_request(method: &str, request: &str) -> Option<String> {
+pub(super) fn replay_request(method: &str, request: &str) -> Option<String> {
+    if method.ends_with("/resolve")
+        || matches!(
+            method,
+            "callHierarchy/incomingCalls"
+                | "callHierarchy/outgoingCalls"
+                | "typeHierarchy/supertypes"
+                | "typeHierarchy/subtypes"
+        )
+    {
+        return None;
+    }
+    if method == "textDocument/diagnostic" || method == "workspace/diagnostic" {
+        let mut value: serde_json::Value = serde_json::from_str(request).ok()?;
+        let params = value.get_mut("params")?.as_object_mut()?;
+        if method == "textDocument/diagnostic" {
+            params.remove("previousResultId");
+        } else {
+            params.insert("previousResultIds".into(), serde_json::json!([]));
+        }
+        return Some(value.to_string());
+    }
     if method != "textDocument/semanticTokens/full/delta" {
         return Some(request.to_string());
     }
@@ -32,20 +53,14 @@ fn replay_request(method: &str, request: &str) -> Option<String> {
 }
 
 pub(super) async fn replay_pending_requests(
-    socket: &mut SplitSink<Framed<prod_code_protocol::AnyStream, ProdCodeCodec>, WireMessage>,
-    files: &prod_code_client::editor_files::RemoteFiles,
+    _socket: &mut SplitSink<Framed<prod_code_protocol::AnyStream, ProdCodeCodec>, WireMessage>,
+    _files: &prod_code_client::editor_files::RemoteFiles,
     pending_requests: &PendingRequests,
     editor_out: &tokio::sync::Mutex<tokio::io::Stdout>,
     deferred: &VecDeque<String>,
 ) -> Result<()> {
-    // The new server has only the snapshot from before these edits. Replaying a
-    // query now could return an answer about text the editor has already changed.
-    let changed = deferred.iter().any(|frame| {
-        matches!(
-            prod_code_client::editor_files::method_of(frame).as_deref(),
-            Some("textDocument/didOpen" | "textDocument/didChange" | "textDocument/didClose")
-        )
-    });
+    // An in-flight request may refer to an older document or server session.
+    // Fail it so the editor can retry against the restored state.
     let cancelled: Vec<serde_json::Value> = deferred
         .iter()
         .filter_map(|frame| {
@@ -55,35 +70,15 @@ pub(super) async fn replay_pending_requests(
                 .flatten()
         })
         .collect();
-    let pending = {
-        let mut pending = pending_requests.lock().await;
-        pending.retain(|(id, _, _)| !cancelled.contains(id));
-        pending.clone()
-    };
-    let mut rejected = Vec::new();
-    for (id, method, request) in &pending {
-        let idempotent = is_idempotent_lsp_request(method);
-        if idempotent
-            && !changed
-            && let Some(request) = replay_request(method, request)
-        {
-            socket
-                .send(WireMessage::LspPayload(files.to_node(&request)))
-                .await?;
-        } else {
-            rejected.push((id.clone(), method.clone(), idempotent));
-        }
-    }
-    if rejected.is_empty() {
+    let pending = std::mem::take(&mut *pending_requests.lock().await);
+    if pending.is_empty() {
         return Ok(());
     }
-    pending_requests
-        .lock()
-        .await
-        .retain(|(id, _, _)| !rejected.iter().any(|(rejected_id, _, _)| rejected_id == id));
     let mut stdout = editor_out.lock().await;
-    for (id, method, idempotent) in rejected {
-        let (code, message) = if idempotent {
+    for (id, method, _) in pending {
+        let (code, message) = if cancelled.contains(&id) {
+            (-32800, "request cancelled".to_string())
+        } else if is_idempotent_lsp_request(&method) {
             (
                 -32801,
                 format!(
@@ -112,6 +107,45 @@ mod tests {
     use futures_util::StreamExt;
     use std::sync::Arc;
 
+    #[test]
+    fn old_session_resolve_requests_are_not_replayed() {
+        for method in [
+            "completionItem/resolve",
+            "codeLens/resolve",
+            "documentLink/resolve",
+            "inlayHint/resolve",
+            "workspace/symbol/resolve",
+            "callHierarchy/incomingCalls",
+            "callHierarchy/outgoingCalls",
+            "typeHierarchy/supertypes",
+            "typeHierarchy/subtypes",
+        ] {
+            assert!(
+                replay_request(method, r#"{"jsonrpc":"2.0","id":1}"#).is_none(),
+                "{method}"
+            );
+        }
+    }
+
+    #[test]
+    fn replayed_diagnostics_do_not_reuse_old_result_ids() {
+        for (method, key) in [
+            ("textDocument/diagnostic", "previousResultId"),
+            ("workspace/diagnostic", "previousResultIds"),
+        ] {
+            let request = serde_json::json!({"jsonrpc":"2.0", "id":1, "method":method,
+                "params": {(key): "old-session-token"}})
+            .to_string();
+            let replayed: serde_json::Value =
+                serde_json::from_str(&replay_request(method, &request).unwrap()).unwrap();
+            if method == "workspace/diagnostic" {
+                assert_eq!(replayed["params"][key], serde_json::json!([]));
+            } else {
+                assert!(replayed["params"].get(key).is_none(), "{method}");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn cancellation_queued_during_initialization_is_not_replayed() {
         let (socket, mut peer) = socket_pair().await;
@@ -136,6 +170,39 @@ mod tests {
         replay_pending_requests(&mut tx, &files, &pending, &stdout, &deferred)
             .await
             .unwrap();
+        assert!(pending.lock().await.is_empty());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), peer.next())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn request_superseded_by_an_edit_before_disconnect_is_not_replayed() {
+        let (socket, mut peer) = socket_pair().await;
+        let (mut tx, _rx) = socket.split();
+        let temp = tempfile::tempdir().unwrap();
+        let files = prod_code_client::editor_files::RemoteFiles::new(
+            "127.0.0.1:1".parse().unwrap(),
+            temp.path(),
+            temp.path(),
+            temp.path(),
+        );
+        let pending = Arc::new(tokio::sync::Mutex::new(vec![(
+            serde_json::json!(7),
+            "textDocument/hover".to_string(),
+            serde_json::json!({"jsonrpc":"2.0","id":7,"method":"textDocument/hover"}).to_string(),
+        )]));
+        replay_pending_requests(
+            &mut tx,
+            &files,
+            &pending,
+            &tokio::sync::Mutex::new(tokio::io::stdout()),
+            &VecDeque::new(),
+        )
+        .await
+        .unwrap();
         assert!(pending.lock().await.is_empty());
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(100), peer.next())

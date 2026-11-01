@@ -55,12 +55,6 @@ pub async fn run_lsp_bridge(
         engine = handshake_resp.detected_engine,
         "Connected to remote gateway"
     );
-    prod_code_mcp::sync::resend_lost_files(
-        &cwd,
-        &prod_code_mcp::sync::gateway_node(&framed),
-        &handshake_resp.stale_paths,
-    );
-
     let files = Arc::new(prod_code_client::editor_files::RemoteFiles::new(
         remote,
         &cwd,
@@ -125,6 +119,7 @@ pub async fn run_lsp_bridge(
                 deferred_editor_frames: &mut deferred_editor_frames,
                 trace: &trace,
                 pushing: &pushing,
+                shutdown_requested: teardown.shutdown_requested(),
             };
 
             tokio::select! {
@@ -317,6 +312,11 @@ pub async fn run_lsp_bridge(
             .send(WireMessage::LspPayload(files.to_node(&json_payload)))
             .await
         {
+            if let Some(code) = teardown.expected_exit() {
+                keeper.abort();
+                stdout_task.abort();
+                std::process::exit(code);
+            }
             if reconnect {
                 stdout_task.abort();
                 let why = format!("broke the connection: {err}");
@@ -334,6 +334,7 @@ pub async fn run_lsp_bridge(
                     deferred_editor_frames: &mut deferred_editor_frames,
                     trace: &trace,
                     pushing: &pushing,
+                    shutdown_requested: teardown.shutdown_requested(),
                 };
                 handle_reconnect(
                     &mut ctx,

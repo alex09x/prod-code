@@ -8,7 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use super::encoding::lsp_position_encoding;
+use super::encoding::update_server_capabilities;
 use super::session::resolve_redirect_target;
 use anyhow::Result;
 use futures_util::StreamExt;
@@ -126,8 +126,8 @@ pub fn spawn_editor_stdout_task(
                 Some(Ok(msg)) => match msg {
                     WireMessage::LspPayload(json) => {
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
-                            if let Some(encoding) = lsp_position_encoding(&val) {
-                                position_encoding.store(encoding, Ordering::Release);
+                            if val.pointer("/result/capabilities").is_some() {
+                                update_server_capabilities(&position_encoding, &val, false);
                             }
                             if val.get("id").is_some() && val.get("method").is_none() {
                                 if let Some(id) = val.get("id") {

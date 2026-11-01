@@ -230,6 +230,9 @@ protocol both ways:
 - After a gateway interruption, the bridge retries for up to two minutes and restores
   open documents, including unsaved edits. Set `PROD_CODE_RECONNECT=false` to disable
   retries for ordinary disconnects; redirects and workspace model changes still reconnect.
+  Requests already in flight are rejected so the editor can retry against the restored
+  state. A stalled state replay is bounded and terminates the session instead of risking
+  a partial editor-protocol frame; incompatible sync capabilities require a fresh session.
   While reconnecting, up to 2,048 editor messages and 32 MiB are queued; exceeding either
   limit ends the session rather than silently discarding edits.
   `PROD_CODE_LSP_TRACE` can name a local trace file containing the client version, message

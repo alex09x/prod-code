@@ -30,11 +30,44 @@ impl std::fmt::Display for EditorStopped {
 impl std::error::Error for EditorStopped {}
 
 #[derive(Debug)]
+pub(super) struct EditorExit;
+
+impl std::fmt::Display for EditorExit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("editor exited during language-server reconnect")
+    }
+}
+
+impl std::error::Error for EditorExit {}
+
+#[derive(Debug)]
+pub(super) struct EditorShutdown(pub serde_json::Value);
+
+impl std::fmt::Display for EditorShutdown {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("editor requested shutdown during reconnect")
+    }
+}
+
+impl std::error::Error for EditorShutdown {}
+
+#[derive(Debug)]
+pub(super) struct ReconnectTimeout(pub &'static str);
+
+impl std::fmt::Display for ReconnectTimeout {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl std::error::Error for ReconnectTimeout {}
+
+#[derive(Debug)]
 pub(super) struct IncompatiblePositionEncoding;
 
 impl std::fmt::Display for IncompatiblePositionEncoding {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("gateway changed LSP position encoding; restart the language server")
+        formatter.write_str("gateway changed LSP position encoding or sync capabilities; restart the language server")
     }
 }
 
@@ -61,7 +94,10 @@ pub(super) async fn shutdown_during_reconnect<T>(
     id: &serde_json::Value,
     frames: &EditorFrameReceiver,
     editor_out: &tokio::sync::Mutex<tokio::io::Stdout>,
+    pending: &PendingRequests,
 ) -> Result<T> {
+    super::state::fail_pending_requests(pending, editor_out, "editor shutdown during reconnect")
+        .await;
     let reply = serde_json::json!({"jsonrpc":"2.0", "id":id, "result":null});
     let mut output = editor_out.lock().await;
     if let Err(err) =
@@ -129,18 +165,26 @@ where
                 let value = serde_json::from_str::<serde_json::Value>(&json).ok();
                 let method = value.as_ref().and_then(|value| value.get("method")).and_then(|method| method.as_str());
                 if method == Some("shutdown") && let Some(id) = value.as_ref().and_then(|value| value.get("id")) {
-                    return shutdown_during_reconnect(id, frames, editor_out).await;
+                    return Err(EditorShutdown(id.clone()).into());
                 }
                 if method == Some("exit") {
-                    return Err(EditorStopped {
-                        clean: false,
-                        reason: "editor exited during language-server reconnect".to_string(),
-                    }.into());
+                    return Err(EditorExit.into());
                 }
                 if method == Some("$/cancelRequest")
                     && let Some(id) = value.as_ref().and_then(|value| value.pointer("/params/id"))
                 {
-                    pending.lock().await.retain(|(pending_id, _, _)| pending_id != id);
+                    let removed = {
+                        let mut pending = pending.lock().await;
+                        let before = pending.len();
+                        pending.retain(|(pending_id, _, _)| pending_id != id);
+                        before != pending.len()
+                    };
+                    if removed {
+                        let response = serde_json::json!({"jsonrpc":"2.0", "id":id, "error":{"code":-32800,"message":"request cancelled"}});
+                        let mut output = editor_out.lock().await;
+                        prod_code_client::editor_files::write_frame(&mut *output, &response.to_string()).await?;
+                        continue;
+                    }
                 }
                 defer_editor_message(deferred, json)?;
             }

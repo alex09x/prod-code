@@ -82,7 +82,7 @@ async fn stdout_task_tracks_encoding_pending_requests_pongs_and_disconnect() {
         ("closed the session: fixture done".into(), None)
     );
     task.await.unwrap();
-    assert_eq!(encoding.load(Ordering::Acquire), 2);
+    assert_eq!(encoding.load(Ordering::Acquire) & 3, 2);
     assert!(!ping.load(Ordering::Acquire));
     assert_eq!(
         *pending.lock().await,

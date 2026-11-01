@@ -8,12 +8,14 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+use super::super::encoding::POSITION_ENCODING_UTF16;
 use super::super::test_support::socket_pair;
 use super::super::transport::MAX_DEFERRED_EDITOR_FRAMES;
 use super::*;
 use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 #[test]
 fn a_workspace_model_change_reconnects_even_when_reconnect_is_disabled() {
@@ -90,6 +92,7 @@ async fn replay_case(
             &encoding,
             &frames,
             &mut deferred,
+            &Arc::new(tokio::sync::Mutex::new(Vec::new())),
             &tokio::sync::Mutex::new(tokio::io::stdout()),
             &None,
         ),
@@ -99,7 +102,40 @@ async fn replay_case(
     drop(tx);
     drop(rx);
     peer_task.await.unwrap();
-    (result, deferred, encoding.load(Ordering::Acquire))
+    (result, deferred, encoding.load(Ordering::Acquire) & 3)
+}
+
+#[tokio::test]
+async fn replay_rejects_initialize_error_response() {
+    let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+    let error = WireMessage::LspPayload(
+        r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"failed"}}"#.into(),
+    );
+    let (result, _, _) = replay_case(Some(initialize), vec![], Some(error), 0, false, false).await;
+    assert!(
+        result.is_err(),
+        "an initialize error must not count as success"
+    );
+}
+
+#[tokio::test]
+async fn replay_stops_when_editor_exits_during_initialize() {
+    let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+    let exit = r#"{"jsonrpc":"2.0","method":"exit"}"#.to_string();
+    let (result, _, _) = replay_case(
+        Some(initialize),
+        vec![Ok(Some(exit))],
+        None,
+        0,
+        false,
+        false,
+    )
+    .await;
+    assert!(
+        result
+            .unwrap_err()
+            .is::<crate::lsp_bridge::reconnect_wait::EditorExit>()
+    );
 }
 
 #[tokio::test]
@@ -181,6 +217,7 @@ async fn replay_reports_editor_read_failure_eof_and_queue_overflow() {
             &AtomicU8::new(0),
             &Arc::new(tokio::sync::Mutex::new(receiver)),
             &mut deferred,
+            &Arc::new(tokio::sync::Mutex::new(Vec::new())),
             &tokio::sync::Mutex::new(tokio::io::stdout()),
             &None,
         )
@@ -317,6 +354,7 @@ async fn replay_answers_server_requests_and_defers_unrelated_editor_messages() {
             &AtomicU8::new(2),
             &editor_frames,
             &mut deferred,
+            &Arc::new(tokio::sync::Mutex::new(Vec::new())),
             &tokio::sync::Mutex::new(tokio::io::stdout()),
             &trace,
         ),
