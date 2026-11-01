@@ -83,6 +83,45 @@ pub(super) async fn prepare_deferred(
     Ok(())
 }
 
+/// Finish requests accepted while disconnected before ending a healthy editor stream.
+pub(super) async fn fail_deferred(
+    deferred: &mut VecDeque<String>,
+    editor_out: &tokio::sync::Mutex<tokio::io::Stdout>,
+) -> anyhow::Result<()> {
+    let frames = std::mem::take(deferred);
+    let canceled: Vec<serde_json::Value> = frames
+        .iter()
+        .filter_map(|frame| {
+            let value: serde_json::Value = serde_json::from_str(frame).ok()?;
+            (value.get("method")?.as_str()? == "$/cancelRequest")
+                .then(|| value.pointer("/params/id").cloned())
+                .flatten()
+        })
+        .collect();
+    let mut seen = Vec::new();
+    let mut output = editor_out.lock().await;
+    for frame in frames {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&frame) else {
+            continue;
+        };
+        let (Some(id), Some(_)) = (value.get("id"), value.get("method")) else {
+            continue;
+        };
+        if id.is_null() || seen.contains(id) {
+            continue;
+        }
+        seen.push(id.clone());
+        let code = if canceled.contains(id) {
+            -32800
+        } else {
+            -32097
+        };
+        let reply = serde_json::json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":"editor session ended during reconnect"}});
+        prod_code_client::editor_files::write_frame(&mut *output, &reply.to_string()).await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

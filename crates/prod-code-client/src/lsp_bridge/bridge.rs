@@ -255,10 +255,11 @@ pub async fn run_lsp_bridge(
                 }
             } else if val.get("method").and_then(|m| m.as_str()) == Some("$/cancelRequest") {
                 if let Some(cancel_id) = val.pointer("/params/id") {
-                    pending_requests
-                        .lock()
-                        .await
-                        .retain(|(p_id, _, _)| p_id != cancel_id);
+                    for (id, method, _) in pending_requests.lock().await.iter_mut() {
+                        if id == cancel_id {
+                            *method = "$/cancelRequest".to_string();
+                        }
+                    }
                 }
             }
         }

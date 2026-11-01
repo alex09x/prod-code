@@ -30,9 +30,12 @@ async fn pending_shutdown_is_answered_when_gateway_disconnects() {
     let gateway = ScriptedGateway::start(move |method, _| {
         if method == "shutdown" {
             received.store(true, Ordering::Release);
-            std::thread::sleep(Duration::from_secs(10));
         }
-        Value::Null
+        if matches!(method, "shutdown" | "textDocument/hover") {
+            json!({"prod-code/no-response":true})
+        } else {
+            Value::Null
+        }
     })
     .await;
     let (addr, down, _) = interruptible_proxy(gateway.addr()).await;
@@ -55,6 +58,12 @@ async fn pending_shutdown_is_answered_when_gateway_disconnects() {
     .unwrap();
     write_frame(
         &mut stdin,
+        &json!({"jsonrpc":"2.0","id":99,"method":"textDocument/hover","params":{}}).to_string(),
+    )
+    .await
+    .unwrap();
+    write_frame(
+        &mut stdin,
         &json!({"jsonrpc":"2.0","id":2,"method":"shutdown","params":null}).to_string(),
     )
     .await
@@ -67,6 +76,10 @@ async fn pending_shutdown_is_answered_when_gateway_disconnects() {
     .await
     .expect("gateway did not receive shutdown");
     down.send(2).unwrap();
+    let interrupted = tokio::time::timeout(Duration::from_secs(3), response(&mut stdout, 99))
+        .await
+        .expect("pending request must be answered before shutdown");
+    assert_eq!(interrupted["error"]["code"], -32097);
     let reply = tokio::time::timeout(Duration::from_secs(3), response(&mut stdout, 2))
         .await
         .expect("shutdown must not wait for reconnect");

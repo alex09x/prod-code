@@ -76,7 +76,7 @@ pub(super) async fn replay_pending_requests(
     }
     let mut stdout = editor_out.lock().await;
     for (id, method, _) in pending {
-        let (code, message) = if cancelled.contains(&id) {
+        let (code, message) = if method == "$/cancelRequest" || cancelled.contains(&id) {
             (-32800, "request cancelled".to_string())
         } else if is_idempotent_lsp_request(&method) {
             (

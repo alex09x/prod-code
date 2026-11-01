@@ -62,6 +62,9 @@ pub async fn handle_reconnect(
             .map(|index| pending.remove(index).0)
     };
     if let Some(id) = shutdown_id {
+        let _ =
+            super::reconnect_deferred::fail_deferred(ctx.deferred_editor_frames, ctx.editor_out)
+                .await;
         let result = super::reconnect_wait::shutdown_during_reconnect::<()>(
             &id,
             ctx.editor_frames,
@@ -134,6 +137,11 @@ pub async fn handle_reconnect(
             }
             if let Some(shutdown) = rec_err.downcast_ref::<super::reconnect_wait::EditorShutdown>()
             {
+                let _ = super::reconnect_deferred::fail_deferred(
+                    ctx.deferred_editor_frames,
+                    ctx.editor_out,
+                )
+                .await;
                 let result = super::reconnect_wait::shutdown_during_reconnect::<()>(
                     &shutdown.0,
                     ctx.editor_frames,
@@ -158,6 +166,11 @@ pub async fn handle_reconnect(
                 keeper.abort();
                 std::process::exit(0);
             }
+            let _ = super::reconnect_deferred::fail_deferred(
+                ctx.deferred_editor_frames,
+                ctx.editor_out,
+            )
+            .await;
             fail_pending_requests(
                 ctx.pending_requests,
                 ctx.editor_out,
