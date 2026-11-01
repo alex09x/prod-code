@@ -10,7 +10,7 @@
 
 use crate::sync::cache::{load_sync_cache, save_sync_cache};
 use crate::sync::entry::{fits_sync, sync_file_entry};
-use crate::sync::read::read_file_or_contained_symlink;
+use crate::sync::read::{expand_contained_dir_symlink, read_file_or_contained_symlink};
 use crate::sync::relevance::is_relevant_code_or_manifest_file;
 use crate::sync::types::SyncCache;
 use anyhow::Result;
@@ -48,12 +48,43 @@ pub(crate) fn git_listed_paths(root: &Path, paths: &[String]) -> HashSet<String>
     if !output.status.success() {
         return HashSet::new();
     }
-    output
+    let mut listed: HashSet<String> = output
         .stdout
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
         .map(|path| String::from_utf8_lossy(path).into_owned())
-        .collect()
+        .collect();
+    if listed.len() < paths.len() {
+        let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        for expanded in tracked_contained_dir_symlink_files(&canonical_root) {
+            if paths.contains(&expanded) {
+                listed.insert(expanded);
+            }
+        }
+    }
+    listed
+}
+
+/// Expands all git-tracked symlinks (`mode 120000`) under `canonical_root` whose resolved target
+/// is a directory contained within `canonical_root`.
+pub(crate) fn tracked_contained_dir_symlink_files(canonical_root: &Path) -> Vec<String> {
+    let Ok(output) = git_output(canonical_root, ["ls-files", "-s", "-z"]) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for record in output.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+        if !record.starts_with(b"120000 ") {
+            continue;
+        }
+        let Some(tab_pos) = record.iter().position(|&b| b == b'\t') else {
+            continue;
+        };
+        let rel_path = String::from_utf8_lossy(&record[tab_pos + 1..]);
+        if let Some(expanded) = expand_contained_dir_symlink(canonical_root, rel_path.as_ref()) {
+            out.extend(expanded);
+        }
+    }
+    out
 }
 
 pub(crate) fn git_head(root: &Path) -> Result<String> {
@@ -103,8 +134,22 @@ pub(crate) fn changed_paths(
     let output = git_output(root, ["status", "--porcelain=v1", "-z", "-uall"])?;
     let mut dirty = BTreeMap::new();
     parse_porcelain_status(&output, &mut dirty);
-    let dirty_set: BTreeSet<String> = dirty.keys().cloned().collect();
-    paths.extend(dirty);
+    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let mut expanded_dirty = BTreeMap::new();
+    for (path, deleted) in dirty {
+        if !deleted && let Some(expanded) = expand_contained_dir_symlink(&canonical_root, &path) {
+            for exp in expanded {
+                expanded_dirty.insert(exp, false);
+            }
+        } else {
+            expanded_dirty.insert(path, deleted);
+        }
+    }
+    let dirty_set: BTreeSet<String> = expanded_dirty.keys().cloned().collect();
+    paths.extend(expanded_dirty);
+    for exp in tracked_contained_dir_symlink_files(&canonical_root) {
+        paths.insert(exp, false);
+    }
     Ok((paths, dirty_set))
 }
 
@@ -189,12 +234,20 @@ pub(crate) fn git_listed_files(root: &Path, dir: &Path) -> Option<Vec<String>> {
     if !output.status.success() {
         return None;
     }
-    let mut files: Vec<String> = output
+    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let mut files = Vec::new();
+    for path in output
         .stdout
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
-        .map(|path| String::from_utf8_lossy(path).into_owned())
-        .collect();
+    {
+        let rel_path = String::from_utf8_lossy(path).into_owned();
+        if let Some(expanded) = expand_contained_dir_symlink(&canonical_root, &rel_path) {
+            files.extend(expanded);
+        } else {
+            files.push(rel_path);
+        }
+    }
     files.sort();
     files.dedup();
     Some(files)
@@ -254,39 +307,49 @@ pub(crate) fn collect_git_dirty_files(root: &Path, use_cache: bool) -> Result<Ve
             }
         }
 
-        if !is_relevant_code_or_manifest_file(rel_path) {
-            continue;
-        }
+        let candidate_paths: Vec<String> =
+            if !is_delete && let Some(expanded) = expand_contained_dir_symlink(root, rel_path) {
+                expanded
+            } else {
+                vec![rel_path.to_string()]
+            };
 
-        let full_path = root.join(rel_path);
-        if is_delete {
-            deltas.push(FileDelta {
-                relative_path: rel_path.to_string(),
-                content: None,
-                is_executable: false,
-            });
-            if cache.files.remove(rel_path).is_some() {
+        for candidate_rel in candidate_paths {
+            let rel_path = candidate_rel.as_str();
+            if !is_relevant_code_or_manifest_file(rel_path) {
+                continue;
+            }
+
+            let full_path = root.join(rel_path);
+            if is_delete {
+                deltas.push(FileDelta {
+                    relative_path: rel_path.to_string(),
+                    content: None,
+                    is_executable: false,
+                });
+                if cache.files.remove(rel_path).is_some() {
+                    cache_modified = true;
+                }
+            } else if let Some((content, is_executable, meta)) =
+                read_file_or_contained_symlink(&full_path, root, rel_path)?
+            {
+                if !fits_sync(rel_path, &meta) {
+                    continue;
+                }
+
+                let entry = sync_file_entry(&meta, &content);
+                if cache.files.get(rel_path) == Some(&entry) {
+                    // File was already synced and has not changed.
+                    continue;
+                }
+                deltas.push(FileDelta {
+                    relative_path: rel_path.to_string(),
+                    content: Some(content),
+                    is_executable,
+                });
+                cache.files.insert(rel_path.to_string(), entry);
                 cache_modified = true;
             }
-        } else if let Some((content, is_executable, meta)) =
-            read_file_or_contained_symlink(&full_path, root, rel_path)?
-        {
-            if !fits_sync(rel_path, &meta) {
-                continue;
-            }
-
-            let entry = sync_file_entry(&meta, &content);
-            if cache.files.get(rel_path) == Some(&entry) {
-                // File was already synced and has not changed.
-                continue;
-            }
-            deltas.push(FileDelta {
-                relative_path: rel_path.to_string(),
-                content: Some(content),
-                is_executable,
-            });
-            cache.files.insert(rel_path.to_string(), entry);
-            cache_modified = true;
         }
     }
 
