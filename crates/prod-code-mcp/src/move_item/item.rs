@@ -18,6 +18,19 @@ pub(crate) fn display(root: &Path, path: &Path) -> String {
         .into_owned()
 }
 
+/// Returns whether `node` can contain nested declarations that `code_move` may move on their own.
+///
+/// Language servers such as `basedpyright` emit function parameters and local variables as
+/// `children` of a `Function` (`12`) or `Method` (`6`) symbol. Descending into callable or
+/// value declarations would select a parameter span on the signature line instead of the
+/// enclosing function (#1762).
+fn can_contain_movable_items(node: &serde_json::Value) -> bool {
+    !matches!(
+        node.get("kind").and_then(|k| k.as_u64()),
+        Some(6 | 7 | 8 | 9 | 12 | 13 | 14 | 22 | 26)
+    )
+}
+
 /// The line span (1-based, inclusive) of the smallest declaration containing `line`, and the
 /// name the analyzer gives it.
 pub fn span_at(symbols: &serde_json::Value, line: u32) -> Option<(String, u32, u32)> {
@@ -43,7 +56,9 @@ pub fn span_at(symbols: &serde_json::Value, line: u32) -> Option<(String, u32, u
                     *best = Some((name, s, e));
                 }
             }
-            if let Some(children) = node.get("children").and_then(|c| c.as_array()) {
+            if can_contain_movable_items(node)
+                && let Some(children) = node.get("children").and_then(|c| c.as_array())
+            {
                 walk(children, line, best);
             }
         }

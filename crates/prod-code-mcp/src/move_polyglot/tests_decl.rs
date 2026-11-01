@@ -162,3 +162,44 @@ fn find_decl_refusals() {
         assert_eq!(err.to_string(), *message, "case {idx}");
     }
 }
+
+#[test]
+fn resolve_polyglot_decl_span_keeps_full_python_function_over_parameter_child() {
+    use super::decl::resolve_polyglot_decl_span;
+
+    let source = "\
+def _immutable_remote_base(base_url: str) -> str:
+    parsed = base_url.strip()
+    if not parsed:
+        raise ValueError(\"missing base_url\")
+    return parsed
+";
+    let basedpyright_symbols = serde_json::json!([
+        {
+            "name": "_immutable_remote_base",
+            "kind": 12,
+            "range": { "start": { "line": 0 }, "end": { "line": 4 } },
+            "children": [
+                {
+                    "name": "base_url",
+                    "kind": 13,
+                    "range": { "start": { "line": 0 }, "end": { "line": 0 } }
+                },
+                {
+                    "name": "parsed",
+                    "kind": 13,
+                    "range": { "start": { "line": 1 }, "end": { "line": 1 } }
+                }
+            ]
+        }
+    ]);
+    let (name, start, end) =
+        resolve_polyglot_decl_span(Some(&basedpyright_symbols), source, 1, Language::Python)
+            .unwrap();
+    assert_eq!(name, "_immutable_remote_base");
+    assert_eq!((start, end), (1, 5));
+    let (rest, moved) = crate::move_item::cut(source, start, end);
+    assert!(rest.trim().is_empty(), "leftover body remained: {rest:?}");
+    assert!(moved.contains("def _immutable_remote_base(base_url: str) -> str:"));
+    assert!(moved.contains("return parsed"));
+}
