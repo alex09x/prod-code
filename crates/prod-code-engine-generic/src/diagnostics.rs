@@ -295,7 +295,10 @@ impl GenericLspEngine {
                         && d.pointer("/range/start/line").and_then(|l| l.as_u64()) == Some(line)
                 });
             }
-            if faulted || started.elapsed() >= timeout {
+            if faulted
+                || started.elapsed() >= timeout
+                || (reported && self.readiness_known() && self.busy().is_none())
+            {
                 break;
             }
             tokio::time::sleep(SEMANTIC_POLL).await;

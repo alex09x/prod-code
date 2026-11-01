@@ -90,8 +90,8 @@ async fn configure_cmake(workspace_root: &Path, program: &Path, limit: Duration)
 }
 
 /// How long a SwiftPM workspace's load waits for sourcekit-lsp to have the package's build
-/// settings. Resolving a package's dependencies the first time can take a while.
-pub(crate) const SWIFT_SETTINGS_WAIT: Duration = Duration::from_secs(45);
+/// settings. Keep bounded below the client's 10s LSP query timeout (#1766).
+pub(crate) const SWIFT_SETTINGS_WAIT: Duration = Duration::from_secs(5);
 
 /// The line a probe appends to a file of the package: a declaration only a type check faults.
 pub(crate) const SWIFT_PROBE: &str = "let __prodCodeProbe: Int = \"\"";
@@ -153,14 +153,125 @@ async fn wait_for_swift_settings_within(
     Some(checked.map_err(|err| err.to_string()))
 }
 
-/// A Swift source of the SwiftPM package at `root`, and its text: the first by path under
-/// `Sources/`, else under a target directory the manifest names with `path:` (#1500), hidden
-/// directories (`.build`) aside.
+/// A Swift source of the SwiftPM package at `root`, and its text: prefers `.swift` files inside
+/// target directories declared in `Package.swift` (via `path: "…"` or default `Sources/<name>` /
+/// `Tests/<name>`, excluding `exclude: […]` entries) (#1766, #1500), falling back to `Sources/`
+/// when `Package.swift` lists no targets.
 pub(crate) fn swift_probe_file(root: &Path) -> Option<(PathBuf, String)> {
     let manifest = std::fs::read_to_string(root.join("Package.swift")).ok()?;
+    let declared = declared_swift_targets(&manifest, root);
+    if !declared.is_empty()
+        && let Some(found) = declared
+            .iter()
+            .find_map(|(dir, excludes)| first_swift_file_excluding(dir, excludes))
+    {
+        return Some(found);
+    }
     std::iter::once(root.join("Sources"))
         .chain(declared_target_paths(&manifest).map(|rel| root.join(rel)))
         .find_map(|dir| first_swift_file(&dir))
+}
+
+fn is_safe_relative_path(rel: &str) -> bool {
+    !rel.is_empty()
+        && !rel.starts_with('/')
+        && !Path::new(rel)
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+}
+
+fn extract_quoted_arg<'a>(block: &'a str, key: &str) -> Option<&'a str> {
+    let (_, after) = block.split_once(key)?;
+    let rest = after.trim_start().strip_prefix('"')?;
+    let val = &rest[..rest.find('"')?];
+    Some(val)
+}
+
+fn extract_excluded_paths(block: &str, dir: &Path) -> Vec<PathBuf> {
+    let Some((_, after)) = block.split_once("exclude:") else {
+        return Vec::new();
+    };
+    let Some(start) = after.find('[') else {
+        return Vec::new();
+    };
+    let rest = &after[start + 1..];
+    let Some(end) = rest.find(']') else {
+        return Vec::new();
+    };
+    let list = &rest[..end];
+    let mut out = Vec::new();
+    let mut rem = list;
+    while let Some(q1) = rem.find('"') {
+        let after_q1 = &rem[q1 + 1..];
+        let Some(q2) = after_q1.find('"') else {
+            break;
+        };
+        let item = &after_q1[..q2];
+        if is_safe_relative_path(item) {
+            out.push(dir.join(item));
+        }
+        rem = &after_q1[q2 + 1..];
+    }
+    out
+}
+
+/// Target directories and excluded subpaths declared in `Package.swift` (#1766).
+fn declared_swift_targets(manifest: &str, root: &Path) -> Vec<(PathBuf, Vec<PathBuf>)> {
+    let mut primary = Vec::new();
+    let mut tests = Vec::new();
+    for (kind, is_test) in [
+        (".executableTarget(", false),
+        (".target(", false),
+        (".macro(", false),
+        (".testTarget(", true),
+    ] {
+        for (at, _) in manifest.match_indices(kind) {
+            let tail = &manifest[at + kind.len()..];
+            let mut depth = 1usize;
+            let mut end = tail.len();
+            for (idx, ch) in tail.char_indices() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = idx;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let block = &tail[..end];
+            let dir = if let Some(rel) = extract_quoted_arg(block, "path:") {
+                if !is_safe_relative_path(rel) {
+                    continue;
+                }
+                root.join(rel)
+            } else if let Some(name) = extract_quoted_arg(block, "name:") {
+                if !is_safe_relative_path(name) {
+                    continue;
+                }
+                let base = if is_test { "Tests" } else { "Sources" };
+                let candidate = root.join(base).join(name);
+                if candidate.is_dir() {
+                    candidate
+                } else {
+                    root.join(base)
+                }
+            } else {
+                continue;
+            };
+            let excludes = extract_excluded_paths(block, &dir);
+            if is_test {
+                tests.push((dir, excludes));
+            } else {
+                primary.push((dir, excludes));
+            }
+        }
+    }
+    primary.extend(tests);
+    primary
 }
 
 /// The directories a SwiftPM manifest gives its targets with `path: "…"`, in order: relative
@@ -171,17 +282,16 @@ fn declared_target_paths(manifest: &str) -> impl Iterator<Item = &str> {
             .trim_start()
             .strip_prefix('"')?;
         let rel = &rest[..rest.find('"')?];
-        let inside = !rel.is_empty()
-            && !rel.starts_with('/')
-            && !Path::new(rel)
-                .components()
-                .any(|c| matches!(c, std::path::Component::ParentDir));
-        inside.then_some(rel)
+        is_safe_relative_path(rel).then_some(rel)
     })
 }
 
 /// The first `.swift` file under `dir` by path, and its text.
 fn first_swift_file(dir: &Path) -> Option<(PathBuf, String)> {
+    first_swift_file_excluding(dir, &[])
+}
+
+fn first_swift_file_excluding(dir: &Path, excludes: &[PathBuf]) -> Option<(PathBuf, String)> {
     let mut pending = vec![dir.to_path_buf()];
     let mut found = Vec::new();
     while let Some(dir) = pending.pop() {
@@ -191,6 +301,9 @@ fn first_swift_file(dir: &Path) -> Option<(PathBuf, String)> {
         for entry in entries.flatten() {
             let path = entry.path();
             if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            if excludes.iter().any(|ex| path.starts_with(ex)) {
                 continue;
             }
             if path.is_dir() {
