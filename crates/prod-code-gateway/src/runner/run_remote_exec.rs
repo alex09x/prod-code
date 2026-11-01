@@ -63,6 +63,14 @@ pub async fn run_remote_exec_with_ram(
 
     // Held while the command runs: no pruner takes the copy from under it (#1524).
     let _in_use = workspace::WorkspaceUse::enter(&workspace);
+    if let Err(e) = std::fs::metadata(&workspace) {
+        if let Some(diag) = format_volume_access_diagnostic(&workspace, &e) {
+            framed
+                .send(WireMessage::RemoteExecResult(fail(diag)))
+                .await?;
+            return Ok(());
+        }
+    }
     if !workspace.is_dir() {
         framed
             .send(WireMessage::RemoteExecResult(fail(format!(
@@ -145,6 +153,19 @@ pub async fn run_remote_exec_with_ram(
         )
     });
 
+    if let Some(sub) = req.subdir.as_deref() {
+        if !sub.is_empty() && !sub.starts_with('/') && !sub.split('/').any(|c| c == "..") {
+            let target = workspace.join(sub);
+            if let Err(e) = std::fs::metadata(&target) {
+                if let Some(diag) = format_volume_access_diagnostic(&target, &e) {
+                    framed
+                        .send(WireMessage::RemoteExecResult(fail(diag)))
+                        .await?;
+                    return Ok(());
+                }
+            }
+        }
+    }
     let run_dir = resolve_run_dir(&workspace, req.subdir.as_deref());
 
     let ram_target = resolve_ram_build_cache(&workspace, build_cache_ram, build_cache_dir);
@@ -171,10 +192,9 @@ pub async fn run_remote_exec_with_ram(
     let child = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => {
+            let err_msg = format_spawn_error(&run_dir, program, &e);
             framed
-                .send(WireMessage::RemoteExecResult(fail(format!(
-                    "failed to start {program}: {e}"
-                ))))
+                .send(WireMessage::RemoteExecResult(fail(err_msg)))
                 .await?;
             return Ok(());
         }
