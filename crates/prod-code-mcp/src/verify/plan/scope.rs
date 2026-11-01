@@ -14,6 +14,58 @@ use anyhow::{Result, anyhow};
 
 use super::super::types::VerifyKind;
 
+/// The project subdirectory and language to verify for `project_hint` under `root`.
+///
+/// `engine_project` keeps a root-level source file of another language (such as `sample.py`
+/// alongside a root `tsconfig.json`) attached to the root engine so LSP session pooling does
+/// not split the root directory key, whereas an explicitly scoped verification target must
+/// run that file's own language checker (#1778).
+pub fn verify_project(
+    root: &Path,
+    project_hint: Option<&Path>,
+) -> (Option<String>, Option<&'static str>) {
+    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let resolved_hint = project_hint.map(|hint| {
+        if let Ok(rel) = hint.strip_prefix(root) {
+            canonical_root.join(rel)
+        } else if hint.is_absolute() {
+            hint.to_path_buf()
+        } else {
+            canonical_root.join(hint)
+        }
+    });
+    let (subdir, mut language) =
+        crate::sync::engine_project(root, resolved_hint.as_deref().unwrap_or(root));
+    if let Some(hint) = resolved_hint.as_deref()
+        && subdir.is_none()
+    {
+        let target = std::fs::canonicalize(hint).unwrap_or_else(|_| hint.to_path_buf());
+        let missing = matches!(
+            std::fs::symlink_metadata(&target),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        );
+        let confined = if missing {
+            crate::sync::engine::workspace::missing_path_is_confined_to(&canonical_root, &target)
+        } else {
+            target.starts_with(&canonical_root) && target != canonical_root
+        };
+        if confined
+            && !target.is_dir()
+            && member_dir_named(&canonical_root, &target).is_none()
+            && !crate::sync::is_in_dependency_dir(&target)
+            && let Some(own) = crate::sync::engine_for_file(&target)
+            && Some(own) != language
+            && !(language == Some("swift") && own == "cpp")
+            && !(matches!(language, Some("vue" | "svelte")) && own == "typescript")
+            && !(language == Some("kotlin") && own == "java")
+            && !matches!(own, "markdown" | "yaml" | "toml" | "json" | "html" | "css")
+        {
+            language = Some(own);
+        }
+    }
+    (subdir, language)
+}
+
 pub fn narrow_scope(command: &mut Vec<String>, language: &str, project_dir: &Path, hint: &Path) {
     let canon_dir =
         std::fs::canonicalize(project_dir).unwrap_or_else(|_| project_dir.to_path_buf());
@@ -21,6 +73,9 @@ pub fn narrow_scope(command: &mut Vec<String>, language: &str, project_dir: &Pat
     let hint_owned;
     let hint = if hint.exists() {
         hint
+    } else if hint.is_relative() && canon_dir.join(hint).exists() {
+        hint_owned = canon_dir.join(hint);
+        &hint_owned
     } else if let Some(dir) = member_dir_named(&canon_dir, hint) {
         hint_owned = dir;
         &hint_owned
@@ -28,15 +83,7 @@ pub fn narrow_scope(command: &mut Vec<String>, language: &str, project_dir: &Pat
         return;
     };
     let target = std::fs::canonicalize(hint).unwrap_or_else(|_| hint.to_path_buf());
-    let dir = if target.is_file() {
-        target
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| target.clone())
-    } else {
-        target.clone()
-    };
-    if !dir.starts_with(&canon_dir) || dir == canon_dir {
+    if !target.starts_with(&canon_dir) || target == canon_dir {
         return;
     }
     let rel_of = |p: &Path| -> String {
@@ -49,6 +96,30 @@ pub fn narrow_scope(command: &mut Vec<String>, language: &str, project_dir: &Pat
             })
             .unwrap_or_default()
     };
+    if language == "python" {
+        let rel = rel_of(&target);
+        if !rel.is_empty() {
+            if command.iter().any(|a| a == "pytest" || a == "basedpyright") {
+                command.push(rel);
+            } else if command.iter().any(|a| a == "ruff")
+                && let Some(dot) = command.iter_mut().find(|a| a.as_str() == ".")
+            {
+                *dot = rel;
+            }
+        }
+        return;
+    }
+    let dir = if target.is_file() {
+        target
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| target.clone())
+    } else {
+        target.clone()
+    };
+    if !dir.starts_with(&canon_dir) || dir == canon_dir {
+        return;
+    }
     match language {
         "rust" => {
             let mut probe = dir.clone();
@@ -69,9 +140,6 @@ pub fn narrow_scope(command: &mut Vec<String>, language: &str, project_dir: &Pat
             if let Some(i) = command.iter().position(|a| a == "./...") {
                 command[i] = format!("./{}/...", rel_of(&dir));
             }
-        }
-        "python" if command.iter().any(|a| a == "pytest") => {
-            command.push(rel_of(&target));
         }
         _ => {}
     }
