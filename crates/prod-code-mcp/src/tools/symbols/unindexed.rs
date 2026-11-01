@@ -191,9 +191,11 @@ pub(super) fn collect_candidate_files(
             root.join(h)
         };
         if p.is_file() {
-            candidate_files.push(p);
+            if include_rust || crate::sync::engine_for_file(&p) != Some("rust") {
+                candidate_files.push(p);
+            }
         } else if p.is_dir() {
-            candidate_files.extend(prioritized_source_files(&p, true, 32));
+            candidate_files.extend(prioritized_source_files(&p, include_rust, 32));
         }
     }
     for path in prioritized_source_files(root, include_rust, MAX_SCANNED_FILES) {

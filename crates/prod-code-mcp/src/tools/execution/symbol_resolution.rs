@@ -117,7 +117,41 @@ pub(super) async fn resolve_symbol_args(
                 )));
             }
         },
-        _ => lookup.await?,
+        _ => match lookup.await {
+            Ok(candidates) => candidates,
+            Err(error) if tool_name == "code_definition" => {
+                let unindexed_hits = super::super::definition::find_unindexed_rust_declarations(
+                    workspace_root,
+                    &symbol_trimmed,
+                    hint.as_deref(),
+                );
+                if unindexed_hits.len() == 1 {
+                    let hit = &unindexed_hits[0];
+                    let mut owned = args;
+                    if let Some(obj) = owned.as_object_mut() {
+                        obj.insert(
+                            "path".into(),
+                            Value::String(hit.path.to_string_lossy().into_owned()),
+                        );
+                        obj.insert("line".into(), serde_json::json!(hit.line));
+                        obj.insert("character".into(), serde_json::json!(hit.col));
+                        obj.insert("syntax_only_unindexed".into(), Value::Bool(true));
+                    }
+                    return Ok(SymbolResolution::Dispatch(owned, None));
+                } else if unindexed_hits.len() > 1 {
+                    return Ok(SymbolResolution::Respond(McpToolCallResult::text(
+                        super::super::symbols::matching::ambiguous_candidates_error(
+                            workspace_root,
+                            &symbol_trimmed,
+                            &unindexed_hits,
+                        )
+                        .to_string(),
+                    )));
+                }
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        },
     };
 
     if candidates.len() > 1 {

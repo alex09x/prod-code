@@ -35,6 +35,117 @@ pub(crate) async fn is_outline_definition(
     outline_contains_definition(&outline, zero_line, zero_col)
 }
 
+/// Returns `true` when 1-based `(line, character)` lies on a declared Rust identifier in `path`
+/// (#1754), used when `textDocument/documentSymbol` returns nothing for an unindexed Rust file.
+pub(crate) fn is_lexical_rust_declaration(path: &Path, line: u32, character: u32) -> bool {
+    if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+        return false;
+    }
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let zero_line = (line as usize).saturating_sub(1);
+    let zero_col = (character as usize).saturating_sub(1);
+    use crate::tools::references::across::{mask_executable_code, masked_code_string};
+    let code = masked_code_string(&text, &mask_executable_code(&text, path));
+    let Some(code_line) = code.lines().nth(zero_line) else {
+        return false;
+    };
+    crate::tools::symbols::declared_at::declared_identifiers_on_line(code_line)
+        .into_iter()
+        .any(|(ident, col)| zero_col >= col && zero_col < col + ident.chars().count())
+}
+
+/// Scans Rust source files under `root` (or narrowed by `hint`) for declarations of `symbol`
+/// when `code_definition` resolves a Rust symbol outside the analyzer module graph (#1754).
+pub(crate) fn find_unindexed_rust_declarations(
+    root: &Path,
+    symbol: &str,
+    hint: Option<&Path>,
+) -> Vec<crate::tools::symbols::SymbolHit> {
+    use crate::tools::symbols::{
+        SymbolHit,
+        across_projects::{names_word, read_name_scan_text},
+        declared_at::code_declarations,
+        matching::bare_symbol_name,
+        nested_projects::{MAX_SCANNED_FILES, source_files},
+    };
+    let (qualifier, target) = match symbol.rsplit_once("::") {
+        Some((qual, name)) => (
+            Some(qual.rsplit("::").next().unwrap_or(qual).trim()),
+            name.trim(),
+        ),
+        None => (None, symbol.trim()),
+    };
+    let name = bare_symbol_name(target);
+    if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return Vec::new();
+    }
+    let files: Vec<std::path::PathBuf> = match hint {
+        Some(h) => {
+            let p = if h.is_absolute() {
+                h.to_path_buf()
+            } else {
+                root.join(h)
+            };
+            if p.is_file() {
+                if p.extension().and_then(|e| e.to_str()) == Some("rs") {
+                    vec![p]
+                } else {
+                    Vec::new()
+                }
+            } else if p.is_dir() {
+                source_files(&p)
+                    .filter(|f| f.extension().and_then(|e| e.to_str()) == Some("rs"))
+                    .take(MAX_SCANNED_FILES)
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        }
+        None => source_files(root)
+            .filter(|f| f.extension().and_then(|e| e.to_str()) == Some("rs"))
+            .take(MAX_SCANNED_FILES)
+            .collect(),
+    };
+    let mut hits = Vec::new();
+    for path in files {
+        let Some(text) = read_name_scan_text(&path) else {
+            continue;
+        };
+        if !names_word(&text, name) {
+            continue;
+        }
+        if let Some(qual) = qualifier {
+            let stem_matches = path.file_stem().and_then(|s| s.to_str()) == Some(qual);
+            let parent_matches = path
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|s| s.to_str())
+                == Some(qual);
+            let text_matches =
+                text.contains(&format!("impl {qual}")) || text.contains(&format!("mod {qual}"));
+            if !stem_matches && !parent_matches && !text_matches {
+                continue;
+            }
+        }
+        for (index, col) in code_declarations(&text, &path, name) {
+            hits.push(SymbolHit {
+                path: path.clone(),
+                name: name.to_string(),
+                kind: "Declaration",
+                container: qualifier.map(str::to_string),
+                line: index as u32 + 1,
+                col: col as u32 + 1,
+            });
+            if hits.len() >= 10 {
+                return hits;
+            }
+        }
+    }
+    hits
+}
+
 pub(crate) fn outline_contains_definition(
     symbols: &serde_json::Value,
     line: usize,
