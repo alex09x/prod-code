@@ -309,3 +309,84 @@ async fn a_full_registration_retires_without_delaying_a_healthy_target() {
         .expect("full registration is retired promptly");
     assert_eq!(servers.count(), 1);
 }
+
+#[test]
+fn issue_1771_diagnostic_normalization_preservation_and_code_action_round_trip() {
+    let translator = PathTranslator::new("/client", "/server");
+    let (href559, href609) = (
+        "https://doc.rust-lang.org/error_codes/E0559.html",
+        "https://doc.rust-lang.org/error_codes/E0609.html",
+    );
+
+    // 1. publishDiagnostics & 3. enum-variant E0559 preservation
+    let server_pub = serde_json::json!({
+        "jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
+        "params": {
+            "uri": "file:///client/lib.rs",
+            "diagnostics": [
+                { "code": "E0559", "message": "no field `a` on type `A`", "codeDescription": { "href": href559 } },
+                { "code": "E0559", "message": "no field `b` on type `B`", "data": { "k": 1 } },
+                { "code": "E0559", "message": "no field `c` on type `C`", "data": null },
+                { "code": "E0559", "message": "no field `d` on type `D`", "data": [2] },
+                { "code": "E0559", "message": "variant `V::X` has no field named `f`" }
+            ]
+        }
+    }).to_string();
+    let norm_pub: serde_json::Value =
+        serde_json::from_str(&super::normalize_server_diagnostics(&server_pub)).unwrap();
+    let d = norm_pub["params"]["diagnostics"].as_array().unwrap();
+    for (i, code) in ["E0609", "E0609", "E0609", "E0609", "E0559"]
+        .iter()
+        .enumerate()
+    {
+        assert_eq!(d[i]["code"], *code);
+    }
+    assert_eq!(d[0]["codeDescription"]["href"], href609);
+    assert_eq!(d[1]["data"]["k"], 1);
+
+    // 2. pull diagnostics: document and workspace
+    let pull_doc = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1,
+        "result": {
+            "items": [{ "code": "E0559", "message": "no field `x` on type `X`" }],
+            "relatedDocuments": { "file:///r.rs": { "items": [{ "code": "E0559", "message": "no field `y` on type `Y`" }] } }
+        }
+    }).to_string();
+    let norm_doc: serde_json::Value =
+        serde_json::from_str(&super::normalize_server_diagnostics(&pull_doc)).unwrap();
+    assert_eq!(norm_doc["result"]["items"][0]["code"], "E0609");
+    let rel_code = &norm_doc["result"]["relatedDocuments"]["file:///r.rs"]["items"][0]["code"];
+    assert_eq!(rel_code, "E0609");
+
+    let pull_ws = serde_json::json!({
+        "jsonrpc": "2.0", "id": 2,
+        "result": { "items": [{ "items": [{ "code": "E0559", "message": "no field `z` on type `Z`" }] }] }
+    }).to_string();
+    let norm_ws: serde_json::Value =
+        serde_json::from_str(&super::normalize_server_diagnostics(&pull_ws)).unwrap();
+    assert_eq!(norm_ws["result"]["items"][0]["items"][0]["code"], "E0609");
+
+    // 4. codeAction round-trip restoration (with marker and fallback)
+    let mut req_diags = d.clone();
+    req_diags.push(serde_json::json!({
+        "code": "E0609", "message": "no field `fb` on type `F`",
+        "codeDescription": { "href": href609 }
+    }));
+    let req = serde_json::json!({
+        "jsonrpc": "2.0", "id": 3, "method": "textDocument/codeAction",
+        "params": { "context": { "diagnostics": req_diags } }
+    })
+    .to_string();
+    let fwd: serde_json::Value = serde_json::from_str(&to_server(&translator, &req)).unwrap();
+    let r = fwd["params"]["context"]["diagnostics"].as_array().unwrap();
+    for diag in r {
+        assert_eq!(diag["code"], "E0559");
+    }
+    assert_eq!(r[0]["codeDescription"]["href"], href559);
+    assert!(r[0].get("data").is_none());
+    assert_eq!(r[1]["data"], serde_json::json!({ "k": 1 }));
+    assert_eq!(r[2]["data"], serde_json::Value::Null);
+    assert_eq!(r[3]["data"], serde_json::json!([2]));
+    assert_eq!(r[4]["message"], "variant `V::X` has no field named `f`");
+    assert_eq!(r[5]["codeDescription"]["href"], href559);
+}

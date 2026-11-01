@@ -248,19 +248,25 @@ pub fn to_server_with_options(
 ) -> String {
     let translated = translator.translate_lsp_to_server(raw);
     match serde_json::from_str::<serde_json::Value>(&translated) {
-        Ok(mut value) if value.get("method").and_then(|m| m.as_str()) == Some("initialize") => {
-            if let Some(params) = value.get_mut("params").and_then(|p| p.as_object_mut()) {
-                if params.contains_key("processId") {
-                    params.insert("processId".to_string(), serde_json::Value::Null);
+        Ok(mut value) => {
+            if value.get("method").and_then(|m| m.as_str()) == Some("initialize") {
+                if let Some(params) = value.get_mut("params").and_then(|p| p.as_object_mut()) {
+                    if params.contains_key("processId") {
+                        params.insert("processId".to_string(), serde_json::Value::Null);
+                    }
+                    if let Some(server_options) = server_options {
+                        let options = params
+                            .entry("initializationOptions")
+                            .or_insert_with(|| serde_json::Value::Object(Default::default()));
+                        merge_initialization_options(options, server_options);
+                    }
                 }
-                if let Some(server_options) = server_options {
-                    let options = params
-                        .entry("initializationOptions")
-                        .or_insert_with(|| serde_json::Value::Object(Default::default()));
-                    merge_initialization_options(options, server_options);
-                }
+                value.to_string()
+            } else if super::diagnostic_rewrite::restore_code_action_diagnostics(&mut value) {
+                value.to_string()
+            } else {
+                translated
             }
-            value.to_string()
         }
         _ => translated,
     }

@@ -15,6 +15,7 @@
 
 pub mod child;
 pub mod command;
+pub mod diagnostic_rewrite;
 pub mod probe;
 pub(crate) mod probe_task;
 pub mod proxy;
@@ -28,6 +29,11 @@ mod tests;
 
 pub use command::{
     ServerCommand, enabled, server_command, server_command_for_workspace, to_server,
+};
+pub use diagnostic_rewrite::{
+    DataState, ROUNDTRIP_MARKER_KEY, RoundTripMarker, normalize_diagnostics_for_editor,
+    normalize_server_diagnostics, restore_code_action_diagnostics, restore_diagnostic_for_server,
+    restore_diagnostics_for_server, rewrite_diagnostic_for_editor,
 };
 pub use probe::{
     DEFAULT_HEALTH_PROBE_INTERVAL, DEFAULT_HEALTH_RESPONSE_TIMEOUT, EditorProxyOptions,
