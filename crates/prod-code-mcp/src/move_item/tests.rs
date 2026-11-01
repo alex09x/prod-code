@@ -185,6 +185,37 @@ mod tests {
     }
 
     #[test]
+    fn function_parameter_and_local_children_do_not_shadow_enclosing_function_span() {
+        let symbols = serde_json::json!([
+            {
+                "name": "_immutable_remote_base",
+                "kind": 12,
+                "range": { "start": { "line": 72 }, "end": { "line": 83 } },
+                "children": [
+                    {
+                        "name": "base_url",
+                        "kind": 13,
+                        "range": { "start": { "line": 72 }, "end": { "line": 72 } }
+                    },
+                    {
+                        "name": "parsed",
+                        "kind": 13,
+                        "range": { "start": { "line": 74 }, "end": { "line": 74 } }
+                    }
+                ]
+            }
+        ]);
+        assert_eq!(
+            span_at(&symbols, 73),
+            Some(("_immutable_remote_base".to_string(), 73, 84))
+        );
+        assert_eq!(
+            span_at(&symbols, 75),
+            Some(("_immutable_remote_base".to_string(), 73, 84))
+        );
+    }
+
+    #[test]
     fn an_inherent_method_moves_into_another_modules_impl_of_the_same_type() {
         use super::super::item::move_inherent_method;
 

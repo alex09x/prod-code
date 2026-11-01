@@ -363,3 +363,30 @@ pub fn find_polyglot_decl(text: &str, line: u32, lang: Language) -> Result<(Stri
 
     Ok((decl_name, start_line, end_line))
 }
+
+pub fn resolve_polyglot_decl_span(
+    symbols: Option<&serde_json::Value>,
+    source_text: &str,
+    line: u32,
+    lang: Language,
+) -> Result<(String, u32, u32)> {
+    if let Some(symbols) = symbols
+        && let Some((s_name, s, e)) = crate::move_item::span_at(symbols, line)
+        && !s_name.is_empty()
+    {
+        let header_mismatch = source_text
+            .lines()
+            .nth(s.saturating_sub(1) as usize)
+            .filter(|line_str| is_polyglot_decl_header(line_str, lang))
+            .and_then(|line_str| extract_polyglot_decl_name(line_str, lang))
+            .is_some_and(|decl_name| decl_name != s_name);
+        let truncated_python_block = lang == Language::Python
+            && s == e
+            && find_polyglot_decl(source_text, line, lang)
+                .is_ok_and(|(_, ps, pe)| s >= ps && pe > ps);
+        if !header_mismatch && !truncated_python_block {
+            return Ok((s_name, s, e));
+        }
+    }
+    find_polyglot_decl(source_text, line, lang)
+}

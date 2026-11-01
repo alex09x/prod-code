@@ -18,7 +18,7 @@ use crate::move_item::Move;
 use crate::parameter_object::Language;
 
 use super::callers::rewrite_caller_imports_checked;
-use super::decl::{find_polyglot_decl, with_doc_comment_polyglot};
+use super::decl::{resolve_polyglot_decl_span, with_doc_comment_polyglot};
 use super::go_imports::remove_unused_go_imports;
 use super::imports::{carry_imports_polyglot, insert_ts_default_import, update_source_imports};
 use super::specifiers::{
@@ -75,15 +75,11 @@ pub async fn move_item(
         initial_file_header(target, target_lang)
     };
 
-    let (name, decl_start, decl_end) = if let Ok(symbols) =
-        crate::move_item::document_symbols(remote, root, file).await
-        && let Some((s_name, s, e)) = crate::move_item::span_at(&symbols, line)
-        && !s_name.is_empty()
-    {
-        (s_name, s, e)
-    } else {
-        find_polyglot_decl(&source_text, line, lang)?
-    };
+    let symbols = crate::move_item::document_symbols(remote, root, file)
+        .await
+        .ok();
+    let (name, decl_start, decl_end) =
+        resolve_polyglot_decl_span(symbols.as_ref(), &source_text, line, lang)?;
 
     if target_existed {
         check_target_collision(&target_text, &name, target_lang)?;
