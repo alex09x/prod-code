@@ -135,9 +135,11 @@ pub(crate) async fn rename_with_references_open(
         "context": { "includeDeclaration": true },
     });
     let mut opened: Vec<String> = Vec::new();
-    if let Ok(refs) = engine
-        .send_request("textDocument/references", refs_params)
-        .await
+    if let Ok(Ok(refs)) = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        engine.send_request("textDocument/references", refs_params),
+    )
+    .await
     {
         let uris: std::collections::BTreeSet<String> = refs
             .get("result")

@@ -40,7 +40,7 @@ pub async fn validate_texts(
         root,
         edits,
         also_check,
-        &ValidationBudget::new(),
+        &ValidationBudget::for_edits(edits),
     ))
     .await?;
     // A refactoring decides whether to write from this: a file that was not checked is not a

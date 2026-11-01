@@ -50,6 +50,27 @@ impl ValidationBudget {
         }
     }
 
+    /// Refactoring validation budget tailored to the edited files: bounds Swift `sourcekit-lsp`
+    /// validation so a stalled or unindexed Swift target reports promptly (#1780).
+    pub(crate) fn for_edits(edits: &[(std::path::PathBuf, String)]) -> Self {
+        let is_swift = !edits.is_empty()
+            && edits
+                .iter()
+                .all(|(p, _)| p.extension().and_then(|e| e.to_str()) == Some("swift"));
+        if is_swift {
+            Self {
+                deadline: Instant::now() + Duration::from_secs(15),
+                diagnostic: Duration::from_secs(5),
+                auxiliary: Duration::from_secs(4),
+                session: Duration::from_secs(10),
+                baseline: Duration::from_secs(5),
+                progress: None,
+            }
+        } else {
+            Self::new()
+        }
+    }
+
     /// For `code_validate_edits`: answers within 120 s, below the MCP client's 150 s limit, and
     /// names any file it could not check in that time.
     pub(crate) fn interactive() -> Self {

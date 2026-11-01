@@ -87,7 +87,17 @@ pub(crate) async fn handle_rename(
     .await
     {
         Ok(edit) => edit,
-        Err(e) => return Ok(McpToolCallResult::error(format!("rename refused: {e:#}"))),
+        Err(e) => {
+            let msg = e.to_string();
+            if file_path.extension().and_then(|ext| ext.to_str()) == Some("swift")
+                && msg.contains("timed out")
+            {
+                return Ok(McpToolCallResult::error(format!(
+                    "rename refused: {e:#} (sourcekit-lsp did not complete textDocument/rename within budget; ensure the target builds cleanly or wait for background indexing to finish)"
+                )));
+            }
+            return Ok(McpToolCallResult::error(format!("rename refused: {e:#}")));
+        }
     };
     if edit.is_null() {
         return Ok(McpToolCallResult::error(
@@ -135,28 +145,48 @@ pub(crate) async fn handle_rename(
             *t = rewritten;
         }
     }
-    let reports = crate::diagnostics::validate_texts(remote, workspace_root, &planned, &[]).await?;
-    let errors: Vec<String> = reports
-        .iter()
-        .flat_map(|r| {
-            r.items
+    let (errors, validation_incomplete) = match crate::diagnostics::validate_texts(
+        remote,
+        workspace_root,
+        &planned,
+        &[],
+    )
+    .await
+    {
+        Ok(reports) => {
+            let errs: Vec<String> = reports
                 .iter()
-                .filter(|d| d.severity == "error")
-                .map(move |d| {
-                    format!(
-                        "{}{} ({}:{}:{})",
-                        d.message.lines().next().unwrap_or(""),
-                        d.code
-                            .as_deref()
-                            .map(|c| format!(" [{c}]"))
-                            .unwrap_or_default(),
-                        r.file,
-                        d.line,
-                        d.col
-                    )
+                .flat_map(|r| {
+                    r.items
+                        .iter()
+                        .filter(|d| d.severity == "error")
+                        .map(move |d| {
+                            format!(
+                                "{}{} ({}:{}:{})",
+                                d.message.lines().next().unwrap_or(""),
+                                d.code
+                                    .as_deref()
+                                    .map(|c| format!(" [{c}]"))
+                                    .unwrap_or_default(),
+                                r.file,
+                                d.line,
+                                d.col
+                            )
+                        })
                 })
-        })
-        .collect();
+                .collect();
+            (errs, None)
+        }
+        Err(e) => {
+            if !force {
+                return Ok(McpToolCallResult::error(format!(
+                    "rename to `{new_name}` refused: post-rename validation could not complete ({e:#}); \
+                     nothing was written. Pass `force: true` (`--force`) to apply the rename without validation."
+                )));
+            }
+            (Vec::new(), Some(format!("{e:#}")))
+        }
+    };
     if !errors.is_empty() && !force {
         return Ok(McpToolCallResult::error(format!(
             "rename to `{new_name}` refused: the result does not compile ({} error(s)); nothing \
@@ -198,6 +228,11 @@ pub(crate) async fn handle_rename(
             "\n\nwritten with `force`, although the analyzer reports {} error(s):\n  {}",
             errors.len(),
             errors.join("\n  ")
+        ));
+    }
+    if let Some(reason) = validation_incomplete {
+        text.push_str(&format!(
+            "\n\nwritten with `force`, although post-rename validation could not complete: {reason}"
         ));
     }
     if moves_files {
