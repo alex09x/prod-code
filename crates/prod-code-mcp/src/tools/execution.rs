@@ -130,14 +130,22 @@ pub fn execute_tool<'a>(
             reference_budget,
         );
         match budget {
-            Some(budget) => match tokio::time::timeout_at(budget.deadline, run).await {
-                Ok(Ok(result)) => Ok(result),
-                Ok(Err(error)) if is_timeout_error(&error) => Ok(McpToolCallResult::error(
-                    definition_subrequest_timeout_message(budget),
-                )),
-                Ok(Err(error)) => Err(error),
-                Err(_) => Ok(McpToolCallResult::error(definition_busy_message(budget))),
-            },
+            Some(budget) => {
+                let sync_stage = crate::sync::types::SyncStageTracker::new();
+                let tracked =
+                    crate::sync::types::scope_sync_stage(std::sync::Arc::clone(&sync_stage), run);
+                match tokio::time::timeout_at(budget.deadline, tracked).await {
+                    Ok(Ok(result)) => Ok(result),
+                    Ok(Err(error)) if is_timeout_error(&error) => Ok(McpToolCallResult::error(
+                        definition_subrequest_timeout_message(budget, &error),
+                    )),
+                    Ok(Err(error)) => Err(error),
+                    Err(_) => Ok(McpToolCallResult::error(definition_busy_message(
+                        budget,
+                        sync_stage.get(),
+                    ))),
+                }
+            }
             None => run.await,
         }
     })
@@ -192,14 +200,24 @@ fn execute_tool_inner<'a>(
             let dirs = dirs.clone();
             let request = references_across(remote, workspace_root, args, &dirs);
             return match reference_budget {
-                Some(budget) => match tokio::time::timeout_at(budget.deadline, request).await {
-                    Ok(Ok(result)) => Ok(result),
-                    Ok(Err(error)) if is_timeout_error(&error) => Ok(McpToolCallResult::error(
-                        references_subrequest_timeout_message(budget),
-                    )),
-                    Ok(Err(error)) => Err(error),
-                    Err(_) => Ok(McpToolCallResult::error(references_busy_message(budget))),
-                },
+                Some(budget) => {
+                    let sync_stage = crate::sync::types::SyncStageTracker::new();
+                    let tracked = crate::sync::types::scope_sync_stage(
+                        std::sync::Arc::clone(&sync_stage),
+                        request,
+                    );
+                    match tokio::time::timeout_at(budget.deadline, tracked).await {
+                        Ok(Ok(result)) => Ok(result),
+                        Ok(Err(error)) if is_timeout_error(&error) => Ok(McpToolCallResult::error(
+                            references_subrequest_timeout_message(budget, &error),
+                        )),
+                        Ok(Err(error)) => Err(error),
+                        Err(_) => Ok(McpToolCallResult::error(references_busy_message(
+                            budget,
+                            sync_stage.get(),
+                        ))),
+                    }
+                }
                 None => request.await,
             };
         }
@@ -266,7 +284,11 @@ fn execute_tool_inner<'a>(
         let remote = match reference_budget {
             Some(budget) => match tokio::time::timeout_at(budget.deadline, remote).await {
                 Ok(result) => result?,
-                Err(_) => return Ok(McpToolCallResult::error(references_busy_message(budget))),
+                Err(_) => {
+                    return Ok(McpToolCallResult::error(references_busy_message(
+                        budget, None,
+                    )));
+                }
             },
             None => remote.await?,
         };
@@ -296,20 +318,34 @@ fn execute_tool_inner<'a>(
         let remote = match reference_budget {
             Some(budget) => match tokio::time::timeout_at(budget.deadline, remote).await {
                 Ok(result) => result?,
-                Err(_) => return Ok(McpToolCallResult::error(references_busy_message(budget))),
+                Err(_) => {
+                    return Ok(McpToolCallResult::error(references_busy_message(
+                        budget, None,
+                    )));
+                }
             },
             None => remote.await?,
         };
         let dispatch = dispatch_tool(remote, workspace_root, tool_name, args);
         let result = match reference_budget {
-            Some(budget) => match tokio::time::timeout_at(budget.deadline, dispatch).await {
-                Ok(Ok(result)) => Ok(result),
-                Ok(Err(error)) if is_timeout_error(&error) => Ok(McpToolCallResult::error(
-                    references_subrequest_timeout_message(budget),
-                )),
-                Ok(Err(error)) => Err(error),
-                Err(_) => Ok(McpToolCallResult::error(references_busy_message(budget))),
-            },
+            Some(budget) => {
+                let sync_stage = crate::sync::types::SyncStageTracker::new();
+                let tracked = crate::sync::types::scope_sync_stage(
+                    std::sync::Arc::clone(&sync_stage),
+                    dispatch,
+                );
+                match tokio::time::timeout_at(budget.deadline, tracked).await {
+                    Ok(Ok(result)) => Ok(result),
+                    Ok(Err(error)) if is_timeout_error(&error) => Ok(McpToolCallResult::error(
+                        references_subrequest_timeout_message(budget, &error),
+                    )),
+                    Ok(Err(error)) => Err(error),
+                    Err(_) => Ok(McpToolCallResult::error(references_busy_message(
+                        budget,
+                        sync_stage.get(),
+                    ))),
+                }
+            }
             None => dispatch.await,
         };
         with_indexing_notes(result, workspace_root)

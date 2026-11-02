@@ -40,7 +40,7 @@ pub mod artifact_list;
 pub use artifact::{PullOutcome, pull_remote_files_from};
 pub use artifact_list::{ArtifactListOutcome, list_remote_artifacts_from};
 pub use pull::{apply_pulled_files, apply_pulled_files_for, pull_remote_files};
-pub use push::{gateway_node, push_workspace_sync};
+pub use push::{gateway_node, push_session_sync, push_workspace_sync};
 pub use relevance::is_relevant_code_or_manifest_file;
 pub use scan::{collect_dirty_files, collect_dirty_files_incremental, scan_workspace_files};
 pub use types::{
