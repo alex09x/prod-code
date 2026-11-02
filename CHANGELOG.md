@@ -2,8 +2,13 @@
 
 ## [Unreleased]
 
+## v0.3.49 — 2026-11-02
+
 ### Added
 - **Composable Agent Workflow Prototype** (`crates/prod-code-mcp`, #1795): `code_workflow` composes existing read operations with named result references, bounded iteration, explicit recovery branches and selected output. Short forms inspect a symbol or expand text-search hits into definitions. Explicit plans can preview unique text replacements, apply them with SHA-256 preconditions through the existing edit journal, and request scoped verification. Permissions, partial failures and per-step effects remain explicit; a combined call does not promise a multi-step transaction.
+
+### Fixed
+- **Open-Session Workspace Sync on Non-Git Checkouts** (`crates/prod-code-mcp`, `crates/prod-code-gateway`, #1796, #1798): In-session workspace refresh sends incremental updates via `SyncRequest` instead of emitting pre-handshake `SyncProbeRequest` frames, the gateway explicitly disconnects late probe requests instead of stalling, and non-mutating file access events are ignored so open-session queries on non-Git checkouts do not trigger redundant sync probes.
 
 ## v0.3.48 — 2026-10-31
 
