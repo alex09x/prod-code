@@ -209,7 +209,13 @@ pub(crate) async fn handle_slice(
             "no slice items found: {rendered}"
         )));
     }
-    Ok(McpToolCallResult::text(rendered))
+    let mut result = McpToolCallResult::text(rendered);
+    result.structured_content = Some(serde_json::json!({
+        "incomplete": !report.gaps.is_empty() || report.truncated > 0 || report.seed_over_budget,
+        "truncated": report.truncated > 0 || report.seed_over_budget,
+        "coverage": {"depth_limit":report.depth_limit,"unexpanded":report.unexpanded,"external":report.external.len(),"unsupported":report.unsupported.len(),"gaps":report.gaps.len()}
+    }));
+    Ok(result)
 }
 
 pub(crate) async fn handle_shadow_run(

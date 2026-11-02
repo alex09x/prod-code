@@ -71,7 +71,7 @@ flowchart TD
         Editor["Code Editors\n(Zed, VS Code, Neovim)"]
         CLI["prod-code CLI"]
 
-        Agent -->|"Native MCP (67 tools)"| MCPBridge["prod-code mcp"]
+        Agent -->|"Native MCP tools"| MCPBridge["prod-code mcp"]
         Editor -->|"LSP protocol"| LSPBridge["prod-code lsp"]
         CLI -->|"Commands / Queries"| ClientCore["prod-code client"]
 
@@ -169,6 +169,11 @@ When `prod-code` is updated, running agent sessions automatically pick up new MC
 ### Registering with AI Coding Agents
 
 Register `prod-code` once; every repository accessed by your agent gains remote code intelligence tools:
+
+For related investigation steps, the experimental `code_workflow` MCP tool composes
+lookups with bounded result passing and explicit partial failures. It also accepts
+short symbol-context and search-and-expand requests. See [agent workflows](docs/agent-workflows.md)
+for the contract and current investigation-only scope.
 
 ```sh
 # Claude Code

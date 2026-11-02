@@ -81,6 +81,12 @@ pub struct McpToolCallResult {
     pub content: Vec<McpContentItem>,
     #[serde(rename = "isError", default)]
     pub is_error: bool,
+    #[serde(
+        rename = "structuredContent",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub structured_content: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +103,7 @@ impl McpToolCallResult {
                 text: content.into(),
             }],
             is_error: false,
+            structured_content: None,
         }
     }
 
@@ -106,6 +113,7 @@ impl McpToolCallResult {
                 text: content.into(),
             }],
             is_error: true,
+            structured_content: None,
         }
     }
 }
@@ -115,6 +123,7 @@ pub const AGENT_INSTRUCTIONS: &str = "\
 prod-code is a remote code-intelligence gateway: the checkout is mirrored to a LAN server that keeps a warm analyzer (rust-analyzer in memory, gopls, clangd, TypeScript, pyright, sourcekit-lsp) and runs builds and tests there. Your local edits are picked up automatically before every call (a file watcher syncs the delta); never run sync by hand.
 
 Use semantic tools instead of raw shell grep/rg:
+- For related investigation steps, code_workflow composes existing lookups in one bounded call. Short form: symbol with include:[\"dependencies\",\"callers\"] (dependencies includes the seed body); or named steps with exact JSON references to earlier results. It selects one workspace and reports errors, skipped steps and omitted outputs. This investigation prototype does not edit files or run builds/tests; standalone tools remain available.
 - Navigation & Structure: code_definition / code_references / code_callers / code_callees / code_implementations resolve symbols exactly; code_hover gives signatures and docs; code_outline lists file/dir symbols; code_source shows server-side stdlib/SDK sources; code_search finds ranked declarations by doc/purpose; code_grep (`prod-code grep`) runs literal/regex text search on the build node and annotates each hit with its enclosing AST symbol (`[in Type::method]`); code_slice extracts declarations with dependencies; code_type_at inspects expression types. Every position tool takes `symbol: \"Type::method\"` (or `symbols: [...]` for batch lookups) instead of line/col, and code_symbols searches by name — use `code_definition`/`code_references`/`code_symbols` for identifiers, `code_grep` for literal strings, error messages, regexes, or prefixes, and `code_search` for natural-language concept queries.
 - Semantic Intelligence & Architecture: code_structural_search performs polyglot AST pattern matching with metavariables; code_dependencies inspects architectural graphs, coupling metrics (Ca, Ce, instability), and circular cycles; code_find_duplicates harvests Type-1 and Type-2 code clones; code_propose_expression synthesizes type-directed in-scope expressions and accessor chains to prevent hallucinated APIs.
 

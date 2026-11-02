@@ -31,7 +31,7 @@ use self::budgets::{
     definition_subrequest_timeout_message, is_timeout_error, references_budget,
     references_busy_message, references_subrequest_timeout_message,
 };
-use self::context::resolve_workspace_root;
+pub(crate) use self::context::resolve_workspace_root;
 pub(crate) use self::context::{PATH_HINT_KEYS, routed_path};
 use positions::validate_position_arguments;
 use symbol_resolution::{
@@ -54,7 +54,8 @@ pub(crate) fn checked_position_argument(value: &serde_json::Value, name: &str) -
 /// disk and can safely execute concurrently with other read-only tool calls.
 pub(crate) fn is_read_only_tool(tool_name: &str, args: &serde_json::Value) -> bool {
     match tool_name {
-        "code_definition"
+        "code_workflow"
+        | "code_definition"
         | "code_references"
         | "code_callers"
         | "code_callees"
@@ -116,6 +117,11 @@ pub fn execute_tool<'a>(
     let budget = definition_budget(tool_name, &args);
     let reference_budget = references_budget(tool_name, &args);
     Box::pin(async move {
+        if tool_name == "code_workflow" {
+            // Each nested operation acquires its own locks. Holding an outer workspace
+            // lock while calling back into execute_tool would deadlock writers.
+            return super::workflow::execute(remote, &configured_workspace_root, args).await;
+        }
         let run = execute_tool_inner(
             remote,
             &configured_workspace_root,

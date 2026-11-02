@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **Composable Agent Investigation Prototype** (`crates/prod-code-mcp`, #1795): `code_workflow` composes existing read operations with named result references, bounded iteration, explicit recovery branches and selected output. Short forms inspect a symbol with dependencies or expand text-search hits into definitions. Workspace confinement, time/context bounds and partial results are explicit; source mutation and verification commands remain outside this prototype.
+
 ## v0.3.48 — 2026-10-31
 
 ### Added
