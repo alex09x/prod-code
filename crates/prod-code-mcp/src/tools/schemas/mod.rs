@@ -31,6 +31,7 @@ pub fn build_tools_raw() -> Vec<McpTool> {
     tools.extend(advanced_refactoring::advanced_refactoring_tools());
     tools.extend(analysis::analysis_tools());
     tools.extend(utility::utility_tools());
+    tools.push(super::workflow::tool_schema());
 
     for tool in &mut tools {
         if let Some(properties) = tool

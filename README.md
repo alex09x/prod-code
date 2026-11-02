@@ -170,6 +170,11 @@ When `prod-code` is updated, running agent sessions automatically pick up new MC
 
 Register `prod-code` once; every repository accessed by your agent gains remote code intelligence tools:
 
+For related investigation steps, the experimental `code_workflow` MCP tool composes
+lookups with bounded result passing and explicit partial failures. It also accepts
+short symbol-context and search-and-expand requests. See [agent workflows](docs/agent-workflows.md)
+for the contract and current investigation-only scope.
+
 ```sh
 # Claude Code
 claude mcp add --scope user prod-code -e "PROD_CODE_REMOTE=192.0.2.10:9400" -- prod-code mcp
