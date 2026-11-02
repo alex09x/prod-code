@@ -1,7 +1,8 @@
 # Agent workflow prototype: observed results
 
 These are acceptance observations for #1795, not a general productivity or speed
-claim. The implementation is experimental and the delivery PRs remain drafts.
+claim. The implementation is experimental; its initial delivery PRs are merged
+and the first slice is included in v0.3.49.
 
 ## Code state and conditions
 
