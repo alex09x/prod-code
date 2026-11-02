@@ -21,6 +21,8 @@ mod mutation_review_tests;
 mod mutations;
 mod operation_failure;
 mod plan;
+#[cfg(test)]
+mod read_adapter_tests;
 mod references;
 #[cfg(test)]
 mod review_regressions;
@@ -80,14 +82,22 @@ async fn invoke(remote: SocketAddr, root: &Path, tool: &str, mut args: Value) ->
 
 fn prepare_arguments(root: &Path, tool: &str, args: &mut Value) -> Result<()> {
     plan::validate_adapter_arguments(tool, args)?;
-    if args
-        .get("path")
-        .and_then(Value::as_str)
-        .is_some_and(|path| path.trim().is_empty())
+    let args_obj = args.as_object_mut().context("args must be an object")?;
+    for key in super::execution::PATH_HINT_KEYS {
+        if args_obj
+            .get(*key)
+            .is_some_and(|v| v.is_null() || v.as_str().is_some_and(|path| path.trim().is_empty()))
+        {
+            args_obj.remove(*key);
+        }
+    }
+    if !args_obj.contains_key("path")
+        && let Some(alias_path) = super::execution::PATH_HINT_KEYS
+            .iter()
+            .find_map(|key| args_obj.get(*key).and_then(Value::as_str))
+            .map(str::to_owned)
     {
-        args.as_object_mut()
-            .context("args must be an object")?
-            .remove("path");
+        args_obj.insert("path".into(), json!(alias_path));
     }
     // Always confine explicitly, including when the workflow selected its default root.
     args["workspace"] = json!(root);
@@ -114,6 +124,12 @@ async fn invoke_prepared(
     } else {
         None
     };
+    let remote = if matches!(tool, "resolve" | "symbols") {
+        crate::cluster::route_for_path(remote, root, args.get("path").and_then(Value::as_str))
+            .await?
+    } else {
+        remote
+    };
     let mut outcome = match tool {
         "preview" | "apply" | "verify" => mutations::invoke(remote, root, tool, args).await,
         "grep" => search::grep(remote, root, args).await,
@@ -125,7 +141,7 @@ async fn invoke_prepared(
             let hint = args
                 .get("path")
                 .and_then(Value::as_str)
-                .map(|path| root.join(path));
+                .map(|path| super::resolve_file_path(root, path));
             let hit = symbols::resolve_symbol(remote, root, symbol, hint.as_deref()).await?;
             hit_value(root, hit)
         }
@@ -135,20 +151,17 @@ async fn invoke_prepared(
                 .and_then(Value::as_str)
                 .context("symbols requires query")?;
             let limit = plan::limit(&args, 8)?;
-            let hint = args
-                .get("path")
-                .and_then(Value::as_str)
-                .map(|path| root.join(path));
-            let hits = symbols::symbol_search_across_projects(
+            let ranked = super::symbol_handlers::search_ranked_symbols(
                 remote,
                 root,
                 query,
-                hint.as_deref(),
-                limit + 1,
+                args.get("path").and_then(Value::as_str),
+                limit,
             )
             .await?;
-            let truncated = hits.len() > limit;
-            let items = hits
+            let truncated = ranked.hits.len() > limit || ranked.raw_capped;
+            let items = ranked
+                .hits
                 .into_iter()
                 .take(limit)
                 .map(|hit| hit_value(root, hit))

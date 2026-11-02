@@ -127,7 +127,7 @@ impl Plan {
             }
             if !TOOLS.contains(&step.tool.as_str()) {
                 bail!(
-                    "unsupported workflow tool: {}; this version supports investigation only",
+                    "unsupported workflow tool: {}; choose a listed investigation, preview, apply or verify operation",
                     step.tool
                 );
             }
