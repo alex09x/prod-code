@@ -36,6 +36,8 @@ mod test_support;
 mod tests;
 mod verification;
 #[cfg(test)]
+mod verification_scope_tests;
+#[cfg(test)]
 mod verification_tests;
 
 use super::{execute_tool, execution::resolve_workspace_root, symbols};

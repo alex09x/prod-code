@@ -7,6 +7,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+use crate::verify::{VerifyKind, plan::scoped::plan_narrow};
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -97,7 +98,21 @@ fn relative_scope(raw: &str) -> Result<PathBuf> {
     Ok(relative)
 }
 
-fn existing_scope(root: &Path, raw: &str) -> Result<String> {
+fn kind(value: &str) -> VerifyKind {
+    match value {
+        "check" => VerifyKind::Check,
+        "lint" => VerifyKind::Lint,
+        "test" => VerifyKind::Test,
+        _ => unreachable!("validated verify kind"),
+    }
+}
+
+fn existing_scope(
+    root: &Path,
+    raw: &str,
+    kind: VerifyKind,
+    filter: Option<&str>,
+) -> Result<String> {
     let relative = relative_scope(raw)?;
     let root = std::fs::canonicalize(root)?;
     let target = std::fs::canonicalize(root.join(relative))
@@ -118,6 +133,7 @@ fn existing_scope(root: &Path, raw: &str) -> Result<String> {
         .to_owned();
     let mut selection = json!({"workspace":root,"path":normalized});
     super::resolve_workspace_root(&root, "code_definition", &mut selection)?;
+    plan_narrow(&root, Some(&target), kind, filter)?;
     Ok(normalized)
 }
 
@@ -126,7 +142,16 @@ pub(super) fn preflight(plan: &super::plan::Plan, root: &Path) -> Result<()> {
         if step.tool == "verify"
             && let Some(path) = step.args.get("path").and_then(Value::as_str)
         {
-            existing_scope(root, path)?;
+            let filter = step
+                .args
+                .get("filter")
+                .map(|value| value.as_str().unwrap_or("workflow_preflight_filter"));
+            existing_scope(
+                root,
+                path,
+                kind(step.args["kind"].as_str().expect("validated kind")),
+                filter,
+            )?;
         }
     }
     Ok(())
@@ -135,7 +160,12 @@ pub(super) fn preflight(plan: &super::plan::Plan, root: &Path) -> Result<()> {
 pub(super) fn request(root: &Path, args: Value) -> Result<(&'static str, Value)> {
     validate(&args)?;
     let request: VerifyArgs = serde_json::from_value(args)?;
-    let path = existing_scope(root, &request.path)?;
+    let path = existing_scope(
+        root,
+        &request.path,
+        kind(&request.kind),
+        request.filter.as_deref(),
+    )?;
     let tool = match request.kind.as_str() {
         "check" => "code_check",
         "lint" => "code_lint",

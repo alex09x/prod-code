@@ -14,12 +14,8 @@ use std::path::Path;
 use anyhow::{Result, anyhow};
 
 use crate::exec::{TailBuffer, run_remote_rooted};
-use crate::verify::detect::detect_tools;
 use crate::verify::parse::{event_of_line, parse_verification_output, relativize_diagnostics};
-use crate::verify::plan::{
-    has_xcode_project, is_xcodegen_spec, narrow_scope, plan_command_with, plan_xcode_command,
-    plan_xcodegen_command, verify_project,
-};
+use crate::verify::plan::scoped::{ScopedVerification, plan_scoped};
 use crate::verify::types::{RunEvent, VerifyKind, VerifyReport};
 
 pub async fn run_verify(
@@ -56,51 +52,12 @@ pub async fn run_verify_with(
     extra_env: &[(String, String)],
     mut on_event: impl FnMut(RunEvent),
 ) -> Result<VerifyReport> {
-    let normalized_hint = project_hint.map(|hint| {
-        if hint.is_absolute() || hint.starts_with(root) {
-            hint.to_path_buf()
-        } else {
-            root.join(hint)
-        }
-    });
-    let project_hint = normalized_hint.as_deref();
-    // A nested project of another language (a SwiftPM package in a Rust repository), or an
-    // explicitly scoped source file of another language (#1778), is verified with its own
-    // language's tooling.
-    let (subdir, language) = verify_project(root, project_hint);
-    let language = language.ok_or_else(|| {
-        anyhow!(
-            "no project manifest (Cargo.toml, go.mod, package.json, pyproject.toml, CMakeLists.txt, Package.swift) at {}",
-            root.display()
-        )
-    })?;
-    let project_dir = match &subdir {
-        Some(sub) => root.join(sub),
-        None => root.to_path_buf(),
-    };
-    let tools = detect_tools(&project_dir);
-    let mut command = if language == "swift" && has_xcode_project(&project_dir) {
-        plan_xcode_command(kind, filter)?
-    } else if language == "swift" && is_xcodegen_spec(&project_dir) {
-        // A spec only, with no Package.swift: SwiftPM cannot build it (#1481).
-        plan_xcodegen_command(kind, filter)?
-    } else {
-        plan_command_with(&tools, language, kind, filter)?
-    };
-    if let Some(hint) = project_hint {
-        let missing_test_file = !hint.exists()
-            && hint.extension().is_some_and(|extension| extension == "rs")
-            && crate::verify::plan::member_dir_named(&project_dir, hint).is_none();
-        if language == "rust" && kind == VerifyKind::Test && (hint.is_file() || missing_test_file) {
-            crate::verify::plan::rust_test_file::narrow_rust_test_file(
-                &mut command,
-                &project_dir,
-                hint,
-            )?;
-        } else {
-            narrow_scope(&mut command, language, &project_dir, hint);
-        }
-    }
+    let ScopedVerification {
+        subdir,
+        language,
+        tools,
+        command,
+    } = plan_scoped(root, project_hint, kind, filter)?;
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let mut tail = TailBuffer::new(8 * 1024);

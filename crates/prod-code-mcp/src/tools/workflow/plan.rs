@@ -185,7 +185,7 @@ pub(super) fn validate_arguments(value: &Value) -> Result<()> {
         ] {
             if object.contains_key(key) {
                 bail!(
-                    "workflow step argument '{key}' is unsupported; choose one workspace and investigation operations"
+                    "workflow step argument '{key}' is unsupported; choose one workspace and use explicit preview, apply or verify steps"
                 );
             }
         }

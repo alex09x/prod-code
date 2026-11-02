@@ -38,7 +38,7 @@ the internal preview is not a human approval checkpoint.
   "outputs": ["proposal", "write", "check"],
   "steps": [
     {"id": "proposal", "tool": "preview", "args": {"edits": [{
-      "path": "src/lib.rs",
+      "path": "crates/demo/src/lib.rs",
       "old": "pub fn answer() -> u32 { 1 }",
       "new": "pub fn answer() -> u32 { 2 }"
     }]}},
@@ -46,11 +46,13 @@ the internal preview is not a human approval checkpoint.
       "files": {"$ref": "proposal#/files"}
     }},
     {"id": "check", "tool": "verify", "args": {
-      "kind": "check", "path": "src/lib.rs", "timeout_secs": 60
+      "kind": "check", "path": "crates/demo/src/lib.rs", "timeout_secs": 60
     }}
   ]
 }
 ```
+
+In this Cargo example, `crates/demo` is a declared workspace member package.
 
 `apply:true` only permits explicit apply or verification steps; it does not
 schedule them. The whole plan's permission checks run before its first step.
@@ -90,6 +92,18 @@ The scope must exist below the selected workspace root. Root aliases, missing
 paths and escapes are refused. Literal verification arguments and scopes are
 checked before the first step, including before any earlier apply. Values from
 references are validated after resolution and again before starting the check.
+
+Workflow preflight shares the ordinary verifier's filesystem-only command
+planner. Rust and Go scopes that still select `--workspace` or `./...` are
+refused, including container directories and root-level files the existing
+verifier cannot narrow. Choose a member package/subdirectory instead. This is
+also a current limitation for custom package layouts that cannot be narrowed.
+Root Cargo package sources under `src`, `tests`, `examples` and `benches` select
+that package explicitly, including when the workspace has sibling members.
+Test runners that ignore the requested filter are refused before any earlier
+apply; a non-empty filter string alone is not evidence of a narrow test run.
+The final command is checked again during execution under the ordinary verifier
+gates, so changed configuration cannot bypass the earlier planning check.
 
 No verification runs merely because a preview or apply succeeded. Choose checks
 according to the repository's validation policy; the workflow does not authorize

@@ -95,13 +95,21 @@ async fn apply(root: &Path, args: Value) -> Result<Value> {
 async fn verify(remote: SocketAddr, root: &Path, args: Value) -> Result<Value> {
     let (tool, args) = super::verification::request(root, args)
         .map_err(|error| super::operation_failure::before("verify", error))?;
-    let result = super::super::execute_tool(remote, root, tool, args)
-        .await
-        .context("verification request failed")
-        .map_err(|error| OperationFailure {
+    let result = crate::verify::plan::scoped::with_narrow_scope(super::super::execute_tool(
+        remote, root, tool, args,
+    ))
+    .await
+    .context("verification request failed")
+    .map_err(|error| {
+        if error.is::<crate::verify::plan::scoped::WorkflowPlanRefusal>() {
+            return super::operation_failure::before("verify", error);
+        }
+        OperationFailure {
             error,
             effects: json!({"operation":"verify","status":"not_confirmed","may_be_running":true}),
-        })?;
+        }
+        .into()
+    })?;
     let mut data = result
         .structured_content
         .as_ref()
