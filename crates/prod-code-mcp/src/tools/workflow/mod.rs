@@ -8,6 +8,9 @@
  */
 
 //! Bounded composition of existing investigation operations. No source mutation or shell.
+mod metadata;
+#[cfg(test)]
+mod metadata_tests;
 mod plan;
 mod references;
 mod runner;
@@ -44,7 +47,9 @@ pub(super) async fn execute(
         async move { invoke(remote, &root, &tool, args).await }
     })
     .await;
-    Ok(McpToolCallResult::text(serde_json::to_string(&report)?))
+    let mut result = McpToolCallResult::text(serde_json::to_string(&report)?);
+    result.structured_content = Some(report);
+    Ok(result)
 }
 
 async fn invoke(remote: SocketAddr, root: &Path, tool: &str, mut args: Value) -> Result<Value> {
@@ -55,6 +60,7 @@ async fn invoke(remote: SocketAddr, root: &Path, tool: &str, mut args: Value) ->
         .context("args must be an object")?
         .remove("workspace");
     let _read_guard = if matches!(tool, "resolve" | "symbols" | "grep") {
+        let _ = crate::session::take_indexing_notes(root);
         Some(
             super::execution::workspace_mutation_lock(root)
                 .read_owned()
@@ -63,7 +69,7 @@ async fn invoke(remote: SocketAddr, root: &Path, tool: &str, mut args: Value) ->
     } else {
         None
     };
-    match tool {
+    let mut outcome = match tool {
         "grep" => search::grep(remote, root, args).await,
         "resolve" => {
             let symbol = args
@@ -109,6 +115,12 @@ async fn invoke(remote: SocketAddr, root: &Path, tool: &str, mut args: Value) ->
         }
         _ => {
             let result = execute_tool(remote, root, tool, args).await?;
+            let mut data = result
+                .structured_content
+                .as_ref()
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
             let text = result
                 .content
                 .into_iter()
@@ -120,9 +132,19 @@ async fn invoke(remote: SocketAddr, root: &Path, tool: &str, mut args: Value) ->
             if result.is_error {
                 bail!("{text}");
             }
-            Ok(json!({"text":text}))
+            data.insert("text".into(), json!(text));
+            Ok(Value::Object(data))
+        }
+    };
+    if matches!(tool, "resolve" | "symbols" | "grep") {
+        let notes = crate::session::take_indexing_notes(root);
+        if !notes.is_empty()
+            && let Ok(value) = &mut outcome
+        {
+            value["indexing_notes"] = json!(notes);
         }
     }
+    outcome
 }
 
 fn hit_value(root: &Path, hit: symbols::SymbolHit) -> Result<Value> {

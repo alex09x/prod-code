@@ -162,6 +162,7 @@ async fn workflow_path_escape_is_refused_before_network_access() {
     .unwrap();
     let McpContentItem::Text { text } = &result.content[0];
     let report: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(result.structured_content.as_ref(), Some(&report));
     assert_eq!(report["steps"][0]["status"], "error");
     assert!(!text.contains("Failed to connect"));
 }
@@ -255,7 +256,8 @@ async fn search_short_form_deduplicates_enclosing_hints_and_keeps_unexpanded_hit
     assert_eq!(report["items"].as_array().unwrap().len(), 1);
     assert_eq!(report["items"][0]["symbol"], "one");
     assert_eq!(report["unexpanded"].as_array().unwrap().len(), 1);
-    assert_eq!(report["truncated"], true);
+    assert_eq!(report["truncated"], false);
+    assert_eq!(report["incomplete"], true);
     let expanded = short_form::expand(json!({"grep":"needle","path":"sample.rs"})).unwrap();
     let plan = plan::Plan::parse(expanded).unwrap();
     assert_eq!(plan.steps[0].tool, "grep");

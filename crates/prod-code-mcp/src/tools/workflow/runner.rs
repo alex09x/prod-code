@@ -62,6 +62,11 @@ where
         let mut result = json!({"id":step.id,"elapsed_ms": start.elapsed().as_millis() as u64});
         match outcome {
             Ok(value) => {
+                let warnings = super::metadata::warnings(&value);
+                partial |= super::metadata::partial(&warnings);
+                if !warnings.is_empty() {
+                    result["warnings"] = json!(warnings);
+                }
                 let size = serde_json::to_vec(&value).map_or(usize::MAX, |bytes| bytes.len());
                 if size > 262_144 || retained + size > 1_048_576 {
                     partial = true;
@@ -98,6 +103,12 @@ where
                         && plan.steps.last().is_some_and(|last| last.id == step.id));
                 if selected && let Some(partial) = error.downcast_ref::<PartialIteration>() {
                     result["partial_value"] = json!(partial.completed);
+                }
+                if let Some(partial) = error.downcast_ref::<PartialIteration>() {
+                    let warnings = super::metadata::warnings(&json!(partial.completed));
+                    if !warnings.is_empty() {
+                        result["warnings"] = json!(warnings);
+                    }
                 }
                 stopped = step.on_error == OnError::Stop;
             }
@@ -141,6 +152,30 @@ where
                 object.insert("output_omitted".into(), json!(true));
             }
         }
+        truncated = true;
+    }
+    if serde_json::to_vec(&report).is_ok_and(|bytes| bytes.len() > plan.max_bytes) {
+        let mut warning_steps = std::collections::BTreeMap::<String, Vec<usize>>::new();
+        for (index, result) in report["steps"]
+            .as_array_mut()
+            .expect("step array")
+            .iter_mut()
+            .enumerate()
+        {
+            if let Some(Value::Array(warnings)) = result
+                .as_object_mut()
+                .expect("step object")
+                .remove("warnings")
+            {
+                for warning in warnings {
+                    if let Some(kind) = warning.as_str() {
+                        warning_steps.entry(kind.into()).or_default().push(index);
+                    }
+                }
+            }
+        }
+        report["warning_steps"] = json!(warning_steps);
+        report["warnings_compacted"] = json!(true);
         truncated = true;
     }
     report["truncated"] = json!(truncated);

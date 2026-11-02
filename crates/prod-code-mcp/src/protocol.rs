@@ -81,6 +81,12 @@ pub struct McpToolCallResult {
     pub content: Vec<McpContentItem>,
     #[serde(rename = "isError", default)]
     pub is_error: bool,
+    #[serde(
+        rename = "structuredContent",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub structured_content: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +103,7 @@ impl McpToolCallResult {
                 text: content.into(),
             }],
             is_error: false,
+            structured_content: None,
         }
     }
 
@@ -106,6 +113,7 @@ impl McpToolCallResult {
                 text: content.into(),
             }],
             is_error: true,
+            structured_content: None,
         }
     }
 }

@@ -27,7 +27,7 @@ pub(super) fn tool() -> McpTool {
                 "depth":{"type":"integer","minimum":0,"maximum":3,"default":1},
                 "workspace":{"type":"string","description":"Configured workspace or a sibling Git worktree; selected once for all steps."},
                 "outputs":{"type":"array","maxItems":16,"items":{"type":"string"},"description":"Step IDs whose values should reach the agent; defaults to the last step."},
-                "max_bytes":{"type":"integer","minimum":4096,"maximum":65536,"default":24000},
+                "max_bytes":{"type":"integer","minimum":4096,"maximum":65536,"default":24000,"description":"JSON report budget; MCP supplies text and structuredContent representations, so transport size includes both."},
                 "timeout_ms":{"type":"integer","minimum":1,"maximum":60000,"default":30000},
                 "steps":{"type":"array","minItems":1,"maxItems":16,"items":{
                     "type":"object","additionalProperties":false,"required":["id","tool"],

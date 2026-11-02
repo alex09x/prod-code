@@ -120,15 +120,29 @@ pub(crate) fn with_indexing_notes(
     root: &Path,
 ) -> Result<McpToolCallResult> {
     let notes = crate::session::take_indexing_notes(root);
-    let mut result = result?;
-    for note in notes {
+    Ok(append_indexing_notes(result?, notes))
+}
+
+pub(crate) fn append_indexing_notes(
+    mut result: McpToolCallResult,
+    notes: Vec<String>,
+) -> McpToolCallResult {
+    if !notes.is_empty() {
+        let data = result
+            .structured_content
+            .get_or_insert_with(|| serde_json::json!({}));
+        if let Some(object) = data.as_object_mut() {
+            object.insert("indexing_notes".into(), serde_json::json!(notes));
+        }
+    }
+    for note in &notes {
         result.content.push(crate::protocol::McpContentItem::Text {
             text: format!(
                 "(the language server was still {note} when asked: this answer may be incomplete)"
             ),
         });
     }
-    Ok(result)
+    result
 }
 
 pub(crate) async fn handle_sync(

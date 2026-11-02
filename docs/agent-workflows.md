@@ -82,7 +82,14 @@ step is marked as failed and cannot be used as a successful reference.
   request or non-cancellable blocking worker.
 - Only selected step values are shown (`outputs`, last step by default). All
   step statuses and the executed-call count remain visible. `max_bytes` bounds
-  returned context; oversized values are omitted whole and `truncated` is set.
+  the JSON report; oversized values are omitted whole and `truncated` is set.
+  MCP returns both text and `structuredContent` for compatibility, so total
+  transport bytes can be roughly twice the report budget plus framing.
+- Indexing, truncation and dependency-boundary warnings are retained per step even
+  if its value is hidden by `outputs`, including warnings in completed iterations.
+  At a tight output budget, `warning_steps` maps warning names to zero-based step
+  indices instead of repeating warning names in each step. A successful execution
+  does not certify index completeness. No `warm` state is inferred from silence.
 - Status is `partial` if a step fails or output is omitted. Read-only plans do
   not promise stable line numbers across concurrent edits.
 - Writes, shell commands and build/test operations are refused. The first

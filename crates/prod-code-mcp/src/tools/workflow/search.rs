@@ -52,6 +52,6 @@ pub(super) async fn grep(remote: SocketAddr, root: &Path, args: Value) -> Result
         }
     }
     Ok(
-        json!({"items":items,"unexpanded":unexpanded,"truncated":truncated || !unexpanded.is_empty(),"engine":report.engine,"enclosing_symbols":"heuristic hints; definitions are resolved separately"}),
+        json!({"items":items,"unexpanded":unexpanded,"truncated":truncated,"incomplete":!unexpanded.is_empty(),"engine":report.engine,"enclosing_symbols":"heuristic hints; definitions are resolved separately"}),
     )
 }

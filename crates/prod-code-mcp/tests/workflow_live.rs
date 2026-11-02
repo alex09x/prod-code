@@ -55,6 +55,7 @@ async fn workflow_live_matches_standalone_definition_and_slice() {
     let (root, remote) = setup();
     let started = Instant::now();
     let mut baseline = Vec::new();
+    let mut baseline_result_bytes = 0;
     for (tool, args) in [
         (
             "code_symbols",
@@ -77,6 +78,7 @@ async fn workflow_live_matches_standalone_definition_and_slice() {
         .expect("standalone operation exceeded 45 seconds")
         .unwrap();
         assert!(!result.is_error, "{tool}: {}", text(&result));
+        baseline_result_bytes += serde_json::to_vec(&result).unwrap().len();
         baseline.push(text(&result));
     }
     let baseline_ms = started.elapsed().as_millis();
@@ -97,10 +99,11 @@ async fn workflow_live_matches_standalone_definition_and_slice() {
     assert_eq!(report["steps"][2]["value"]["text"], baseline[2]);
     assert!(baseline[2].contains("helper"));
     println!(
-        "workflow comparison (baseline runs first; not a controlled latency benchmark): standalone_calls=3 workflow_calls=1 internal_workflow_calls={} standalone_ms={baseline_ms} workflow_ms={workflow_ms} standalone_visible_bytes={} workflow_visible_bytes={}",
+        "workflow comparison (baseline runs first; not a controlled latency benchmark): standalone_calls=3 workflow_calls=1 internal_workflow_calls={} standalone_ms={baseline_ms} workflow_ms={workflow_ms} standalone_text_bytes={} workflow_text_bytes={} standalone_result_bytes={baseline_result_bytes} workflow_result_bytes={}",
         report["executed_calls"],
         baseline.iter().map(String::len).sum::<usize>(),
-        output.len()
+        output.len(),
+        serde_json::to_vec(&result).unwrap().len()
     );
 }
 
