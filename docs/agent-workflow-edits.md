@@ -1,6 +1,6 @@
 # Guarded text edits in agent workflows (development contract)
 
-This extends the investigation prototype in #1795. It is not yet released.
+This extends the investigation prototype in #1795. The first guarded-edit slice is included in v0.3.49.
 Preview and apply remain operations of `code_workflow`, rather than additional
 public MCP tools.
 
