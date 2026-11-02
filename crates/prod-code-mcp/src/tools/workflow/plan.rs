@@ -16,6 +16,9 @@ pub(super) const TOOLS: &[&str] = &[
     "resolve",
     "symbols",
     "grep",
+    "preview",
+    "apply",
+    "verify",
     "code_definition",
     "code_hover",
     "code_outline",
@@ -33,6 +36,8 @@ pub(super) const TOOLS: &[&str] = &[
 #[serde(deny_unknown_fields)]
 pub(super) struct Plan {
     pub steps: Vec<Step>,
+    #[serde(default)]
+    pub apply: bool,
     #[serde(default)]
     pub structured: bool,
     #[serde(default)]
@@ -105,8 +110,9 @@ impl Plan {
         if !(4096..=65_536).contains(&plan.max_bytes) {
             bail!("max_bytes must be 4096..=65536");
         }
-        if !(1..=60_000).contains(&plan.timeout_ms) {
-            bail!("timeout_ms must be 1..=60000");
+        let max_timeout = if plan.apply { 120_000 } else { 60_000 };
+        if !(1..=max_timeout).contains(&plan.timeout_ms) {
+            bail!("timeout_ms exceeds the workflow limit ({max_timeout} ms)");
         }
         let mut ids = HashSet::new();
         for step in &plan.steps {
@@ -121,12 +127,23 @@ impl Plan {
             }
             if !TOOLS.contains(&step.tool.as_str()) {
                 bail!(
-                    "unsupported workflow tool: {}; this version supports investigation only",
+                    "unsupported workflow tool: {}; choose a listed investigation, preview, apply or verify operation",
                     step.tool
                 );
             }
             if !step.args.is_object() {
                 bail!("step args must be objects");
+            }
+            if matches!(step.tool.as_str(), "apply" | "verify") {
+                if !plan.apply {
+                    bail!("apply and verify steps require top-level apply:true");
+                }
+                if step.for_each.is_some() || step.on_error != OnError::Stop {
+                    bail!("apply and verify cannot use for_each or on_error:continue");
+                }
+            }
+            if step.tool == "verify" {
+                super::verification::validate(&step.args)?;
             }
             validate_arguments(&step.args)?;
             validate_adapter_arguments(&step.tool, &step.args)?;
@@ -168,7 +185,7 @@ pub(super) fn validate_arguments(value: &Value) -> Result<()> {
         ] {
             if object.contains_key(key) {
                 bail!(
-                    "workflow step argument '{key}' is unsupported; choose one workspace and investigation operations"
+                    "workflow step argument '{key}' is unsupported; choose one workspace and use explicit preview, apply or verify steps"
                 );
             }
         }

@@ -7,10 +7,19 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-//! Bounded composition of existing investigation operations. No source mutation or shell.
+//! Bounded composition of investigation, guarded text edits and explicit verification.
+mod edits;
 mod metadata;
 #[cfg(test)]
 mod metadata_tests;
+#[cfg(test)]
+mod mutation_api_tests;
+#[cfg(test)]
+mod mutation_plan_tests;
+#[cfg(test)]
+mod mutation_review_tests;
+mod mutations;
+mod operation_failure;
 mod plan;
 #[cfg(test)]
 mod read_adapter_tests;
@@ -22,7 +31,14 @@ mod schema;
 mod search;
 mod short_form;
 #[cfg(test)]
+mod test_support;
+#[cfg(test)]
 mod tests;
+mod verification;
+#[cfg(test)]
+mod verification_scope_tests;
+#[cfg(test)]
+mod verification_tests;
 
 use super::{execute_tool, execution::resolve_workspace_root, symbols};
 use crate::protocol::{McpContentItem, McpToolCallResult};
@@ -47,6 +63,7 @@ pub(super) async fn execute(
     }
     // Reuse the existing selector and confinement contract; the workflow has one root.
     let root = resolve_workspace_root(configured, "code_definition", &mut selection)?;
+    verification::preflight(&plan, &root)?;
     let report = runner::run(plan, |tool, args| {
         let root = root.clone();
         async move { invoke(remote, &root, &tool, args).await }
@@ -60,7 +77,13 @@ pub(super) async fn execute(
 }
 
 async fn invoke(remote: SocketAddr, root: &Path, tool: &str, mut args: Value) -> Result<Value> {
-    plan::validate_adapter_arguments(tool, &args)?;
+    prepare_arguments(root, tool, &mut args)
+        .map_err(|error| operation_failure::before(tool, error))?;
+    invoke_prepared(remote, root, tool, args).await
+}
+
+fn prepare_arguments(root: &Path, tool: &str, args: &mut Value) -> Result<()> {
+    plan::validate_adapter_arguments(tool, args)?;
     let args_obj = args.as_object_mut().context("args must be an object")?;
     for key in super::execution::PATH_HINT_KEYS {
         if args_obj
@@ -80,11 +103,20 @@ async fn invoke(remote: SocketAddr, root: &Path, tool: &str, mut args: Value) ->
     }
     // Always confine explicitly, including when the workflow selected its default root.
     args["workspace"] = json!(root);
-    resolve_workspace_root(root, "code_definition", &mut args)?;
+    resolve_workspace_root(root, "code_definition", args)?;
     args.as_object_mut()
         .context("args must be an object")?
         .remove("workspace");
-    let _read_guard = if matches!(tool, "resolve" | "symbols" | "grep") {
+    Ok(())
+}
+
+async fn invoke_prepared(
+    remote: SocketAddr,
+    root: &Path,
+    tool: &str,
+    args: Value,
+) -> Result<Value> {
+    let _read_guard = if matches!(tool, "resolve" | "symbols" | "grep" | "preview") {
         let _ = crate::session::take_indexing_notes(root);
         Some(
             super::execution::workspace_mutation_lock(root)
@@ -101,6 +133,7 @@ async fn invoke(remote: SocketAddr, root: &Path, tool: &str, mut args: Value) ->
         remote
     };
     let mut outcome = match tool {
+        "preview" | "apply" | "verify" => mutations::invoke(remote, root, tool, args).await,
         "grep" => search::grep(remote, root, args).await,
         "resolve" => {
             let symbol = args

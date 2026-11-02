@@ -62,6 +62,9 @@ where
         let mut result = json!({"id":step.id,"elapsed_ms": start.elapsed().as_millis() as u64});
         match outcome {
             Ok(value) => {
+                if let Some(effects) = value.get("effects") {
+                    result["effects"] = effects.clone();
+                }
                 let warnings = super::metadata::warnings(&value);
                 partial |= super::metadata::partial(&warnings);
                 if !warnings.is_empty() {
@@ -98,6 +101,17 @@ where
                 result["status"] = json!("error");
                 let message = format!("{error:#}");
                 result["error"] = json!(message.chars().take(2048).collect::<String>());
+                if message.chars().count() > 2048 {
+                    result["error_truncated"] = json!(true);
+                    truncated = true;
+                }
+                if let Some(operation) =
+                    error.downcast_ref::<super::operation_failure::OperationFailure>()
+                {
+                    result["effects"] = operation.effects.clone();
+                } else if matches!(step.tool.as_str(), "apply" | "verify") {
+                    result["effects"] = json!({"operation":step.tool,"status":"not_confirmed","may_be_running_or_changed":true});
+                }
                 let selected = plan.outputs.contains(&step.id)
                     || (plan.outputs.is_empty()
                         && plan.steps.last().is_some_and(|last| last.id == step.id));
@@ -243,7 +257,7 @@ where
         .as_ref()
         .map_or_else(|| vec![None], |items| items.iter().map(Some).collect());
     for item in inputs {
-        let result = async {
+        let prepared = (|| -> Result<Value> {
             if *calls >= 32 {
                 bail!("workflow reached its 32-call budget");
             }
@@ -252,6 +266,11 @@ where
             }
             let args = references::resolve(&step.args, values, item)?;
             super::plan::validate_arguments(&args)?;
+            Ok(args)
+        })()
+        .map_err(|error| super::operation_failure::before(&step.tool, error));
+        let result = async {
+            let args = prepared?;
             *calls += 1;
             timeout_at(deadline, call(step.tool.clone(), args))
                 .await

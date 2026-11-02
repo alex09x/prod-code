@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 #[serde(deny_unknown_fields)]
 struct Inspect {
     symbol: String,
+    apply: Option<bool>,
     structured: Option<bool>,
     path: Option<String>,
     workspace: Option<String>,
@@ -30,6 +31,7 @@ fn default_include() -> Vec<String> {
 }
 
 pub(super) const PLAN_FIELDS: &[&str] = &[
+    "apply",
     "steps",
     "workspace",
     "outputs",
@@ -38,6 +40,7 @@ pub(super) const PLAN_FIELDS: &[&str] = &[
     "structured",
 ];
 pub(super) const SYMBOL_FIELDS: &[&str] = &[
+    "apply",
     "symbol",
     "path",
     "workspace",
@@ -48,6 +51,7 @@ pub(super) const SYMBOL_FIELDS: &[&str] = &[
     "structured",
 ];
 pub(super) const SEARCH_FIELDS: &[&str] = &[
+    "apply",
     "grep",
     "path",
     "workspace",
@@ -90,6 +94,9 @@ pub(super) fn expand(value: Value) -> Result<Value> {
         return expand_search(serde_json::from_value(value)?);
     }
     let input: Inspect = serde_json::from_value(value)?;
+    if input.apply == Some(true) {
+        bail!("short-form investigations cannot apply edits; use explicit steps");
+    }
     if input.depth.is_some_and(|depth| depth > 3) {
         bail!("depth must be in 0..=3");
     }
@@ -148,6 +155,7 @@ pub(super) fn expand(value: Value) -> Result<Value> {
 #[serde(deny_unknown_fields)]
 struct Search {
     grep: String,
+    apply: Option<bool>,
     structured: Option<bool>,
     path: Option<String>,
     workspace: Option<String>,
@@ -158,6 +166,9 @@ struct Search {
 }
 
 fn expand_search(input: Search) -> Result<Value> {
+    if input.apply == Some(true) {
+        bail!("short-form search cannot apply edits; use explicit steps");
+    }
     if input.grep.trim().is_empty() {
         bail!("grep must contain non-whitespace text");
     }

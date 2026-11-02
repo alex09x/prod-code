@@ -11,6 +11,7 @@
 pub mod basic;
 pub(crate) mod rust_test_file;
 pub mod scope;
+pub(crate) mod scoped;
 
 use anyhow::{Result, anyhow};
 

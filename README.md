@@ -173,7 +173,8 @@ Register `prod-code` once; every repository accessed by your agent gains remote 
 For related investigation steps, the experimental `code_workflow` MCP tool composes
 lookups with bounded result passing and explicit partial failures. It also accepts
 short symbol-context and search-and-expand requests. See [agent workflows](docs/agent-workflows.md)
-for the contract and current investigation-only scope.
+for the read contract and [guarded edits](docs/agent-workflow-edits.md) for explicit
+preview, apply and scoped verification steps. The prototype is not yet released.
 
 ```sh
 # Claude Code
