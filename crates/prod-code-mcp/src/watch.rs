@@ -72,56 +72,74 @@ impl Tracked {
     }
 }
 
+fn is_non_mutating_access(kind: &notify::EventKind) -> bool {
+    matches!(
+        kind,
+        notify::EventKind::Access(
+            notify::event::AccessKind::Open(
+                notify::event::AccessMode::Any
+                    | notify::event::AccessMode::Read
+                    | notify::event::AccessMode::Execute
+            ) | notify::event::AccessKind::Read
+                | notify::event::AccessKind::Close(
+                    notify::event::AccessMode::Read | notify::event::AccessMode::Execute
+                )
+        )
+    )
+}
+
+fn handle_watch_event(state: &WatchState, event: notify::Result<notify::Event>) {
+    match event {
+        Ok(event) => {
+            if is_non_mutating_access(&event.kind) {
+                return;
+            }
+            if event.paths.is_empty() {
+                state.changed();
+                return;
+            }
+            let snapshot = {
+                let guard = state.snapshot.read().unwrap_or_else(|e| e.into_inner());
+                Arc::clone(&*guard)
+            };
+            let mut should_bump = false;
+            for path in &event.paths {
+                if let Ok(rel) = path.strip_prefix(&state.root)
+                    && is_config_or_ignore_file(rel)
+                {
+                    state.filter_dirty.store(true, Ordering::Release);
+                    should_bump = true;
+                    break;
+                }
+                if !snapshot.is_ignored(path) {
+                    should_bump = true;
+                    break;
+                }
+            }
+            if should_bump {
+                state.changed();
+            }
+        }
+        Err(_) => {
+            state.changed();
+        }
+    }
+}
+
 fn start_watcher(state: Arc<WatchState>) -> Option<RecommendedWatcher> {
-    let root = state.root.clone();
     let state_for_watcher = Arc::clone(&state);
-    let mut watcher =
-        notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
-            Ok(event) => {
-                if event.paths.is_empty() {
-                    state_for_watcher.changed();
-                    return;
-                }
-                let snapshot = {
-                    let guard = state_for_watcher
-                        .snapshot
-                        .read()
-                        .unwrap_or_else(|e| e.into_inner());
-                    Arc::clone(&*guard)
-                };
-                let mut should_bump = false;
-                for path in &event.paths {
-                    if let Ok(rel) = path.strip_prefix(&root)
-                        && is_config_or_ignore_file(rel)
-                    {
-                        state_for_watcher
-                            .filter_dirty
-                            .store(true, Ordering::Release);
-                        should_bump = true;
-                        break;
-                    }
-                    if !snapshot.is_ignored(path) {
-                        should_bump = true;
-                        break;
-                    }
-                }
-                if should_bump {
-                    state_for_watcher.changed();
-                }
-            }
-            Err(_) => {
-                state_for_watcher.changed();
-            }
-        })
-        .inspect_err(|_error| {
-            #[cfg(test)]
-            eprintln!(
-                "watcher init failed: {_error}; self_fds={:?}; self_threads={:?}",
-                std::fs::read_dir("/proc/self/fd").map(|entries| entries.count()),
-                std::fs::read_dir("/proc/self/task").map(|entries| entries.count())
-            );
-        })
-        .ok()?;
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        handle_watch_event(&state_for_watcher, event);
+    })
+    .inspect_err(|_error| {
+        #[cfg(test)]
+        eprintln!(
+            "watcher init failed: {_error}; self_fds={:?}; self_threads={:?}",
+            std::fs::read_dir("/proc/self/fd").map(|entries| entries.count()),
+            std::fs::read_dir("/proc/self/task").map(|entries| entries.count())
+        );
+    })
+    .ok()?;
     watcher
         .watch(&state.root, RecursiveMode::Recursive)
         .inspect_err(|_error| {
@@ -218,5 +236,87 @@ mod tests {
         assert!(snapshot.is_ignored(Path::new("/w/.claude/desktop.json")));
 
         assert!(!snapshot.is_ignored(Path::new("/w/src/main.rs")));
+    }
+
+    #[test]
+    fn reading_watched_file_does_not_bump_generation_while_writes_do() {
+        use std::io::Write;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let file = root.join("a.rs");
+        std::fs::write(&file, "pub fn one() {}\n").unwrap();
+        let _lease = lease(root);
+
+        // Allow initial file creation notifications to settle before recording baseline.
+        std::thread::sleep(Duration::from_millis(120));
+        let g1 = current_generation(root);
+        mark_synced(root, g1);
+
+        let contents = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(contents, "pub fn one() {}\n");
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(
+            current_generation(root),
+            g1,
+            "read-only open/read/close must not bump watch generation"
+        );
+        assert!(!sync_due(root, g1));
+
+        let mut handle = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&file)
+            .unwrap();
+        handle.write_all(b"pub fn two() {}\n").unwrap();
+        drop(handle);
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut g2 = current_generation(root);
+        while g2 == g1 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(30));
+            g2 = current_generation(root);
+        }
+        assert!(
+            g2 > g1,
+            "closing a writable handle must bump watch generation"
+        );
+    }
+
+    #[test]
+    fn non_mutating_access_events_are_ignored_while_close_write_bumps_generation() {
+        use notify::event::{AccessKind, AccessMode, EventKind};
+
+        let root = PathBuf::from("/w");
+        let initial = next_generation();
+        let snapshot = Arc::new(IgnoreSnapshot::build(&root, &WatchConfig::default()));
+        let state = WatchState {
+            root: root.clone(),
+            generation: Arc::new(AtomicU64::new(initial)),
+            filter_dirty: Arc::new(AtomicBool::new(false)),
+            snapshot: RwLock::new(snapshot),
+        };
+        let src = root.join("src/lib.rs");
+
+        for ignored_kind in [
+            EventKind::Access(AccessKind::Open(AccessMode::Any)),
+            EventKind::Access(AccessKind::Open(AccessMode::Read)),
+            EventKind::Access(AccessKind::Read),
+            EventKind::Access(AccessKind::Close(AccessMode::Read)),
+            EventKind::Access(AccessKind::Close(AccessMode::Execute)),
+        ] {
+            let ev = notify::Event::new(ignored_kind).add_path(src.clone());
+            handle_watch_event(&state, Ok(ev));
+            assert_eq!(state.generation.load(Ordering::Relaxed), initial);
+        }
+
+        let close_write =
+            notify::Event::new(EventKind::Access(AccessKind::Close(AccessMode::Write)))
+                .add_path(src);
+        handle_watch_event(&state, Ok(close_write));
+        assert!(
+            state.generation.load(Ordering::Relaxed) > initial,
+            "Close(Write) signals a completed write and must bump watch generation"
+        );
     }
 }

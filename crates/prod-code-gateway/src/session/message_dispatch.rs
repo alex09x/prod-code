@@ -175,6 +175,19 @@ pub async fn on_client_message(
         Some(Ok(WireMessage::SyncRequest(req))) => {
             handle_session_sync(req, view, out_tx).await;
         }
+        Some(Ok(WireMessage::SyncProbeRequest(_))) => {
+            tracing::warn!(
+                session = view.session_id,
+                "rejecting SyncProbeRequest received after session handshake"
+            );
+            let _ = out_tx
+                .send(WireMessage::Disconnect {
+                    reason: "sync probe is only valid before handshake; send SyncRequest on an open session"
+                        .to_string(),
+                })
+                .await;
+            return Flow::Stop;
+        }
         Some(Ok(WireMessage::Disconnect { reason })) => {
             tracing::info!(reason, "Client terminated session");
             return Flow::Stop;

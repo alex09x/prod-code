@@ -107,3 +107,45 @@ pub(crate) enum RoundResult {
     Success(SyncOutcome),
     NeedsFullResync,
 }
+
+#[derive(Default)]
+pub(crate) struct SyncStageTracker {
+    stage: std::sync::Mutex<Option<&'static str>>,
+    parent: Option<std::sync::Arc<SyncStageTracker>>,
+}
+
+tokio::task_local! {
+    static ACTIVE_SYNC_STAGE: std::sync::Arc<SyncStageTracker>;
+}
+
+impl SyncStageTracker {
+    pub(crate) fn new() -> std::sync::Arc<Self> {
+        let parent = ACTIVE_SYNC_STAGE.try_with(std::sync::Arc::clone).ok();
+        std::sync::Arc::new(Self {
+            stage: std::sync::Mutex::new(None),
+            parent,
+        })
+    }
+
+    pub(crate) fn get(&self) -> Option<&'static str> {
+        *self.stage.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn set(&self, next: Option<&'static str>) {
+        *self.stage.lock().unwrap_or_else(|e| e.into_inner()) = next;
+        if let Some(parent) = &self.parent {
+            parent.set(next);
+        }
+    }
+}
+
+pub(crate) async fn scope_sync_stage<F: std::future::Future>(
+    tracker: std::sync::Arc<SyncStageTracker>,
+    fut: F,
+) -> F::Output {
+    ACTIVE_SYNC_STAGE.scope(tracker, fut).await
+}
+
+pub(crate) fn set_active_sync_stage(stage: Option<&'static str>) {
+    let _ = ACTIVE_SYNC_STAGE.try_with(|tracker| tracker.set(stage));
+}

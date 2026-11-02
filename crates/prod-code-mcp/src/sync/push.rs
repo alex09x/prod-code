@@ -15,7 +15,7 @@ use crate::sync::entry::{sync_batches, sync_file_entry};
 use crate::sync::plan::{commit_workspace_sync, prepare_workspace_sync_for};
 use crate::sync::read::read_file_or_contained_symlink;
 use crate::sync::types::WorkspaceIdentity;
-use crate::sync::types::{RoundResult, SYNC_BATCH_BYTES, SyncOutcome};
+use crate::sync::types::{RoundResult, SYNC_BATCH_BYTES, SyncOutcome, set_active_sync_stage};
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
@@ -107,6 +107,16 @@ pub async fn push_workspace_sync(
     push_workspace_sync_with_progress(framed, root, identity, subpath, &mut |_| {}).await
 }
 
+/// Pushes incremental workspace changes over an already-handshaken session stream via
+/// `SyncRequest` without sending pre-handshake `SyncProbeRequest` frames.
+pub async fn push_session_sync(
+    framed: &mut Framed<AnyStream, ProdCodeCodec>,
+    root: &Path,
+    identity: &WorkspaceIdentity,
+) -> Result<SyncOutcome> {
+    push_workspace_sync_inner(framed, root, identity, None, false, &mut |_| {}).await
+}
+
 /// Like `push_workspace_sync`, with the current pre-flight phase exposed to exec callers.
 pub async fn push_workspace_sync_with_progress(
     framed: &mut Framed<AnyStream, ProdCodeCodec>,
@@ -115,61 +125,39 @@ pub async fn push_workspace_sync_with_progress(
     subpath: Option<&Path>,
     on_phase: &mut (dyn FnMut(&'static str) + Send),
 ) -> Result<SyncOutcome> {
-    const MAX_RESET_RETRIES: usize = 2;
-    on_phase("waiting for local workspace sync lock");
-    let sync_lock = workspace_sync_lock(root, &gateway_node(framed));
-    let _sync_guard = sync_lock.lock().await;
-    let mut resets = 0;
-    loop {
-        let mut outcome = match push_sync_round(framed, root, identity, subpath, on_phase).await? {
-            RoundResult::Success(outcome) => outcome,
-            RoundResult::NeedsFullResync => {
-                resets += 1;
-                if resets > MAX_RESET_RETRIES {
-                    anyhow::bail!(
-                        "gateway workspace reset loop detected: server workspace remains fresh after resync for {}",
-                        identity.name
-                    );
-                }
-                continue;
-            }
-        };
+    push_workspace_sync_inner(framed, root, identity, subpath, true, on_phase).await
+}
 
-        // The gateway removed files a command changed after its client left and it could not put
-        // back (#262). They go in one more round on this connection, so that what runs next sees
-        // the checkout's version of them; a second report waits for the next sync.
-        if !outcome.stale_paths.is_empty() {
-            resend_lost_files(root, &gateway_node(framed), &outcome.stale_paths);
-            match push_sync_round(framed, root, identity, subpath, on_phase).await? {
-                RoundResult::Success(again) => {
-                    outcome.files_updated += again.files_updated;
-                    outcome.files_deleted += again.files_deleted;
-                    outcome.bytes_transferred += again.bytes_transferred;
-                    outcome.changed_paths.extend(again.changed_paths);
-                    outcome.stale_paths = again.stale_paths;
-                    // Still not written though sent again: what runs next would see the node's
-                    // old copy. The sync fails, and the next one sends them again (#1475).
-                    // A sync of one subpath sends nothing outside it.
-                    let scope = crate::sync::filter_path::SyncPathFilter::new(root, subpath)?;
-                    let unwritten: Vec<String> = outcome
-                        .stale_paths
-                        .iter()
-                        .filter(|p| scope.includes(p))
-                        .cloned()
-                        .collect();
-                    if !unwritten.is_empty() {
-                        resend_lost_files(root, &gateway_node(framed), &unwritten);
-                        anyhow::bail!(
-                            "the node could not write {} file(s) of {} though they were sent \
-                             again: {}; nothing runs against its old copy of them. Check the \
-                             node's free space with `prod-code status`; the next sync sends them \
-                             again",
-                            unwritten.len(),
-                            identity.name,
-                            unwritten.join(", ")
-                        );
-                    }
-                }
+async fn push_workspace_sync_inner(
+    framed: &mut Framed<AnyStream, ProdCodeCodec>,
+    root: &Path,
+    identity: &WorkspaceIdentity,
+    subpath: Option<&Path>,
+    allow_probe: bool,
+    on_phase: &mut (dyn FnMut(&'static str) + Send),
+) -> Result<SyncOutcome> {
+    const MAX_RESET_RETRIES: usize = 2;
+    let mut report_phase = |phase: &'static str| {
+        set_active_sync_stage(Some(phase));
+        on_phase(phase);
+    };
+    let result = async {
+        report_phase("waiting for local workspace sync lock");
+        let sync_lock = workspace_sync_lock(root, &gateway_node(framed));
+        let _sync_guard = sync_lock.lock().await;
+        let mut resets = 0;
+        loop {
+            let mut outcome = match push_sync_round(
+                framed,
+                root,
+                identity,
+                subpath,
+                allow_probe,
+                &mut report_phase,
+            )
+            .await?
+            {
+                RoundResult::Success(outcome) => outcome,
                 RoundResult::NeedsFullResync => {
                     resets += 1;
                     if resets > MAX_RESET_RETRIES {
@@ -180,10 +168,70 @@ pub async fn push_workspace_sync_with_progress(
                     }
                     continue;
                 }
+            };
+
+            // The gateway removed files a command changed after its client left and it could not put
+            // back (#262). They go in one more round on this connection, so that what runs next sees
+            // the checkout's version of them; a second report waits for the next sync.
+            if !outcome.stale_paths.is_empty() {
+                resend_lost_files(root, &gateway_node(framed), &outcome.stale_paths);
+                match push_sync_round(
+                    framed,
+                    root,
+                    identity,
+                    subpath,
+                    allow_probe,
+                    &mut report_phase,
+                )
+                .await?
+                {
+                    RoundResult::Success(again) => {
+                        outcome.files_updated += again.files_updated;
+                        outcome.files_deleted += again.files_deleted;
+                        outcome.bytes_transferred += again.bytes_transferred;
+                        outcome.changed_paths.extend(again.changed_paths);
+                        outcome.stale_paths = again.stale_paths;
+                        // Still not written though sent again: what runs next would see the node's
+                        // old copy. The sync fails, and the next one sends them again (#1475).
+                        // A sync of one subpath sends nothing outside it.
+                        let scope = crate::sync::filter_path::SyncPathFilter::new(root, subpath)?;
+                        let unwritten: Vec<String> = outcome
+                            .stale_paths
+                            .iter()
+                            .filter(|p| scope.includes(p))
+                            .cloned()
+                            .collect();
+                        if !unwritten.is_empty() {
+                            resend_lost_files(root, &gateway_node(framed), &unwritten);
+                            anyhow::bail!(
+                                "the node could not write {} file(s) of {} though they were sent \
+                                 again: {}; nothing runs against its old copy of them. Check the \
+                                 node's free space with `prod-code status`; the next sync sends them \
+                                 again",
+                                unwritten.len(),
+                                identity.name,
+                                unwritten.join(", ")
+                            );
+                        }
+                    }
+                    RoundResult::NeedsFullResync => {
+                        resets += 1;
+                        if resets > MAX_RESET_RETRIES {
+                            anyhow::bail!(
+                                "gateway workspace reset loop detected: server workspace remains fresh after resync for {}",
+                                identity.name
+                            );
+                        }
+                        continue;
+                    }
+                }
             }
+            return Ok(outcome);
         }
-        return Ok(outcome);
     }
+    .await;
+    set_active_sync_stage(None);
+    result
 }
 
 /// The `host:port` of the gateway on the other end of `framed`, which keys its watermark.
@@ -200,6 +248,7 @@ async fn push_sync_round(
     root: &Path,
     identity: &WorkspaceIdentity,
     subpath: Option<&Path>,
+    allow_probe: bool,
     on_phase: &mut (dyn FnMut(&'static str) + Send),
 ) -> Result<RoundResult> {
     on_phase("preparing workspace sync");
@@ -217,9 +266,16 @@ async fn push_sync_round(
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .contains(&(canonical_root.clone(), node.clone()));
-    let needs_probe = plan.initial || is_first_contact;
+    let needs_probe = allow_probe && (plan.initial || is_first_contact);
 
-    let mut uploading_full_manifest = false;
+    let mut uploading_full_manifest = !needs_probe
+        && subpath.is_none()
+        && !plan.state.files.is_empty()
+        && plan.state.files.keys().all(|rel| {
+            plan.files
+                .iter()
+                .any(|f| &f.relative_path == rel && f.content.is_some())
+        });
     if needs_probe {
         on_phase("waiting for sync probe response");
         let probed_manifest = plan.manifest();
@@ -278,7 +334,7 @@ async fn push_sync_round(
     // An empty delta is still sent on later rounds: the gateway's answer tells whether its
     // copy of the workspace still exists, so a pruned or never-seen node is caught here
     // instead of failing the query or command that follows.
-    if !plan.files.is_empty() || !plan.initial {
+    if !plan.files.is_empty() || !plan.initial || !allow_probe {
         let files = std::mem::take(&mut plan.files);
         outcome.changed_paths = files.iter().map(|f| f.relative_path.clone()).collect();
         for (i, files) in sync_batches(files, SYNC_BATCH_BYTES)
