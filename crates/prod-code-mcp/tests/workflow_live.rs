@@ -133,3 +133,95 @@ async fn workflow_live_ambiguous_symbol_takes_explicit_recovery_branch() {
         "{output}"
     );
 }
+
+#[tokio::test]
+#[ignore = "requires an explicitly selected existing gateway with Python analysis and basedpyright"]
+async fn workflow_live_python_inspection_apply_and_explicit_check() {
+    let remote: SocketAddr = std::env::var("PROD_CODE_WORKFLOW_TEST_REMOTE")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::write(
+        root.join("pyproject.toml"),
+        "[project]\nname=\"workflow_python\"\nversion=\"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("sample.py"),
+        "def answer() -> int:\n    return 1\n",
+    )
+    .unwrap();
+    let mut baseline = Vec::new();
+    let started = Instant::now();
+    for tool in ["code_definition", "code_hover"] {
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(45),
+            execute_tool(
+                remote,
+                root,
+                tool,
+                json!({"symbol":"answer","path":"sample.py"}),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(!result.is_error, "{}", text(&result));
+        baseline.push(text(&result));
+    }
+    let baseline_ms = started.elapsed().as_millis();
+    assert!(baseline[0].contains("def answer"));
+    assert!(baseline[1].contains("int"));
+    let started = Instant::now();
+    let inspection = execute_tool(
+        remote,
+        root,
+        "code_workflow",
+        json!({"symbol":"answer","path":"sample.py","include":["body","hover"],"timeout_ms":60000}),
+    )
+    .await
+    .unwrap();
+    let workflow_ms = started.elapsed().as_millis();
+    let report: Value = serde_json::from_str(&text(&inspection)).unwrap();
+    assert_eq!(report["steps"][1]["value"]["text"], baseline[0], "{report}");
+    assert_eq!(report["steps"][2]["value"]["text"], baseline[1], "{report}");
+    println!(
+        "Python inspection (baseline first; not a controlled speed benchmark): standalone_calls=2 workflow_calls=1 baseline_ms={baseline_ms} workflow_ms={workflow_ms} standalone_text_bytes={} workflow_result_bytes={}",
+        baseline.iter().map(String::len).sum::<usize>(),
+        serde_json::to_vec(&inspection).unwrap().len()
+    );
+
+    for (old, new, passes) in [
+        ("return 1", "return 2", true),
+        ("return 2", "return 'bad'", false),
+    ] {
+        let result = execute_tool(remote, root, "code_workflow", json!({"apply":true,"timeout_ms":120000,"steps":[
+            {"id":"proposal","tool":"preview","args":{"edits":[{"path":"sample.py","old":old,"new":new}]}},
+            {"id":"write","tool":"apply","args":{"files":{"$ref":"proposal#/files"}}},
+            {"id":"check","tool":"verify","args":{"kind":"check","path":"sample.py","timeout_secs":30}}
+        ]})).await.unwrap();
+        let report: Value = serde_json::from_str(&text(&result)).unwrap();
+        assert_eq!(
+            report["steps"][1]["effects"]["status"], "applied",
+            "{report}"
+        );
+        assert_eq!(
+            report["steps"][2]["effects"]["status"],
+            if passes { "passed" } else { "failed" },
+            "{report}"
+        );
+        assert_eq!(
+            report["status"],
+            if passes { "complete" } else { "partial" },
+            "{report}"
+        );
+        assert!(
+            std::fs::read_to_string(root.join("sample.py"))
+                .unwrap()
+                .contains(new)
+        );
+    }
+    prod_code_mcp::sync::clear_sync_cache(root);
+}

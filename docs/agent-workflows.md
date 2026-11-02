@@ -5,9 +5,10 @@ It uses the same operations, gateway protocol and language engines as individual
 tools. Existing tools remain available for a single lookup. The prototype does
 not introduce a shell, JavaScript runtime or a new network protocol.
 
-This is the first slice of #1795. Source edits, preview/apply and verification are
-not yet included. A single call is not a multi-file transaction, and the prototype
-does not claim that an index or a series of reads is a consistent filesystem snapshot.
+This documents the investigation slice of #1795. Explicit preview/apply and
+verification are described in [guarded edits](agent-workflow-edits.md). A single
+call is not a multi-file transaction, and the prototype does not claim that an
+index or a series of reads is a consistent filesystem snapshot.
 
 ## Example
 

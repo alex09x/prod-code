@@ -54,8 +54,8 @@ pub(crate) fn checked_position_argument(value: &serde_json::Value, name: &str) -
 /// disk and can safely execute concurrently with other read-only tool calls.
 pub(crate) fn is_read_only_tool(tool_name: &str, args: &serde_json::Value) -> bool {
     match tool_name {
-        "code_workflow"
-        | "code_definition"
+        "code_workflow" => args.get("apply").is_none_or(|value| value == false),
+        "code_definition"
         | "code_references"
         | "code_callers"
         | "code_callees"
