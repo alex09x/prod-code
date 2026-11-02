@@ -154,7 +154,7 @@ async fn workflow_path_escape_is_refused_before_network_access() {
     let result = execute(
         "127.0.0.1:1".parse().unwrap(),
         root.path(),
-        json!({"steps":[{
+        json!({"structured":true,"steps":[{
             "id":"read","tool":"code_outline","args":{"path":"../secret.rs"}
         }]}),
     )

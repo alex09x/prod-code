@@ -14,7 +14,7 @@ does not claim that an index or a series of reads is a consistent filesystem sna
 For common investigations, use a short form:
 
 ```json
-{"symbol":"Cache::get","include":["body","dependencies","callers"]}
+{"symbol":"Cache::get","include":["dependencies","callers"]}
 ```
 
 Or search for literal text and expand distinct enclosing symbol hints:
@@ -27,6 +27,10 @@ The search adapter reuses existing grep enrichment (a heuristic, not a new AST
 parser), deduplicates `(file, enclosing symbol)` hints and resolves each definition
 separately. Ambiguous hints fail visibly. Matches without an enclosing symbol stay
 in `unexpanded`; they are not silently counted as expanded definitions.
+Raw grep columns are returned as one-based UTF-8 byte columns (`column_bytes` or
+`match_column_bytes`), not LSP character positions. Expansion uses symbol hints
+and file paths. Unexpanded excerpts are limited to 256 bytes each and an 8 KiB
+total representation; omitted or shortened excerpts are marked explicitly.
 
 The equivalent explicit form for symbol context is:
 
@@ -55,6 +59,10 @@ returns `{items: [...], truncated, exhaustive: false}` with up to eight candidat
 Both return relative `path`, `line`, `character`, `name`, `kind` and `container`.
 The candidate list is not proof that every possible declaration is indexed.
 Regular `code_*` steps retain their arguments and return `{text: ...}`.
+The default symbol request uses the dependency slice, which already includes
+the seed body, avoiding a redundant standalone body query. Explicitly requesting
+both sections can repeat the seed; span-based deduplication across arbitrary
+operations is not implemented.
 
 Exact reference objects use a prior step ID followed by `#` and an RFC 6901 JSON
 pointer. Strings containing reference-like text are literal strings. Forward and
@@ -83,8 +91,10 @@ step is marked as failed and cannot be used as a successful reference.
 - Only selected step values are shown (`outputs`, last step by default). All
   step statuses and the executed-call count remain visible. `max_bytes` bounds
   the JSON report; oversized values are omitted whole and `truncated` is set.
-  MCP returns both text and `structuredContent` for compatibility, so total
-  transport bytes can be roughly twice the report budget plus framing.
+  Text always contains the JSON report. `structured:true` additionally returns
+  the full `structuredContent` for programmatic consumers; it is off by default
+  to avoid duplicating source in both channels. Transport bytes include framing
+  and JSON string escaping, and must be measured separately from report bytes.
 - Indexing, truncation and dependency-boundary warnings are retained per step even
   if its value is hidden by `outputs`, including warnings in completed iterations.
   At a tight output budget, `warning_steps` maps warning names to zero-based step
@@ -107,6 +117,10 @@ bytes. Baseline runs first; those timings are not a controlled speed benchmark.
 Before extending the contract, compare both orders on equivalent real tasks,
 including cold and unavailable analyzers, and inspect actual agent choices. Fewer
 model round trips alone does not establish better accuracy or less total context.
+Include the strongest existing baseline: direct `code_slice(symbol)` already
+retrieves a seed and its dependencies in one call. Do not attribute a three-call
+baseline's avoidable duplicate reads to an inherent limitation of existing tools.
+Compare both text and full MCP-result bytes, including optional structured data.
 
 Initial evaluation: the engine-level unit cases pass, and the live ambiguous-symbol
 recovery case passed. The standalone definition call in the live comparison timed

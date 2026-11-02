@@ -31,6 +31,10 @@ fn reference(value: &Value) -> Result<Option<(&str, &str)>> {
     Ok(Some((id, pointer)))
 }
 
+pub(super) fn is_reference(value: &Value) -> bool {
+    reference(value).is_ok_and(|reference| reference.is_some())
+}
+
 pub(super) fn validate(value: &Value, ids: &HashSet<String>, has_item: bool) -> Result<()> {
     if let Some((id, _)) = reference(value)? {
         if (id == "$item" && !has_item) || (id != "$item" && !ids.contains(id)) {

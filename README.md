@@ -71,7 +71,7 @@ flowchart TD
         Editor["Code Editors\n(Zed, VS Code, Neovim)"]
         CLI["prod-code CLI"]
 
-        Agent -->|"Native MCP (67 tools)"| MCPBridge["prod-code mcp"]
+        Agent -->|"Native MCP tools"| MCPBridge["prod-code mcp"]
         Editor -->|"LSP protocol"| LSPBridge["prod-code lsp"]
         CLI -->|"Commands / Queries"| ClientCore["prod-code client"]
 

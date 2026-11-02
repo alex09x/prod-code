@@ -342,6 +342,7 @@ pub use compile_gate::*;
 /// path/line/character before the handler runs, because the handler wants the name itself.
 #[cfg(test)]
 const NAMES_A_SYMBOL: &[&str] = &[
+    "code_workflow",
     "code_generate_fixture",
     "code_inline_parameter",
     "code_extract_delegate",

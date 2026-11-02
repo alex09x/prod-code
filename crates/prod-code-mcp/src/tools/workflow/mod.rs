@@ -13,6 +13,8 @@ mod metadata;
 mod metadata_tests;
 mod plan;
 mod references;
+#[cfg(test)]
+mod review_regressions;
 mod runner;
 mod schema;
 mod search;
@@ -36,6 +38,7 @@ pub(super) async fn execute(
     args: Value,
 ) -> Result<McpToolCallResult> {
     let plan = plan::Plan::parse(short_form::expand(args)?)?;
+    let structured = plan.structured;
     let mut selection = json!({});
     if let Some(workspace) = &plan.workspace {
         selection["workspace"] = json!(workspace);
@@ -48,11 +51,23 @@ pub(super) async fn execute(
     })
     .await;
     let mut result = McpToolCallResult::text(serde_json::to_string(&report)?);
-    result.structured_content = Some(report);
+    if structured {
+        result.structured_content = Some(report);
+    }
     Ok(result)
 }
 
 async fn invoke(remote: SocketAddr, root: &Path, tool: &str, mut args: Value) -> Result<Value> {
+    plan::validate_adapter_arguments(tool, &args)?;
+    if args
+        .get("path")
+        .and_then(Value::as_str)
+        .is_some_and(|path| path.trim().is_empty())
+    {
+        args.as_object_mut()
+            .context("args must be an object")?
+            .remove("path");
+    }
     // Always confine explicitly, including when the workflow selected its default root.
     args["workspace"] = json!(root);
     resolve_workspace_root(root, "code_definition", &mut args)?;
@@ -88,11 +103,7 @@ async fn invoke(remote: SocketAddr, root: &Path, tool: &str, mut args: Value) ->
                 .get("query")
                 .and_then(Value::as_str)
                 .context("symbols requires query")?;
-            let limit = args
-                .get("limit")
-                .and_then(Value::as_u64)
-                .unwrap_or(8)
-                .clamp(1, 8) as usize;
+            let limit = plan::limit(&args, 8)?;
             let hint = args
                 .get("path")
                 .and_then(Value::as_str)
@@ -148,10 +159,11 @@ async fn invoke(remote: SocketAddr, root: &Path, tool: &str, mut args: Value) ->
 }
 
 fn hit_value(root: &Path, hit: symbols::SymbolHit) -> Result<Value> {
-    let path = hit
-        .path
+    let normalized = std::fs::canonicalize(&hit.path).unwrap_or_else(|_| hit.path.clone());
+    let path = normalized
         .strip_prefix(root)
         .context("symbol candidate is outside the workflow workspace")?;
+    let path = path.to_str().context("symbol path is not valid UTF-8")?;
     Ok(
         json!({"path":path,"line":hit.line,"character":hit.col,"name":hit.name,"kind":hit.kind,"container":hit.container}),
     )

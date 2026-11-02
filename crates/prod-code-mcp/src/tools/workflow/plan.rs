@@ -34,6 +34,8 @@ pub(super) const TOOLS: &[&str] = &[
 pub(super) struct Plan {
     pub steps: Vec<Step>,
     #[serde(default)]
+    pub structured: bool,
+    #[serde(default)]
     pub workspace: Option<String>,
     #[serde(default)]
     pub outputs: Vec<String>,
@@ -127,6 +129,7 @@ impl Plan {
                 bail!("step args must be objects");
             }
             validate_arguments(&step.args)?;
+            validate_adapter_arguments(&step.tool, &step.args)?;
             super::references::validate(&step.args, &ids, step.for_each.is_some())?;
             if let Some(items) = &step.for_each {
                 super::references::validate(items, &ids, false)?;
@@ -154,11 +157,67 @@ pub(super) fn validate_arguments(value: &Value) -> Result<()> {
         bail!("resolved step args must be an object");
     }
     if let Some(object) = value.as_object() {
-        for key in ["workspace", "also_in", "build_index", "apply", "fix", "run"] {
+        for key in [
+            "workspace",
+            "also_in",
+            "build_index",
+            "apply",
+            "fix",
+            "run",
+            "symbols",
+        ] {
             if object.contains_key(key) {
                 bail!(
                     "workflow step argument '{key}' is unsupported; choose one workspace and investigation operations"
                 );
+            }
+        }
+        if let Some(symbol) = object.get("symbol")
+            && !symbol.is_string()
+            && !super::references::is_reference(symbol)
+        {
+            bail!(
+                "symbol must be a string or exact reference; use bounded for_each for multiple symbols"
+            );
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn limit(args: &Value, default: u64) -> Result<usize> {
+    let limit = match args.get("limit") {
+        None => default,
+        Some(value) => value
+            .as_u64()
+            .ok_or_else(|| anyhow::anyhow!("limit must be an integer in 1..=8"))?,
+    };
+    if !(1..=8).contains(&limit) {
+        bail!("limit must be in 1..=8");
+    }
+    Ok(limit as usize)
+}
+
+pub(super) fn validate_adapter_arguments(tool: &str, args: &Value) -> Result<()> {
+    if matches!(tool, "symbols" | "grep") {
+        if args
+            .get("limit")
+            .is_some_and(|value| !super::references::is_reference(value))
+        {
+            limit(args, 8)?;
+        }
+        let key = if tool == "symbols" {
+            "query"
+        } else {
+            "pattern"
+        };
+        if let Some(value) = args.get(key)
+            && !super::references::is_reference(value)
+        {
+            let text = value
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("{key} must be a string"))?;
+            if text.is_empty() {
+                bail!("{key} must not be empty");
             }
         }
     }

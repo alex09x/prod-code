@@ -7,7 +7,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::{
     collections::HashSet,
@@ -20,8 +20,7 @@ pub(super) async fn grep(remote: SocketAddr, root: &Path, args: Value) -> Result
         .as_str()
         .context("grep requires pattern")?
         .to_owned();
-    let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(3) as usize;
-    ensure!((1..=8).contains(&limit), "grep limit must be 1..=8");
+    let limit = super::plan::limit(&args, 3)?;
     let options = crate::grep::GrepOptions {
         pattern,
         path: args.get("path").and_then(Value::as_str).map(PathBuf::from),
@@ -36,6 +35,8 @@ pub(super) async fn grep(remote: SocketAddr, root: &Path, args: Value) -> Result
     let mut seen = HashSet::new();
     let mut items = Vec::new();
     let mut unexpanded = Vec::new();
+    let mut unexpanded_total = 0;
+    let mut unexpanded_bytes = 0;
     let mut truncated = report.truncated;
     for hit in report.hits {
         if let Some(symbol) = hit.enclosing_symbol {
@@ -46,12 +47,25 @@ pub(super) async fn grep(remote: SocketAddr, root: &Path, args: Value) -> Result
                 truncated = true;
                 continue;
             }
-            items.push(json!({"path":hit.path,"symbol":symbol,"match_line":hit.line,"match_character":hit.column}));
+            items.push(json!({"path":hit.path,"symbol":symbol,"match_line":hit.line,"match_column_bytes":hit.column}));
         } else {
-            unexpanded.push(json!({"path":hit.path,"line":hit.line,"text":hit.text}));
+            unexpanded_total += 1;
+            let mut end = hit.text.len().min(256);
+            while !hit.text.is_char_boundary(end) {
+                end -= 1;
+            }
+            let shortened = end < hit.text.len();
+            let row = json!({"path":hit.path,"line":hit.line,"column_bytes":hit.column,"text":&hit.text[..end],"text_truncated":shortened});
+            let bytes = serde_json::to_vec(&row)?.len();
+            if unexpanded.len() < 8 && unexpanded_bytes + bytes <= 8192 {
+                unexpanded.push(row);
+                unexpanded_bytes += bytes;
+            }
+            truncated |= shortened;
         }
     }
+    let unexpanded_truncated = unexpanded_total > unexpanded.len();
     Ok(
-        json!({"items":items,"unexpanded":unexpanded,"truncated":truncated,"incomplete":!unexpanded.is_empty(),"engine":report.engine,"enclosing_symbols":"heuristic hints; definitions are resolved separately"}),
+        json!({"items":items,"unexpanded":unexpanded,"unexpanded_total":unexpanded_total,"unexpanded_truncated":unexpanded_truncated,"truncated":truncated || unexpanded_truncated,"incomplete":unexpanded_total > 0,"engine":report.engine,"enclosing_symbols":"heuristic hints; definitions are resolved separately"}),
     )
 }

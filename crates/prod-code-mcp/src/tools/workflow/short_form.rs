@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 #[serde(deny_unknown_fields)]
 struct Inspect {
     symbol: String,
+    structured: Option<bool>,
     path: Option<String>,
     workspace: Option<String>,
     #[serde(default = "default_include")]
@@ -25,17 +26,73 @@ struct Inspect {
 }
 
 fn default_include() -> Vec<String> {
-    vec!["body".into(), "dependencies".into()]
+    vec!["dependencies".into()]
 }
 
+pub(super) const PLAN_FIELDS: &[&str] = &[
+    "steps",
+    "workspace",
+    "outputs",
+    "max_bytes",
+    "timeout_ms",
+    "structured",
+];
+pub(super) const SYMBOL_FIELDS: &[&str] = &[
+    "symbol",
+    "path",
+    "workspace",
+    "include",
+    "depth",
+    "max_bytes",
+    "timeout_ms",
+    "structured",
+];
+pub(super) const SEARCH_FIELDS: &[&str] = &[
+    "grep",
+    "path",
+    "workspace",
+    "limit",
+    "fixed_strings",
+    "max_bytes",
+    "timeout_ms",
+    "structured",
+];
+
 pub(super) fn expand(value: Value) -> Result<Value> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("workflow must be an object"))?;
+    let modes = ["steps", "symbol", "grep"]
+        .into_iter()
+        .filter(|key| object.contains_key(*key))
+        .collect::<Vec<_>>();
+    if modes.len() != 1 {
+        bail!("provide exactly one of steps, symbol or grep");
+    }
+    let fields = match modes[0] {
+        "steps" => PLAN_FIELDS,
+        "symbol" => SYMBOL_FIELDS,
+        _ => SEARCH_FIELDS,
+    };
+    if let Some(unknown) = object.keys().find(|key| !fields.contains(&key.as_str())) {
+        bail!(
+            "field '{unknown}' is not supported in the {} form",
+            modes[0]
+        );
+    }
     if value.get("steps").is_some() {
+        if !value["steps"].is_array() {
+            bail!("steps must be an array");
+        }
         return Ok(value);
     }
     if value.get("grep").is_some() {
         return expand_search(serde_json::from_value(value)?);
     }
     let input: Inspect = serde_json::from_value(value)?;
+    if input.depth.is_some_and(|depth| depth > 3) {
+        bail!("depth must be in 0..=3");
+    }
     if input.symbol.trim().is_empty() {
         bail!("symbol must not be empty");
     }
@@ -47,6 +104,8 @@ pub(super) fn expand(value: Value) -> Result<Value> {
         steps[0]["args"]["path"] = json!(path);
     }
     let mut outputs = Vec::new();
+    let slice_budget =
+        input.max_bytes.unwrap_or(24_000).saturating_sub(1024) / (2 * input.include.len());
     for section in input.include {
         if outputs.contains(&section) {
             bail!("duplicate include section: {section}");
@@ -63,13 +122,16 @@ pub(super) fn expand(value: Value) -> Result<Value> {
         };
         let mut args = json!({"path":{"$ref":"target#/path"},"line":{"$ref":"target#/line"},"character":{"$ref":"target#/character"}});
         if section == "dependencies" {
-            args["depth"] = json!(input.depth.unwrap_or(1).min(3));
-            args["max_bytes"] = json!(input.max_bytes.unwrap_or(24_000));
+            args["depth"] = json!(input.depth.unwrap_or(1));
+            args["max_bytes"] = json!(slice_budget);
         }
         steps.push(json!({"id":section,"tool":tool,"args":args}));
         outputs.push(section);
     }
     let mut plan = json!({"steps":steps,"outputs":outputs});
+    if let Some(structured) = input.structured {
+        plan["structured"] = json!(structured);
+    }
     if let Some(workspace) = input.workspace {
         plan["workspace"] = json!(workspace);
     }
@@ -86,6 +148,7 @@ pub(super) fn expand(value: Value) -> Result<Value> {
 #[serde(deny_unknown_fields)]
 struct Search {
     grep: String,
+    structured: Option<bool>,
     path: Option<String>,
     workspace: Option<String>,
     limit: Option<usize>,
@@ -95,6 +158,9 @@ struct Search {
 }
 
 fn expand_search(input: Search) -> Result<Value> {
+    if input.grep.trim().is_empty() {
+        bail!("grep must contain non-whitespace text");
+    }
     let limit = input.limit.unwrap_or(3);
     if !(1..=8).contains(&limit) {
         bail!("limit must be 1..=8");
@@ -109,6 +175,9 @@ fn expand_search(input: Search) -> Result<Value> {
             "path":{"$ref":"$item#/path"},"symbol":{"$ref":"$item#/symbol"}
         }}
     ]});
+    if let Some(structured) = input.structured {
+        plan["structured"] = json!(structured);
+    }
     if let Some(workspace) = input.workspace {
         plan["workspace"] = json!(workspace);
     }

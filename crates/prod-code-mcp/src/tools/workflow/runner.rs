@@ -119,14 +119,44 @@ where
     // chopping serialized JSON, positions or source code at an arbitrary byte boundary.
     let mut report = json!({"status":if partial {"partial"} else {"complete"}, "executed_calls":calls,"truncated":false,"steps":results});
     if serde_json::to_vec(&report).is_ok_and(|bytes| bytes.len() > plan.max_bytes) {
-        for result in report["steps"].as_array_mut().expect("step array") {
+        let mut sizes = report["steps"]
+            .as_array()
+            .expect("step array")
+            .iter()
+            .enumerate()
+            .map(|(index, step)| {
+                let size = ["value", "partial_value"]
+                    .iter()
+                    .filter_map(|key| step.get(key))
+                    .map(|value| serde_json::to_vec(value).map_or(0, |bytes| bytes.len()))
+                    .sum::<usize>();
+                (index, size)
+            })
+            .collect::<Vec<_>>();
+        sizes.sort_by_key(|(index, size)| (std::cmp::Reverse(*size), std::cmp::Reverse(*index)));
+        for (index, size) in sizes {
+            if serde_json::to_vec(&report).is_ok_and(|bytes| bytes.len() <= plan.max_bytes) {
+                break;
+            }
+            if size == 0 {
+                continue;
+            }
+            let original = report["steps"][index].clone();
+            let before = serde_json::to_vec(&report).map_or(usize::MAX, |bytes| bytes.len());
+            let result = &mut report["steps"][index];
             let object = result.as_object_mut().expect("step object");
             let removed = object.remove("value").is_some();
             let partial_removed = object.remove("partial_value").is_some();
             if removed || partial_removed {
                 result["output_omitted"] =
                     json!("max_bytes budget; request a smaller result or select fewer outputs");
+            }
+            if (removed || partial_removed)
+                && serde_json::to_vec(&report).is_ok_and(|bytes| bytes.len() < before)
+            {
                 truncated = true;
+            } else {
+                report["steps"][index] = original;
             }
         }
     }
