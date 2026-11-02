@@ -75,10 +75,11 @@ before application reports zero writes. An unconfirmed backend failure or
 cancelled wait does not claim that changes were rolled back. Inspect the backend
 error and current files before deciding how to proceed.
 
-Fingerprints detect content already changed when checked. The writer gates
-coordinate prod-code operations, not arbitrary external editors. An editor can
-still change a path after the check; no universal compare-and-swap or crash-safe
-multi-file transaction is promised. See [backend feasibility](workflow-staging-feasibility.md).
+Fingerprints detect content already changed when checked. Writer gates serialize
+cooperating requests within one MCP process. Other MCP/CLI processes and external
+editors can still change a path after the check; these gates are not cross-process
+locks or a filesystem compare-and-swap. No crash-safe multi-file transaction is
+promised. See [backend feasibility](workflow-staging-feasibility.md).
 
 ## Requested checks only
 

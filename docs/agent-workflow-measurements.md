@@ -67,3 +67,26 @@ stronger baseline, balance execution order after explicit warm-up, and record
 correctness, full model-visible bytes and calls independently of latency. Real
 agent success, cold/unavailable index behavior and broad language coverage are
 not established by three synthetic scenarios.
+
+## Actual MCP session on this repository
+
+A native Linux client built from `da9e820d` was started as `prod-code mcp` over
+stdio against a running gateway. MCP `initialize` and `tools/list` succeeded;
+the advertised schema included the workflow's explicit application permission.
+
+The session searched this repository for `workflow reached its 32-call budget`
+and expanded the enclosing `execute_step` definition. Standalone `code_grep` plus
+`code_definition` took two calls; the short grep workflow took one call containing
+two operations. It returned exactly the same complete definition, with a
+`complete` report.
+
+JSON-normalized MCP result objects totalled 3116 bytes for standalone calls and
+3550 bytes for the workflow, excluding JSON-RPC envelopes. These are not raw
+transport byte counts. Standalone-first timings were 14840 ms and 149 ms for
+the subsequent warmer workflow; they do not establish a latency improvement.
+This real-repository example also reduced calls while increasing response size.
+
+The smoke uncovered stale initialization guidance calling the workflow read-only
+despite its mutating schema. Initialization instructions were corrected to state
+the explicit preview/apply/verification contract. Installed clients and gateways
+were not replaced during this test.
