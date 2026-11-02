@@ -49,14 +49,32 @@ pub(crate) fn definition_budget(
     })
 }
 
-pub(crate) fn definition_busy_message(budget: DefinitionBudget) -> String {
+pub(crate) fn definition_busy_message(
+    budget: DefinitionBudget,
+    sync_stage: Option<&str>,
+) -> String {
+    if let Some(stage) = sync_stage {
+        return format!(
+            "code_definition did not finish within {} ms while {stage}; workspace sync did not complete before the budget expired. Check the node with `prod-code status` and retry.",
+            budget.duration.as_millis()
+        );
+    }
     format!(
         "code_definition did not finish within {} ms; the analyzer may be busy indexing or compiling. Retry, or pass a specific path and position.",
         budget.duration.as_millis()
     )
 }
 
-pub(crate) fn definition_subrequest_timeout_message(budget: DefinitionBudget) -> String {
+pub(crate) fn definition_subrequest_timeout_message(
+    budget: DefinitionBudget,
+    error: &anyhow::Error,
+) -> String {
+    if is_sync_timeout(error) {
+        return format!(
+            "code_definition timed out during workspace sync before the shared {} ms budget completed: {error:#}",
+            budget.duration.as_millis()
+        );
+    }
     format!(
         "A code_definition LSP request timed out before the shared {} ms budget completed; the analyzer may be busy indexing or compiling. Retry or pass a specific path and position.",
         budget.duration.as_millis()
@@ -91,18 +109,44 @@ pub(super) fn references_budget(
     })
 }
 
-pub(super) fn references_busy_message(budget: DefinitionBudget) -> String {
+pub(super) fn references_busy_message(
+    budget: DefinitionBudget,
+    sync_stage: Option<&str>,
+) -> String {
+    if let Some(stage) = sync_stage {
+        return format!(
+            "code_references did not finish within {} ms while {stage}; workspace sync did not complete before the budget expired. Check the node with `prod-code status` and retry.",
+            budget.duration.as_millis()
+        );
+    }
     format!(
         "code_references did not finish within {} ms; the analyzer may be busy indexing or compiling. Retry, or pass a narrower path or symbol.",
         budget.duration.as_millis()
     )
 }
 
-pub(super) fn references_subrequest_timeout_message(budget: DefinitionBudget) -> String {
+pub(super) fn references_subrequest_timeout_message(
+    budget: DefinitionBudget,
+    error: &anyhow::Error,
+) -> String {
+    if is_sync_timeout(error) {
+        return format!(
+            "code_references timed out during workspace sync before the shared {} ms budget completed: {error:#}",
+            budget.duration.as_millis()
+        );
+    }
     format!(
         "A code_references LSP request timed out before the shared {} ms budget completed; the analyzer may be busy indexing or compiling. Retry or pass a narrower path or symbol.",
         budget.duration.as_millis()
     )
+}
+
+pub(super) fn is_sync_timeout(error: &anyhow::Error) -> bool {
+    let message = format!("{error:#}").to_ascii_lowercase();
+    (message.contains("timeout") || message.contains("timed out") || message.contains("deadline"))
+        && (message.contains("workspace sync")
+            || message.contains("sync probe")
+            || message.contains("waiting for sync"))
 }
 
 pub(super) fn is_timeout_error(error: &anyhow::Error) -> bool {
@@ -150,9 +194,57 @@ mod tests {
             deadline: tokio::time::Instant::now() + Duration::from_millis(500),
             duration: Duration::from_millis(500),
         };
-        let message = references_subrequest_timeout_message(budget);
+        let lsp_error = anyhow::anyhow!("timeout waiting for textDocument/references");
+        let message = references_subrequest_timeout_message(budget, &lsp_error);
         assert!(message.contains("code_references LSP request timed out"));
         assert!(message.contains("before the shared 500 ms budget completed"));
+    }
+
+    #[test]
+    fn sync_and_probe_timeouts_preserve_sync_cause_instead_of_claiming_lsp_busy() {
+        let budget = DefinitionBudget {
+            deadline: tokio::time::Instant::now() + Duration::from_millis(120_000),
+            duration: Duration::from_millis(120_000),
+        };
+        let probe_timeout = anyhow::anyhow!(
+            "timed out after 30s waiting for sync probe response from gateway 127.0.0.1:9400"
+        )
+        .context("workspace sync on the open session failed");
+        assert!(is_timeout_error(&probe_timeout));
+        assert!(is_sync_timeout(&probe_timeout));
+
+        let def_msg = definition_subrequest_timeout_message(budget, &probe_timeout);
+        assert!(
+            def_msg.contains("timed out during workspace sync"),
+            "{def_msg}"
+        );
+        assert!(
+            def_msg.contains("waiting for sync probe response"),
+            "{def_msg}"
+        );
+        assert!(!def_msg.contains("LSP request timed out"), "{def_msg}");
+        assert!(
+            !def_msg.contains("the analyzer may be busy indexing or compiling"),
+            "{def_msg}"
+        );
+
+        let ref_msg = references_subrequest_timeout_message(budget, &probe_timeout);
+        assert!(
+            ref_msg.contains("timed out during workspace sync"),
+            "{ref_msg}"
+        );
+        assert!(
+            ref_msg.contains("waiting for sync probe response"),
+            "{ref_msg}"
+        );
+        assert!(!ref_msg.contains("LSP request timed out"), "{ref_msg}");
+
+        let busy_sync = definition_busy_message(budget, Some("waiting for sync probe response"));
+        assert!(
+            busy_sync.contains("waiting for sync probe response")
+                && !busy_sync.contains("the analyzer may be busy indexing or compiling"),
+            "{busy_sync}"
+        );
     }
 
     #[test]

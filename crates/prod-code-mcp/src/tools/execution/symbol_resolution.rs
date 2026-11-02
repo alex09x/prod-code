@@ -103,23 +103,32 @@ pub(super) async fn resolve_symbol_args(
         }
     };
     let candidates = match (reference_budget, tool_name == "code_references") {
-        (Some(budget), true) => match tokio::time::timeout_at(budget.deadline, lookup).await {
-            Ok(Ok(candidates)) => candidates,
-            Ok(Err(error)) if super::budgets::is_timeout_error(&error) => {
-                return Ok(SymbolResolution::Respond(McpToolCallResult::error(
-                    references_subrequest_timeout_message(budget),
-                )));
+        (Some(budget), true) => {
+            let sync_stage = crate::sync::types::SyncStageTracker::new();
+            let tracked =
+                crate::sync::types::scope_sync_stage(std::sync::Arc::clone(&sync_stage), lookup);
+            match tokio::time::timeout_at(budget.deadline, tracked).await {
+                Ok(Ok(candidates)) => candidates,
+                Ok(Err(error)) if super::budgets::is_timeout_error(&error) => {
+                    return Ok(SymbolResolution::Respond(McpToolCallResult::error(
+                        references_subrequest_timeout_message(budget, &error),
+                    )));
+                }
+                Ok(Err(error)) => return Err(error),
+                Err(_) => {
+                    return Ok(SymbolResolution::Respond(McpToolCallResult::error(
+                        references_busy_message(budget, sync_stage.get()),
+                    )));
+                }
             }
-            Ok(Err(error)) => return Err(error),
-            Err(_) => {
-                return Ok(SymbolResolution::Respond(McpToolCallResult::error(
-                    references_busy_message(budget),
-                )));
-            }
-        },
+        }
         _ => match lookup.await {
             Ok(candidates) => candidates,
-            Err(error) if tool_name == "code_definition" => {
+            Err(error)
+                if tool_name == "code_definition"
+                    && !super::budgets::is_timeout_error(&error)
+                    && !crate::session::is_connection_error(&error) =>
+            {
                 let unindexed_hits = super::super::definition::find_unindexed_rust_declarations(
                     workspace_root,
                     &symbol_trimmed,

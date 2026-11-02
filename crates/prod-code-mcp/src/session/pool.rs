@@ -22,6 +22,7 @@ use super::types::{LspSession, OPEN_BUDGET, budget_for, timeout_error};
 pub(crate) fn is_connection_error(err: &anyhow::Error) -> bool {
     let text = format!("{err:#}").to_ascii_lowercase();
     text.contains("closed")
+        || text.contains("disconnected")
         || text.contains("timeout")
         || text.contains("timed out")
         || text.contains("broken pipe")
@@ -273,7 +274,8 @@ pub(crate) async fn pooled_query_with_budget(
                     session = None;
                     // A timeout is already a spent budget; repeating the same analysis
                     // immediately used to double the wait. The next call may retry it.
-                    let timeout = format!("{err:#}").to_ascii_lowercase().contains("timeout");
+                    let lower = format!("{err:#}").to_ascii_lowercase();
+                    let timeout = lower.contains("timeout") || lower.contains("timed out");
                     if attempt == 0 && !timeout && method != "workspace/executeCommand" {
                         continue;
                     }

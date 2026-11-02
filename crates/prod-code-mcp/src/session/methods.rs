@@ -16,7 +16,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use url::Url;
 
-use crate::sync::{push_workspace_sync, workspace_identity};
+use crate::sync::{push_session_sync, workspace_identity};
 
 use super::types::{LspSession, budget_for, record_indexing_note, text_hash};
 
@@ -257,7 +257,7 @@ impl LspSession {
     pub async fn refresh(&mut self) -> Result<()> {
         crate::call_tree::clear_call_hierarchy_cache_for(&self.root);
         let identity = workspace_identity(&self.root);
-        let outcome = push_workspace_sync(&mut self.framed, &self.root, &identity, None)
+        let outcome = push_session_sync(&mut self.framed, &self.root, &identity)
             .await
             .context("workspace sync on the open session failed")?;
         if !outcome.changed_paths.is_empty() {
