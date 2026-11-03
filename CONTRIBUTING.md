@@ -1,9 +1,9 @@
 # Contributing
 
 prod-code is developed in the open, and every change goes through the same path,
-whether a person or an agent writes it. There is no hosted CI: checks and benchmarks run on
-the project's build nodes, which are far faster than a shared runner, and the pull request
-records what was run and what it showed.
+whether a person or an agent writes it. Focused development checks run on the project's
+build nodes and are recorded in the pull request. Hosted CI checks the completed PR;
+[GitHub Actions](docs/github-actions.md) also documents protected native releases.
 
 ## One unit of work = one issue + one pull request
 
