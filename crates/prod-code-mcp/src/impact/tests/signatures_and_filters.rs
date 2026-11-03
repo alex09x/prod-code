@@ -310,7 +310,13 @@ export const routeMethod = (req) => {
         }
     ]);
     let mut out = Vec::new();
-    collect_functions(symbols.as_array().unwrap(), Some(js_code), &mut out).unwrap();
+    collect_functions(
+        symbols.as_array().unwrap(),
+        Some(js_code),
+        "typescript",
+        &mut out,
+    )
+    .unwrap();
     let names: Vec<&str> = out.iter().map(|(n, _, _, _, _)| n.as_str()).collect();
     assert_eq!(
         names,

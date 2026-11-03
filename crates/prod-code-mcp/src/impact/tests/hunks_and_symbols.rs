@@ -93,7 +93,7 @@ fn a_malformed_document_symbol_is_an_error_not_a_skipped_entry() {
     };
     let mut out = Vec::new();
     assert_eq!(
-        collect_functions(&[function(serde_json::json!(1))], None, &mut out),
+        collect_functions(&[function(serde_json::json!(1))], None, "rust", &mut out),
         Ok(())
     );
     assert_eq!(out, vec![("f".to_string(), 2, 4, 2, 4)]);
@@ -113,14 +113,22 @@ fn a_malformed_document_symbol_is_an_error_not_a_skipped_entry() {
         module(serde_json::json!({ "x": 1 })),
         module(serde_json::json!([function(serde_json::json!("1"))])),
     ] {
-        let error =
-            collect_functions(std::slice::from_ref(&bad), None, &mut Vec::new()).unwrap_err();
+        let error = collect_functions(std::slice::from_ref(&bad), None, "rust", &mut Vec::new())
+            .unwrap_err();
         assert!(error.contains("cannot read"), "{bad}: {error}");
     }
     // An empty list, or a symbol with no children, is a complete answer.
-    assert_eq!(collect_functions(&[], None, &mut Vec::new()), Ok(()));
     assert_eq!(
-        collect_functions(&[module(serde_json::json!([]))], None, &mut Vec::new()),
+        collect_functions(&[], None, "rust", &mut Vec::new()),
+        Ok(())
+    );
+    assert_eq!(
+        collect_functions(
+            &[module(serde_json::json!([]))],
+            None,
+            "rust",
+            &mut Vec::new()
+        ),
         Ok(())
     );
 
@@ -149,7 +157,10 @@ fn a_malformed_document_symbol_is_an_error_not_a_skipped_entry() {
         }),
     ];
     let mut js_out = Vec::new();
-    assert_eq!(collect_functions(&js_syms, None, &mut js_out), Ok(()));
+    assert_eq!(
+        collect_functions(&js_syms, None, "rust", &mut js_out),
+        Ok(())
+    );
     assert_eq!(
         js_out,
         vec![
@@ -184,7 +195,7 @@ fn a_malformed_document_symbol_is_an_error_not_a_skipped_entry() {
     })];
     let mut rust_out = Vec::new();
     assert_eq!(
-        collect_functions(&rust_fn_with_locals, None, &mut rust_out),
+        collect_functions(&rust_fn_with_locals, None, "rust", &mut rust_out),
         Ok(())
     );
     assert_eq!(
@@ -293,7 +304,13 @@ fn string_literals_with_source_text_are_not_callable_declarations() {
     ]);
     let mut functions = Vec::new();
 
-    collect_functions(symbols.as_array().unwrap(), Some(text), &mut functions).unwrap();
+    collect_functions(
+        symbols.as_array().unwrap(),
+        Some(text),
+        "rust",
+        &mut functions,
+    )
+    .unwrap();
 
     assert_eq!(
         functions
@@ -323,7 +340,13 @@ fn a_non_rust_literal_that_confuses_the_rust_lexer_does_not_drop_text_fallback()
     ]);
     let mut functions = Vec::new();
 
-    collect_functions(symbols.as_array().unwrap(), Some(text), &mut functions).unwrap();
+    collect_functions(
+        symbols.as_array().unwrap(),
+        Some(text),
+        "typescript",
+        &mut functions,
+    )
+    .unwrap();
 
     assert_eq!(
         functions
@@ -354,7 +377,13 @@ fn flat_document_symbols_do_not_promote_function_local_closures() {
     ]);
     let mut functions = Vec::new();
 
-    collect_functions(symbols.as_array().unwrap(), Some(text), &mut functions).unwrap();
+    collect_functions(
+        symbols.as_array().unwrap(),
+        Some(text),
+        "rust",
+        &mut functions,
+    )
+    .unwrap();
 
     assert_eq!(
         functions

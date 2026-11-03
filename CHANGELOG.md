@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **Rust Callable Impact Classification** (`crates/prod-code-mcp`, #1806): Local bindings and record fields are excluded from callable impact even when their initializer contains a closure or their name contains `function`. Rust binding-only parameter mutability no longer reports a call-signature change; reference mutability remains significant. UTF-16 symbol positions and non-Rust callable names retain their language semantics.
 - **Ripgrep Filename Discovery Guard** (`scripts/hooks`, #1803): `rg --files` is treated as filename enumeration, including clustered glob flags. Search-mode overrides and option values that contain `--files` retain normal source-content interception. The argument parser is included in the versioned hook bundle.
 
 ## v0.3.49 — 2026-11-02
