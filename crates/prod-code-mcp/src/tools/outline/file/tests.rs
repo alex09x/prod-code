@@ -11,6 +11,49 @@
 use super::*;
 use std::time::Duration;
 
+#[test]
+fn issue_1802_immediate_swift_transport_failure_returns_an_explicit_local_outline() {
+    let source = "public struct Demo {\n public func render() {}\n}\n";
+    for error in [
+        anyhow::anyhow!("Host is down (os error 64)"),
+        anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "refused",
+        )),
+    ] {
+        let (symbols, note) = swift_result(Some(source), Err(error)).unwrap();
+        assert_eq!(symbols, local_swift_outline_symbols(source));
+        assert!(symbols.to_string().contains("Demo"));
+        assert!(
+            note.unwrap()
+                .contains("lexical outline, not analyzer output")
+        );
+        assert!(note.unwrap().contains("prod-code cluster"));
+    }
+}
+
+#[test]
+fn issue_1802_swift_security_errors_and_missing_local_source_do_not_fake_success() {
+    let error = swift_result(
+        Some("struct Demo {}"),
+        Err(anyhow::anyhow!("TLS certificate rejected")),
+    )
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("TLS certificate rejected"));
+    assert!(format!("{error:#}").contains("prod-code cluster"));
+    let nested = anyhow::Error::new(std::io::Error::new(
+        std::io::ErrorKind::ConnectionReset,
+        "reset",
+    ))
+    .context("TLS authentication failed");
+    assert!(swift_result(Some("struct Demo {}"), Err(nested)).is_err());
+    assert!(swift_result(None, Err(anyhow::anyhow!("Host is down (os error 64)"))).is_err());
+    let native = serde_json::json!([{"name":"NativeOnly"}]);
+    let (symbols, note) = swift_result(Some("struct Demo {}"), Ok(native.clone())).unwrap();
+    assert_eq!(symbols, native);
+    assert!(note.is_none());
+}
+
 #[tokio::test]
 async fn outline_timeout_regression_bounds_cold_workspace_sync() {
     let ws = prod_code_testkit::Workspace::new(&[
