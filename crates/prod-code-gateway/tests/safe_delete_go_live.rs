@@ -36,6 +36,8 @@ const SENTINEL_ADDR: &str = "PROD_CODE_SAFE_DELETE_GO_SENTINEL_ADDR";
 const CLEANUP_CHILD: &str = "PROD_CODE_SAFE_DELETE_GO_CLEANUP_CHILD";
 const CLEANUP_READY: &str = "PROD_CODE_SAFE_DELETE_GO_CLEANUP_READY";
 
+const SENTINEL_CLI: &str = "PROD_CODE_GO_SAFE_DELETE_SOURCE_CLI";
+
 struct Gateway {
     child: Child,
     addr: SocketAddr,
@@ -220,6 +222,18 @@ fn snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
 }
 
 fn source_cli() -> PathBuf {
+    if std::env::var_os(SENTINEL_CHILD).is_some() {
+        let binary = PathBuf::from(
+            std::env::var_os(SENTINEL_CLI)
+                .expect("sentinel receives the parent-built source client"),
+        );
+        assert!(
+            binary.is_absolute() && binary.is_file(),
+            "invalid source client path: {}",
+            binary.display()
+        );
+        return binary;
+    }
     static CLI: OnceLock<PathBuf> = OnceLock::new();
     CLI.get_or_init(|| {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -227,11 +241,19 @@ fn source_cli() -> PathBuf {
             .and_then(Path::parent)
             .expect("gateway crate below workspace")
             .to_path_buf();
-        let status = Command::new("cargo")
+        let mut build = Command::new("cargo")
             .args(["build", "-p", "prod-code-client", "--bin", "prod-code"])
             .current_dir(&workspace)
-            .status()
+            .process_group(0)
+            .spawn()
             .expect("source client build starts");
+        let status = match wait_for_exit(&mut build, Duration::from_secs(900)) {
+            Ok(Some(status)) => status,
+            result => {
+                retire_owned_group(&mut build, None, Duration::from_secs(2));
+                panic!("source client build did not finish within its setup budget: {result:?}");
+            }
+        };
         assert!(status.success(), "source client build: {status}");
         let target = std::env::var_os("CARGO_TARGET_DIR")
             .map(PathBuf::from)
@@ -412,6 +434,10 @@ async fn go_function_safe_delete_has_real_gateway_cli_and_mcp_proof() {
     let mut permissions = std::fs::metadata(&fake_go).unwrap().permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&fake_go, permissions).expect("fake go executable");
+    let fake_cargo = fake_bin.path().join("cargo");
+    std::fs::write(&fake_cargo, "#!/bin/sh\nexit 98\n").expect("fake cargo");
+    std::fs::set_permissions(&fake_cargo, std::fs::Permissions::from_mode(0o755))
+        .expect("fake cargo executable");
     let path = std::env::join_paths(std::iter::once(fake_bin.path().to_path_buf()).chain(
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
     ))
@@ -424,6 +450,7 @@ async fn go_function_safe_delete_has_real_gateway_cli_and_mcp_proof() {
             "--nocapture",
         ])
         .env(SENTINEL_CHILD, "1")
+        .env(SENTINEL_CLI, source_cli())
         .env(SENTINEL_ROOT, &cli_root)
         .env(SENTINEL_ADDR, gateway.addr.to_string())
         .env("PATH", path)

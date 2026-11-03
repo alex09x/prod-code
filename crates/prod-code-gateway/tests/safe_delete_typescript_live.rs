@@ -32,6 +32,8 @@ const UNUSED: &str = "export {};\r\n\r\nconst emoji = \"🙂\";\r\nfunction hidd
 const USED: &str =
     "export {};\nfunction hidden(): number { return 7; }\nconst kept = hidden();\nvoid kept;\n";
 
+const CHILD_CLI: &str = "PROD_CODE_TS_SAFE_DELETE_SOURCE_CLI";
+
 struct Gateway {
     process: OwnedProcess,
     addr: SocketAddr,
@@ -193,7 +195,6 @@ fn run_command(command: &mut Command, deadline: Instant, label: &str) -> (bool, 
         .unwrap_or_else(|error| panic!("{label} wait failed: {error}"));
     if status.is_none() {
         process.retire();
-        panic!("{label} timed out");
     }
     drop(process);
     let mut output = String::new();
@@ -201,7 +202,8 @@ fn run_command(command: &mut Command, deadline: Instant, label: &str) -> (bool, 
     stderr.rewind().expect("rewind stderr");
     stdout.read_to_string(&mut output).expect("read stdout");
     stderr.read_to_string(&mut output).expect("read stderr");
-    (status.expect("status").success(), output)
+    let status = status.unwrap_or_else(|| panic!("{label} timed out: {output}"));
+    (status.success(), output)
 }
 
 fn checkout(source: &str, deadline: Instant) -> (tempfile::TempDir, PathBuf) {
@@ -264,6 +266,17 @@ fn snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
 }
 
 fn source_cli(deadline: Instant) -> PathBuf {
+    if std::env::var_os(CHILD).is_some() {
+        let binary = PathBuf::from(
+            std::env::var_os(CHILD_CLI).expect("CLI child receives the parent-built source client"),
+        );
+        assert!(
+            binary.is_absolute() && binary.is_file(),
+            "invalid source client path: {}",
+            binary.display()
+        );
+        return binary;
+    }
     static CLI: OnceLock<PathBuf> = OnceLock::new();
     CLI.get_or_init(|| {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -504,6 +517,10 @@ async fn typescript_safe_delete_has_native_gateway_cli_mcp_and_compiler_proof() 
     let mut permissions = std::fs::metadata(&fake_tsc).unwrap().permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&fake_tsc, permissions).unwrap();
+    let fake_cargo = fake.path().join("cargo");
+    std::fs::write(&fake_cargo, "#!/bin/sh\nexit 98\n").expect("fake cargo");
+    std::fs::set_permissions(&fake_cargo, std::fs::Permissions::from_mode(0o755))
+        .expect("fake cargo executable");
     let path = std::env::join_paths(std::iter::once(fake.path().to_path_buf()).chain(
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
     ))
@@ -516,6 +533,7 @@ async fn typescript_safe_delete_has_native_gateway_cli_mcp_and_compiler_proof() 
             "--nocapture",
         ])
         .env(CHILD, "1")
+        .env(CHILD_CLI, source_cli(deadline))
         .env(CHILD_ROOT, &cli_root)
         .env(CHILD_ADDR, gateway.addr.to_string())
         .env("PATH", path)
