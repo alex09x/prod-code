@@ -1505,17 +1505,24 @@ async fn validate_compile_metadata_warmup_case(
                 let Some(Ok(WireMessage::ExecRequest(request))) = framed.next().await else {
                     panic!("the metadata warm-up uses a plain remote exec");
                 };
-                // The fixture has no Cargo.lock: the warm-up removes the one Cargo writes into
-                // the persistent copy (#1443).
+                // Warm-up stages sources separately: generated lockfiles must not edit the
+                // persistent checkout, and the real workspace/subdirectory are explicit argv.
                 assert_eq!(&request.command[..2], &["sh", "-c"]);
                 assert!(
-                    request.command[2].contains("rm -f")
-                        && request.command[2].contains("Cargo.lock"),
+                    request.command[2].contains("prod-code-shadow-warmup")
+                        && request.command[2].contains("tar -C \"$workspace\"")
+                        && request.command[2]
+                            .contains("cd \"$scratch/source${relative:+/$relative}\"")
+                        && !request.command[2].contains("rm -f Cargo.lock"),
                     "{:?}",
                     request.command
                 );
                 assert_eq!(
-                    &request.command[4..],
+                    &request.command[3..7],
+                    &["sh", server_workspace_root.as_str(), "", "yes"]
+                );
+                assert_eq!(
+                    &request.command[7..],
                     &[
                         "cargo",
                         "check",
