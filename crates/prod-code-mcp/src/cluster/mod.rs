@@ -16,6 +16,12 @@
 pub mod discover;
 pub mod parse;
 pub mod pick;
+pub mod pin;
+pub mod pin_connect;
+#[cfg(test)]
+pub(crate) mod pin_fake;
+pub mod pin_scope;
+pub mod pin_wire;
 pub mod placement;
 pub mod rebalance;
 pub mod routing;
@@ -29,12 +35,23 @@ pub use discover::{
     discover_nodes_with_paths, node_metrics, node_status,
 };
 pub use parse::{discover_auto_nodes_sync, parse_remotes, resolve_auto_remotes};
-pub use pick::{pick_node, pick_node_with};
+pub use pick::{pick_node, pick_node_with, pick_pinned_node};
+pub use pin::{
+    Endpoint, NodePolicy, PIN_ENV, PIN_RESUMED_ENV, PinMode, PinRequest, WORKSPACE_PIN_SOURCE,
+    resolve_policy, resolve_policy_with, workspace_pin,
+};
+pub use pin_connect::{GatedConnection, confirm_gate, connect_gated, connect_gated_with};
+pub use pin_scope::{
+    PinInputs, node_policy, place_call, place_within, policy_for_root, policy_for_root_with,
+    process_policy, set_pin_inputs, with_root_policy,
+};
+pub use pin_wire::confirm_pin;
 pub use placement::{forget_placement, remember_placement, remembered_node};
 pub use rebalance::{evaluate_cluster_rebalance, evaluate_cluster_rebalance_with};
 pub use routing::{
     PROBE_TIMEOUT, checkout_node_in, default_serves, engine_for_path, known_cluster_nodes,
     nested_engine, route_for_checkout, route_for_path, route_in, set_routing,
+    set_routing_with_policy,
 };
 pub use selection::{
     choose_best_node, choose_quietest, is_alive, rendezvous_order, runs_os, supports_engine,

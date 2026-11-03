@@ -172,6 +172,7 @@ pub async fn run(
     .await
     .unwrap();
     RemoteOutcome {
+        executor: outcome.executor.clone(),
         exit: ExecExit {
             exit_code: outcome.result.exit_code,
             duration_ms: 1,

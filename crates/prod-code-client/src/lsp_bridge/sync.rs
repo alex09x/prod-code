@@ -8,14 +8,13 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures_util::SinkExt;
-use prod_code_protocol::{ProdCodeCodec, WireMessage};
+use prod_code_protocol::WireMessage;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tokio_util::codec::Framed;
 
 /// How often the editor bridge looks for local changes to push to the node (#316).
 pub const BRIDGE_SYNC_POLL: std::time::Duration = std::time::Duration::from_millis(500);
@@ -25,10 +24,10 @@ pub const BRIDGE_SYNC_RETRY: std::time::Duration = std::time::Duration::from_sec
 
 /// Pushes the checkout's changes since the last sync on a connection of its own.
 pub async fn push_checkout(remote: SocketAddr, root: &Path) -> Result<()> {
-    let stream = prod_code_protocol::transport::connect(remote)
-        .await
-        .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
-    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    // Each background push passes the node pin gate on its own connection (#1793).
+    let mut framed = prod_code_mcp::cluster::connect_gated(remote, root, "this sync")
+        .await?
+        .framed;
     let identity = prod_code_mcp::sync::workspace_identity(root);
     prod_code_mcp::sync::push_workspace_sync(&mut framed, root, &identity, None).await?;
     let _ = framed

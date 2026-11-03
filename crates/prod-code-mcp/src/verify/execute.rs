@@ -148,6 +148,7 @@ pub async fn run_verify_with(
         benches,
         usage: outcome.exit.usage,
         platform: outcome.exit.platform.clone(),
+        executor: Some(outcome.executor.clone()),
     })
 }
 

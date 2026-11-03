@@ -102,6 +102,9 @@ pub fn reexec(exe: &Path) -> std::io::Error {
         std::process::Command::new(exe)
             .args(std::env::args_os().skip(1))
             .env(RESUMED_ENV, "1")
+            // The same strict pin, wherever it came from: a `prod-code.toml` edited since
+            // start-up does not move a running session (#1793).
+            .envs(crate::cluster::node_policy().reexec_env())
             .stdin(std::process::Stdio::inherit())
             .stdout(std::process::Stdio::inherit())
             .stderr(std::process::Stdio::inherit())

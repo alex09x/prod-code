@@ -121,6 +121,8 @@ impl LspSession {
                 }))) => {
                     tracing::info!(%target_addr, ?reason, "received dynamic redirect mid-session from gateway");
                     let ws_identity = workspace_identity(&self.root);
+                    // A pinned workspace does not remember a node outside its pin (#1793).
+                    crate::cluster::policy_for_root(&self.root)?.check_redirect(&target_addr)?;
                     if let Some(addr) = crate::cluster::parse_remotes(&target_addr)
                         .ok()
                         .and_then(|addrs| addrs.into_iter().next())

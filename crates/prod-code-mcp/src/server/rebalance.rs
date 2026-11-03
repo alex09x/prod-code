@@ -14,14 +14,34 @@ use std::path::Path;
 /// Evaluates cluster rebalancing for the current workspace and pre-warms the target node
 /// if a more efficient node is recommended. Rejects filesystem roots and unbounded non-git directories.
 pub(crate) async fn handle_cluster_rebalance_tick(remote: &mut SocketAddr, workspace_root: &Path) {
-    rebalance_tick_with(
+    let policy = crate::cluster::node_policy();
+    rebalance_tick_policy(
         remote,
         workspace_root,
+        &policy,
         |current, ws_name, engine, os| async move {
             crate::cluster::evaluate_cluster_rebalance(current, &ws_name, engine, os).await
         },
     )
     .await
+}
+
+/// [`rebalance_tick_with`] under `policy`: a pinned workspace is never moved in the background,
+/// and the cluster is not asked where it should go (#1793).
+pub(crate) async fn rebalance_tick_policy<E, F>(
+    remote: &mut SocketAddr,
+    workspace_root: &Path,
+    policy: &crate::cluster::NodePolicy,
+    evaluate: E,
+) where
+    E: FnOnce(SocketAddr, String, Option<&'static str>, Option<&'static str>) -> F,
+    F: std::future::Future<Output = Option<(SocketAddr, String)>>,
+{
+    if policy.is_pinned() {
+        tracing::debug!(node = %remote, policy = %policy.describe(), "rebalance skipped");
+        return;
+    }
+    rebalance_tick_with(remote, workspace_root, evaluate).await
 }
 
 /// [`handle_cluster_rebalance_tick`] with the cluster's verdict given: `evaluate(current node,

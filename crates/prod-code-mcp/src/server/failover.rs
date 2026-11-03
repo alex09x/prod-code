@@ -64,6 +64,17 @@ pub fn is_retryable_connection_error(tool_name: &str, e: &anyhow::Error) -> bool
 /// 3. Among those (or all candidates if none has it), pick the one with the most available memory
 ///    and the lowest load.
 pub async fn rediscover_node(old: SocketAddr, workspace_root: &Path) -> Option<SocketAddr> {
+    // A pinned workspace searches only the addresses its pin allows (#1793).
+    let policy = crate::cluster::node_policy();
+    if policy.is_pinned() {
+        return super::failover_pin::rediscover_pinned(
+            old,
+            workspace_root,
+            &policy,
+            crate::cluster::node_status,
+        )
+        .await;
+    }
     rediscover_node_with(
         old,
         workspace_root,

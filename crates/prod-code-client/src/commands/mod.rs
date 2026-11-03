@@ -13,6 +13,7 @@ pub mod common;
 pub mod dispatch;
 pub mod exec;
 pub mod ops;
+pub mod provenance;
 pub mod query;
 pub mod refactor;
 

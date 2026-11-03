@@ -16,6 +16,7 @@ pub mod lsp_intercept;
 pub mod lsp_managed;
 pub mod lsp_rust;
 pub mod message_dispatch;
+pub(crate) mod pin;
 pub mod position;
 pub mod redirect;
 pub mod server_req;

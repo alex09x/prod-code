@@ -26,8 +26,8 @@ mod runner_tests;
 #[cfg(test)]
 mod tests;
 
-pub use destination::{last_exec_node, remember_exec_node};
+pub use destination::{last_exec_node, pull_node, pull_node_with, remember_exec_node};
 pub use layout::layout_only;
 pub use platform::{platform_warning, subdir_of};
 pub use runner::{run_polyglot_remote, run_remote, run_remote_rooted};
-pub use types::{PolyglotRemoteOutcome, RemoteOutcome, TailBuffer};
+pub use types::{Executor, PolyglotRemoteOutcome, RemoteOutcome, TailBuffer};

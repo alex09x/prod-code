@@ -106,6 +106,10 @@ pub struct VerifyReport {
     /// that platform (#140).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform: Option<String>,
+    /// The node the run executed on, and the node its gateway confirmed under a strict pin
+    /// (#1793); unknown for a report that did not come from a run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor: Option<crate::exec::Executor>,
 }
 
 impl VerifyReport {
@@ -175,6 +179,9 @@ impl VerifyReport {
         }
         if let Some(usage) = &self.usage {
             parts.push(usage.render());
+        }
+        if let Some(executor) = &self.executor {
+            parts.push(format!("ran on {}", executor.render()));
         }
         parts.join("; ")
     }

@@ -152,10 +152,10 @@ pub(crate) async fn handle_sync(
 ) -> Result<McpToolCallResult> {
     let subpath = args.get("path").and_then(|v| v.as_str()).map(Path::new);
     let identity = workspace_identity(workspace_root);
-    let stream = prod_code_protocol::transport::connect(remote)
-        .await
-        .with_context(|| format!("Failed to connect to gateway at {remote}"))?;
-    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    // An explicit sync is held to the checkout's pin like any other (#1793).
+    let mut framed = crate::cluster::connect_gated(remote, workspace_root, "this sync")
+        .await?
+        .framed;
     let outcome = push_workspace_sync(&mut framed, workspace_root, &identity, subpath).await?;
     let kb = (outcome.bytes_transferred as f64) / 1024.0;
     let remote_root = if outcome.server_workspace_root.is_empty() {

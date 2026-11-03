@@ -15,6 +15,7 @@ use std::{net::SocketAddr, path::Path, time::Duration};
 use tokio::time::{Instant, MissedTickBehavior};
 use tokio_util::codec::Framed;
 
+use super::types::Executor;
 use crate::sync::{WorkspaceIdentity, push::push_workspace_sync_with_progress};
 
 const REPORT_EVERY: Duration = Duration::from_secs(10);
@@ -33,27 +34,26 @@ fn report(output: &mut impl FnMut(bool, &[u8]), phase: &str, started: Instant) {
     );
 }
 
-pub(super) async fn prepare(
-    remote: SocketAddr,
-    root: &Path,
-    identity: &WorkspaceIdentity,
-    output: &mut impl FnMut(bool, &[u8]),
-) -> Result<Framed<AnyStream, ProdCodeCodec>> {
-    Ok(prepare_rooted(remote, root, identity, output).await?.0)
+/// A connection synced and ready for a command.
+pub(super) struct Prepared {
+    pub framed: Framed<AnyStream, ProdCodeCodec>,
+    /// The root of the workspace's copy on the node, which the pre-flight sync learns before
+    /// the command starts (#1479).
+    pub server_root: String,
+    /// The node the command will run on, as confirmed on this connection (#1793).
+    pub executor: Executor,
 }
 
-/// [`prepare`], and the root of the workspace's copy on the node, which the pre-flight sync
-/// learns before the command starts (#1479).
 pub(super) async fn prepare_rooted(
     remote: SocketAddr,
     root: &Path,
     identity: &WorkspaceIdentity,
     output: &mut impl FnMut(bool, &[u8]),
-) -> Result<(Framed<AnyStream, ProdCodeCodec>, String)> {
+) -> Result<Prepared> {
     prepare_reporting_after(remote, root, identity, output, REPORT_EVERY).await
 }
 
-/// `prepare`, naming each pre-flight step it reaches once `quiet_for` has passed: a quick
+/// [`prepare_rooted`], naming each pre-flight step it reaches once `quiet_for` has passed: a quick
 /// exec prints nothing extra, a slow one says where it waits.
 pub(super) async fn prepare_reporting_after(
     remote: SocketAddr,
@@ -61,13 +61,20 @@ pub(super) async fn prepare_reporting_after(
     identity: &WorkspaceIdentity,
     output: &mut impl FnMut(bool, &[u8]),
     quiet_for: Duration,
-) -> Result<(Framed<AnyStream, ProdCodeCodec>, String)> {
+) -> Result<Prepared> {
     let started = Instant::now();
+    // No command, and no sync that prepares one, reaches a node outside the checkout's pin
+    // (#1793).
+    let policy = crate::cluster::policy_for_root(root)?;
+    policy.check(remote, "this command")?;
     let stream = tokio::time::timeout(IDLE_LIMIT, prod_code_protocol::transport::connect(remote))
         .await
         .context("timed out connecting to gateway; check `prod-code status`")?
         .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    // A strict pin is confirmed by the gateway first: one too old to hold it is refused here.
+    let confirmed = crate::cluster::confirm_gate(&mut framed, remote, root, &policy).await?;
+    let executor = Executor::new(remote, confirmed);
     let server_root;
     {
         let (phases, mut changes) = tokio::sync::mpsc::unbounded_channel();
@@ -102,7 +109,11 @@ pub(super) async fn prepare_reporting_after(
             }
         }
     }
-    Ok((framed, server_root))
+    Ok(Prepared {
+        framed,
+        server_root,
+        executor,
+    })
 }
 
 /// Keeps silent commands visible, probes the connection, and bounds missing terminal results.

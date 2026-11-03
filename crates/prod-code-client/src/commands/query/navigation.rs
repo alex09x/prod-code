@@ -23,40 +23,8 @@ mod tests;
 pub async fn run_refs(remote: SocketAddr, args: serde_json::Value) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
-    let mut remote = remote;
-    let timeout = prod_code_mcp::resolve_tool_call_timeout(&args);
-    let mut result = tokio::time::timeout(
-        timeout,
-        prod_code_mcp::tools::execute_tool(remote, &root, "code_references", args.clone()),
-    )
-    .await
-    .map_err(|_| {
-        anyhow::anyhow!(
-            "code_references timed out after {}s; pass a file path hint or check gateway connectivity",
-            timeout.as_secs()
-        )
-    })?;
-    if let Err(ref e) = result
-        && prod_code_mcp::is_retryable_connection_error("code_references", e)
-        && let Some(new_addr) = prod_code_mcp::rediscover_node(remote, &root).await
-    {
-        remote = new_addr;
-        let identity = prod_code_mcp::sync::workspace_identity(&root);
-        let name = identity.base.unwrap_or(identity.name);
-        prod_code_mcp::cluster::remember_placement(&name, new_addr);
-        result = tokio::time::timeout(
-            timeout,
-            prod_code_mcp::tools::execute_tool(remote, &root, "code_references", args),
-        )
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "code_references timed out after {}s on failover node; check gateway connectivity",
-                timeout.as_secs()
-            )
-        })?;
-    }
-    let result = result?;
+    let result =
+        crate::commands::common::run_tool_result_in(remote, &root, "code_references", args).await?;
     let mut has_refs = false;
     for content in &result.content {
         let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
@@ -103,12 +71,16 @@ pub async fn run_symbols(
     options: &prod_code_mcp::tools::OutlineOptions,
 ) -> Result<()> {
     let abs_path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let cwd = env::current_dir().context("Failed to determine current working directory")?;
+    let ws_root = find_workspace_root(&abs_path).unwrap_or(cwd);
+    let (policy, remote) = prod_code_mcp::cluster::place_call(&ws_root, remote)?;
     if abs_path.is_dir() {
-        let cwd = env::current_dir().context("Failed to determine current working directory")?;
-        let ws_root = find_workspace_root(&abs_path).unwrap_or_else(|| cwd.clone());
-        let text =
-            prod_code_mcp::tools::outline_directory(remote, &ws_root, &abs_path, file, options)
-                .await?;
+        let text = prod_code_mcp::cluster::with_root_policy(
+            &ws_root,
+            policy,
+            prod_code_mcp::tools::outline_directory(remote, &ws_root, &abs_path, file, options),
+        )
+        .await?;
         let has_symbols = text.lines().any(|l| l.trim_start().starts_with('['))
             || text.contains("subdirectories with sources:");
         if !has_symbols {
@@ -119,14 +91,11 @@ pub async fn run_symbols(
         return Ok(());
     }
 
-    let cwd = env::current_dir().context("Failed to determine current working directory")?;
-    let ws_root = find_workspace_root(&abs_path).unwrap_or(cwd);
-    let text = prod_code_mcp::tools::outline_file(
-        remote,
+    let label = file.display().to_string();
+    let text = prod_code_mcp::cluster::with_root_policy(
         &ws_root,
-        &abs_path,
-        &file.display().to_string(),
-        options,
+        policy,
+        prod_code_mcp::tools::outline_file(remote, &ws_root, &abs_path, &label, options),
     )
     .await?;
     let has_symbols = text.lines().any(|l| l.trim_start().starts_with('['));

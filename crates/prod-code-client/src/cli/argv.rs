@@ -75,12 +75,12 @@ fn remote_given(matches: &clap::ArgMatches) -> bool {
 }
 
 /// The index of the subcommand: the first argument after the program name that is neither an
-/// option nor the value of the global `-r`/`--remote` option.
+/// option nor the value of the global `-r`/`--remote` or `--pin-node` option.
 fn command_index(args: &[String]) -> Option<usize> {
     let mut i = 1;
     while i < args.len() {
         let arg = args[i].as_str();
-        if arg == "-r" || arg == "--remote" {
+        if arg == "-r" || arg == "--remote" || arg == "--pin-node" {
             i += 2;
         } else if arg.starts_with('-') {
             i += 1;

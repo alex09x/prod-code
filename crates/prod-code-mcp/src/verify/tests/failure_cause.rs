@@ -58,6 +58,7 @@ fn report(
         benches: vec![],
         usage: None,
         platform: None,
+        executor: None,
     }
 }
 

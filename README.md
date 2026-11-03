@@ -596,6 +596,35 @@ sysroot = true              # standard library from rust-src (default: true)
 
 Use `features = "all"` when the same module tree is compiled into several crates behind feature flags: rust-analyzer attaches each file to one crate, and a module behind a disabled feature is otherwise dead there.
 
+### Pinning a Workspace to One Node
+
+By default the cluster places a checkout and may move it: per-call routing, failover, background
+rebalancing and verification retries can all choose another node. A checkout that must run on one
+gateway pins it:
+
+```toml
+[cluster]
+pin = "build-node.example:9400"   # one endpoint; every address its name resolves to is kept
+```
+
+or `prod-code --pin-node build-node.example:9400 …`, or `PROD_CODE_PIN_NODE`. The command line
+and the environment win over `prod-code.toml`; `--pin-node auto` turns a configured pin off and
+`--pin-node remote` pins to the `--remote` endpoint. The pin is read before any node is
+discovered. Under a pin:
+
+- queries, MCP retries, failover, rebalancing, gateway redirects and `check`/`lint`/`test`
+  retries stay on the addresses of that one endpoint (an IPv6 and an IPv4 address of the same host
+  are alternatives of one node), or fail with the reason; no placement request is sent;
+- a command or verification that may already have started is never replayed elsewhere;
+- before the workspace is synced or a command runs, the gateway must confirm the pin on the same
+  connection; a gateway too old to do so is refused before anything reaches it;
+- `exec` and verification output name the node that ran the work: the text summary, the
+  `execution` object of `--json`, and the `--events` stream, with a `relocated` event and
+  `execution.relocations` entry for every move.
+
+Without a pin, gateways typed with `--remote` on the command line are a closed set: work may move
+between them but never to an unlisted node. A `PROD_CODE_REMOTE` seed alone stays a seed.
+
 ### Environment Variables
 
 The client and gateway respect the following environment variables:
@@ -603,6 +632,7 @@ The client and gateway respect the following environment variables:
 | Variable | Scope | Description |
 |---|---|---|
 | `PROD_CODE_REMOTE` | Client | Remote gateway address(es) (`host:port[,host:port...]`), defaults to `127.0.0.1:9400`. Rendezvous hashing picks the target node with automatic failover. |
+| `PROD_CODE_PIN_NODE` | Client | Pins the workspace to one gateway endpoint, as `--pin-node` does (see [Pinning a Workspace to One Node](#pinning-a-workspace-to-one-node)); `auto` turns a `prod-code.toml` pin off. |
 | `PROD_CODE_AUTH_TOKEN` | Client / Gateway | Shared bearer authentication token for secure RPC connections across untrusted networks. |
 | `PROD_CODE_ENGINES` | Gateway | Comma-separated list of engines the node is permitted to serve (e.g. `swift` on macOS nodes, `rust,go` on Linux). |
 | `PROD_CODE_SIGN_IDENTITY` | Gateway (macOS) | Developer ID / ad-hoc signing identity for macOS gateway daemons to preserve Local Network permissions across updates. |

@@ -15,7 +15,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use super::discover::node_status;
-use super::pick::pick_node_with;
+use super::pick::{pick_node_policy, pick_node_with};
+use super::pin::{NodePolicy, PinMode};
 use super::placement::placement_path;
 use super::selection::{node_fits, supports_engine};
 
@@ -32,13 +33,25 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 pub(crate) struct Routing {
     pub(crate) nodes: Vec<SocketAddr>,
     pub(crate) workspace: String,
+    /// Where this workspace's work may run (#1793); unpinned by default.
+    pub(crate) policy: NodePolicy,
 }
 
 pub(crate) static ROUTING: std::sync::OnceLock<Routing> = std::sync::OnceLock::new();
 
 /// Lets requests that name a path be sent to a node that serves that path's engine (#125).
 pub fn set_routing(nodes: Vec<SocketAddr>, workspace: String) {
-    let _ = ROUTING.set(Routing { nodes, workspace });
+    set_routing_with_policy(nodes, workspace, NodePolicy::default());
+}
+
+/// [`set_routing`] under a node policy: per-call routing, failover, rebalancing and commands of
+/// this process stay where `policy` allows (#1793).
+pub fn set_routing_with_policy(nodes: Vec<SocketAddr>, workspace: String, policy: NodePolicy) {
+    let _ = ROUTING.set(Routing {
+        nodes,
+        workspace,
+        policy,
+    });
 }
 
 /// The known cluster nodes configured for this session, if any.
@@ -72,17 +85,26 @@ pub(crate) async fn route_with(
     path: &str,
     placement_file: Option<&Path>,
 ) -> Result<SocketAddr> {
+    // A strict pin keeps every call on its node: no probe that could fail once and move it
+    // (#1793). A node that cannot serve the path says so itself. The pin is that of the
+    // checkout asked about, which an MCP call may have selected.
+    let policy = super::pin_scope::effective_policy(root, &routing.policy)?;
+    if policy.mode == PinMode::Strict {
+        policy.check(default, "this request")?;
+        return Ok(default);
+    }
     let workspace = placement_workspace(root);
     // On the heap: every tool call that names a path awaits this, and in a debug build the
     // extra layer of an inline future overflowed the stack of deep callers such as the Go
     // reorder tool.
-    Box::pin(route_in(
+    Box::pin(route_in_policy(
         &routing.nodes,
         &workspace,
         default,
         root,
         path,
         placement_file,
+        !policy.is_pinned(),
     ))
     .await
 }
@@ -102,12 +124,46 @@ pub async fn route_for_checkout(default: SocketAddr, root: &Path) -> Result<Sock
     let Some(routing) = ROUTING.get() else {
         return Ok(default);
     };
-    checkout_node_in(
-        &routing.nodes,
-        &routing.workspace,
-        default,
-        root,
+    // That checkout's own pin decides, unless the command line pinned every checkout (#1793).
+    let policy = super::pin_scope::effective_policy(root, &routing.policy)?;
+    match policy.mode {
+        PinMode::Strict => super::pin_scope::place_within(&policy, default),
+        PinMode::Listed => {
+            checkout_node_listed(&routing.nodes, &routing.workspace, default, root).await
+        }
+        PinMode::Auto => {
+            checkout_node_in(
+                &routing.nodes,
+                &routing.workspace,
+                default,
+                root,
+                placement_path().as_deref(),
+            )
+            .await
+        }
+    }
+}
+
+/// [`checkout_node_in`] among the gateways listed on the command line only.
+async fn checkout_node_listed(
+    nodes: &[SocketAddr],
+    workspace: &str,
+    default: SocketAddr,
+    root: &Path,
+) -> Result<SocketAddr> {
+    let identity = crate::sync::workspace_identity(root);
+    let name = identity.base.unwrap_or(identity.name);
+    if name == workspace {
+        return Ok(default);
+    }
+    let (_, engine) = crate::sync::engine_project(root, root);
+    pick_node_policy(
+        nodes,
+        &name,
+        engine,
+        None,
         placement_path().as_deref(),
+        false,
     )
     .await
 }
@@ -143,6 +199,20 @@ pub async fn route_in(
     path: &str,
     placement_file: Option<&Path>,
 ) -> Result<SocketAddr> {
+    route_in_policy(nodes, workspace, default, root, path, placement_file, true).await
+}
+
+/// [`route_in`]; with `allow_unlisted` false the call moves only among `nodes`, and asks no
+/// node for a placement (#1793).
+pub(crate) async fn route_in_policy(
+    nodes: &[SocketAddr],
+    workspace: &str,
+    default: SocketAddr,
+    root: &Path,
+    path: &str,
+    placement_file: Option<&Path>,
+    allow_unlisted: bool,
+) -> Result<SocketAddr> {
     let hint = root.join(path);
     let (project, _) = crate::sync::engine_project(root, &hint);
     let engine = engine_for_path(root, path);
@@ -166,9 +236,16 @@ pub async fn route_in(
         return Ok(default);
     }
     let key = format!("{workspace}#{engine}");
-    pick_node_with(nodes, &key, Some(engine), os, placement_file)
-        .await
-        .with_context(|| format!("`{path}` is in a {engine} project"))
+    pick_node_policy(
+        nodes,
+        &key,
+        Some(engine),
+        os,
+        placement_file,
+        allow_unlisted,
+    )
+    .await
+    .with_context(|| format!("`{path}` is in a {engine} project"))
 }
 
 /// The engine of the nested project `path` is in, when that is not the checkout's own project:

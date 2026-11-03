@@ -13,13 +13,12 @@ use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
 use prod_code_client::divergent_bench::{self, DivergentBenchConfig};
 use prod_code_protocol::{
-    HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage, supported_protocol_versions,
+    HandshakeRequest, PROTOCOL_VERSION, WireMessage, supported_protocol_versions,
     validate_selected_protocol_version,
 };
 use std::env;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use tokio_util::codec::Framed;
 
 /// Run concurrent pipelined benchmark against remote gateway across workspaces and worktrees.
 pub async fn run_benchmark(
@@ -34,10 +33,18 @@ pub async fn run_benchmark(
     } else {
         workspaces
     };
+    let mut placed_targets = Vec::with_capacity(target_workspaces.len());
+    for ws in &target_workspaces {
+        let abs = std::fs::canonicalize(ws).unwrap_or_else(|_| ws.clone());
+        let policy_root = crate::workspace::find_workspace_root(&abs).unwrap_or(abs);
+        let (policy, ws_remote) = prod_code_mcp::cluster::place_call(&policy_root, remote)?;
+        placed_targets.push((ws.clone(), policy_root, policy, ws_remote));
+    }
+    let display_remote = placed_targets.first().map_or(remote, |target| target.3);
 
     println!("⚡ prod-code Multi-Tenant Benchmark (Pipelined Concurrent Load)");
     println!("────────────────────────────────────────────────────────────────");
-    println!("Target Remote:       {remote}");
+    println!("Target Remote:       {display_remote}");
     println!("Concurrency:         {concurrency} worker connections");
     println!("Pipeline Depth:      {depth} in-flight queries per worker");
     println!("Duration:            {duration_secs}s");
@@ -55,7 +62,22 @@ pub async fn run_benchmark(
     let mut handles = Vec::new();
 
     for worker_id in 0..concurrency {
-        let ws_path = target_workspaces[worker_id % target_workspaces.len()].clone();
+        let (ws_path, policy_root, policy, ws_remote) =
+            placed_targets[worker_id % placed_targets.len()].clone();
+        let pre_gated = if policy.is_pinned() {
+            Some(
+                prod_code_mcp::cluster::connect_gated_with(
+                    ws_remote,
+                    &policy_root,
+                    &policy,
+                    "this benchmark",
+                )
+                .await?
+                .framed,
+            )
+        } else {
+            None
+        };
         let handle = tokio::spawn(async move {
             let mut latencies_us = Vec::new();
             let mut completed: u64 = 0;
@@ -71,10 +93,20 @@ pub async fn run_benchmark(
                 }
             };
 
-            let Ok(stream) = prod_code_protocol::transport::connect(remote).await else {
-                return (0, 1, Vec::new());
+            let mut framed = match pre_gated {
+                Some(framed) => framed,
+                None => match prod_code_mcp::cluster::connect_gated_with(
+                    ws_remote,
+                    &policy_root,
+                    &policy,
+                    "this benchmark",
+                )
+                .await
+                {
+                    Ok(gated) => gated.framed,
+                    Err(_) => return (0, 1, Vec::new()),
+                },
             };
-            let mut framed = Framed::new(stream, ProdCodeCodec::new());
 
             let (engine_subpath, expected_engine) =
                 prod_code_mcp::sync::engine_project(&ws_path, &file_path);
@@ -284,7 +316,21 @@ pub async fn run_benchmark(
 }
 
 /// Run the multi-worktree divergence and correctness benchmark against the remote gateway.
-pub async fn run_divergent_bench(config: DivergentBenchConfig) -> Result<()> {
+pub async fn run_divergent_bench(mut config: DivergentBenchConfig) -> Result<()> {
+    let base_scope = if let Some(base) = config.base_repo.clone() {
+        let abs = std::fs::canonicalize(&base).unwrap_or(base);
+        let policy_root = crate::workspace::find_workspace_root(&abs).unwrap_or(abs);
+        let (policy, placed) = prod_code_mcp::cluster::place_call(&policy_root, config.remote)?;
+        config.remote = placed;
+        Some((policy_root, policy))
+    } else {
+        let cwd = env::current_dir()?;
+        let policy_root = crate::workspace::find_workspace_root(&cwd).unwrap_or(cwd);
+        let (_, placed) = prod_code_mcp::cluster::place_call(&policy_root, config.remote)?;
+        config.remote = placed;
+        None
+    };
+
     println!("⚡ prod-code Divergent Worktree Benchmark (Multi-Agent Fleet Simulation)");
     println!("────────────────────────────────────────────────────────────────");
     println!("Target Remote:       {}", config.remote);
@@ -310,7 +356,17 @@ pub async fn run_divergent_bench(config: DivergentBenchConfig) -> Result<()> {
     println!("────────────────────────────────────────────────────────────────");
     println!("Forking git worktrees, applying controlled mutations, syncing to gateway...");
 
-    let report = divergent_bench::run(config).await?;
+    let report = match base_scope {
+        Some((policy_root, policy)) => {
+            prod_code_mcp::cluster::with_root_policy(
+                &policy_root,
+                policy,
+                divergent_bench::run(config),
+            )
+            .await?
+        }
+        None => divergent_bench::run(config).await?,
+    };
     report.print();
 
     if !report.all_passed {
