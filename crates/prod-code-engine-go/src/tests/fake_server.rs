@@ -181,6 +181,13 @@ pub(crate) async fn fake_engine_with_probe(
     );
     if let Some((name, value)) = mode {
         config.extra_env.insert(name.to_string(), value.to_string());
+        if name == "FAKE_HEALTH" && value == "delay" {
+            // Keep replies late even when initialization needs a realistic startup budget.
+            config.extra_env.insert(
+                "FAKE_HEALTH_DELAY".to_string(),
+                (timeout.as_secs_f64() * 2.0).to_string(),
+            );
+        }
     }
     let engine = GoEngine::load_with_request_timeout(dir.path(), config, timeout)
         .await
