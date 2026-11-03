@@ -95,7 +95,7 @@ jobs:
           key: cargo-registry-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
       - name: Install the real Rust analyzer test prerequisites
         if: matrix.kind != 'doc' && matrix.package != 'prod-code-protocol'
-        run: rustup component add rust-src rust-analyzer
+        run: rustup component add rust-src rust-analyzer rustfmt clippy
       - name: Cache the pinned Go language server
         if: matrix.kind != 'doc' && matrix.package != 'prod-code-protocol'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -110,9 +110,31 @@ jobs:
           TEST_SHARD: ${{ toJSON(matrix) }}
         run: python3 scripts/ci/plan.py run-tests
 
+  macos-signatures:
+    needs: plan
+    name: Native macOS installer signature acceptance
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '1'
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+      - name: Test valid Developer ID, unsigned, tampered and ad-hoc downloads without secrets
+        run: python3 scripts/ci/macos-signatures.py
+
   ci:
     if: always()
-    needs: [plan, lint, test]
+    needs: [plan, lint, test, macos-signatures]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

@@ -97,7 +97,13 @@ def run_tests(root, row):
             if row["kind"] == "lib"
             else (["--doc"] if row["kind"] == "doc" else [f"--{row['kind']}", target])
         )
-        if subprocess.run(base + selector, cwd=root, check=False).returncode:
+        runtime = (
+            ["--", "--test-threads=1"]
+            if (row["package"], row["kind"], target)
+            == ("prod-code-gateway", "test", "live")
+            else []
+        )
+        if subprocess.run(base + selector + runtime, cwd=root, check=False).returncode:
             failed.append(target)
     return failed
 

@@ -14,8 +14,9 @@ remain ignored and are visible in Cargo's summaries. This does not claim GUI,
 LAN or opt-in real-language-server acceptance.
 
 Runtime shards provision the pinned language-server tools used by the existing
-tests (gopls, TypeScript server, basedpyright and Ruff), plus the selected Rust
-toolchain's analyzer and standard-library sources. A missing required tool is
+tests (gopls, TypeScript server, basedpyright and Ruff), plus clangd, ripgrep,
+sccache and the selected Rust toolchain's analyzer, rustfmt, Clippy and
+standard-library sources. A missing required tool is
 an error, not a skipped passing test. Each shard continues after a failed target
 and reports all its failed targets at the end.
 The overlay lifecycle tests also require unprivileged user namespaces. Their
@@ -28,9 +29,20 @@ warnings and this migration does not conceal them or call strict lint clean.
 The final `ci` job requires every planned job to succeed. Source changes still
 follow the development validation policy; hosted checks run on the complete PR.
 
+A separate standard macOS ARM64 job runs the client update/package trust tests.
+It verifies the checksums and Developer ID team of one current public release
+and installs it only as a disposable test fixture. Required negative tests must
+execute and pass; an empty test filter cannot satisfy the job. This job has no
+signing/notarization secrets and does not sign a release.
+
 Only Cargo registry/git downloads are cached, not build outputs. Test debug
 information and incremental compilation are disabled on hosted runners to bound
-disk usage. No paid larger runner is selected. Release artifacts expire after
+disk usage. Runtime Linux shards override development/test optimization to level
+1 in their disposable Cargo configuration, including analyzer dependencies and
+source-built gateway children. Interactive query deadlines remain unchanged.
+The gateway `live` target runs its process-heavy fixtures sequentially to bound
+memory on the standard VM; concurrency exercised inside each fixture is retained.
+No paid larger runner is selected. Release artifacts expire after
 one day; GitHub's account-level storage allowances still apply.
 
 ## Release credentials

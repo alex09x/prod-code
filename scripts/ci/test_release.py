@@ -76,6 +76,22 @@ class ReleaseBoundaries(unittest.TestCase):
         self.assertEqual(run.call_count, 2)
         self.assertEqual(run.call_args_list[1].args[0][-2:], ["--test", "second"])
 
+    def test_only_heavy_live_gateway_fixtures_are_serialized(self):
+        row = {
+            "package": "prod-code-gateway",
+            "kind": "test",
+            "targets": ["live", "wire"],
+        }
+        with patch(
+            "plan.subprocess.run", return_value=subprocess.CompletedProcess([], 0)
+        ) as run:
+            self.assertEqual(run_tests(self.root, row), [])
+        self.assertEqual(
+            run.call_args_list[0].args[0][-4:],
+            ["--test", "live", "--", "--test-threads=1"],
+        )
+        self.assertEqual(run.call_args_list[1].args[0][-2:], ["--test", "wire"])
+
     def fixture_archive(self, extra=None, tamper=False, status="Accepted"):
         incoming = self.root / "incoming"
         incoming.mkdir()
