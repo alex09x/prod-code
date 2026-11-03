@@ -21,9 +21,31 @@ pub(crate) struct DefinitionBudget {
     pub(crate) duration: Duration,
 }
 
+/// The deadline of a single navigation call received at `received`: the budget counts from the
+/// moment the request was read, so a failover retry spends what is left of it (#1814).
+pub(crate) fn navigation_deadline(
+    tool_name: &str,
+    args: &serde_json::Value,
+    received: tokio::time::Instant,
+) -> Option<tokio::time::Instant> {
+    definition_budget(tool_name, args, received)
+        .or_else(|| references_budget(tool_name, args, received))
+        .map(|budget| budget.deadline)
+}
+
+/// The answer of a call whose budget ended while `stage` was a wait in this client's own queue.
+fn queued_message(tool: &str, budget: DefinitionBudget, stage: &str) -> String {
+    format!(
+        "{tool} did not finish within {} ms: it was still queued, {stage}, so the analyzer was \
+         not asked. Retry when that call finishes.",
+        budget.duration.as_millis()
+    )
+}
+
 pub(crate) fn definition_budget(
     tool_name: &str,
     args: &serde_json::Value,
+    received: tokio::time::Instant,
 ) -> Option<DefinitionBudget> {
     if tool_name != "code_definition" || super::super::batch::extract_batch_symbols(args).len() > 1
     {
@@ -44,7 +66,7 @@ pub(crate) fn definition_budget(
         .clamp(1, MAX_DEFINITION_BUDGET_MS);
     let duration = Duration::from_millis(milliseconds);
     Some(DefinitionBudget {
-        deadline: tokio::time::Instant::now() + duration,
+        deadline: received + duration,
         duration,
     })
 }
@@ -53,6 +75,9 @@ pub(crate) fn definition_busy_message(
     budget: DefinitionBudget,
     sync_stage: Option<&str>,
 ) -> String {
+    if let Some(stage) = sync_stage.filter(|stage| crate::sync::types::is_queue_stage(stage)) {
+        return queued_message("code_definition", budget, stage);
+    }
     if let Some(stage) = sync_stage {
         return format!(
             "code_definition did not finish within {} ms while {stage}; workspace sync did not complete before the budget expired. Check the node with `prod-code status` and retry.",
@@ -84,6 +109,7 @@ pub(crate) fn definition_subrequest_timeout_message(
 pub(super) fn references_budget(
     tool_name: &str,
     args: &serde_json::Value,
+    received: tokio::time::Instant,
 ) -> Option<DefinitionBudget> {
     if tool_name != "code_references" || super::super::batch::extract_batch_symbols(args).len() > 1
     {
@@ -104,7 +130,7 @@ pub(super) fn references_budget(
         .clamp(1, MAX_REFERENCES_BUDGET_MS);
     let duration = Duration::from_millis(milliseconds);
     Some(DefinitionBudget {
-        deadline: tokio::time::Instant::now() + duration,
+        deadline: received + duration,
         duration,
     })
 }
@@ -113,6 +139,9 @@ pub(super) fn references_busy_message(
     budget: DefinitionBudget,
     sync_stage: Option<&str>,
 ) -> String {
+    if let Some(stage) = sync_stage.filter(|stage| crate::sync::types::is_queue_stage(stage)) {
+        return queued_message("code_references", budget, stage);
+    }
     if let Some(stage) = sync_stage {
         return format!(
             "code_references did not finish within {} ms while {stage}; workspace sync did not complete before the budget expired. Check the node with `prod-code status` and retry.",
@@ -173,7 +202,7 @@ mod tests {
             (serde_json::json!({ "budget_secs": 3 }), 3_000),
             (serde_json::json!({ "timeout_secs": 4 }), 4_000),
         ] {
-            let actual = references_budget("code_references", &args)
+            let actual = references_budget("code_references", &args, tokio::time::Instant::now())
                 .expect("single reference call has a budget");
             assert_eq!(actual.duration, Duration::from_millis(expected_ms));
         }
@@ -259,7 +288,7 @@ mod tests {
             (serde_json::json!({ "budget_secs": 3 }), 3_000),
             (serde_json::json!({ "timeout_secs": 4 }), 4_000),
         ] {
-            let actual = definition_budget("code_definition", &args)
+            let actual = definition_budget("code_definition", &args, tokio::time::Instant::now())
                 .expect("single definition call has a budget");
             assert_eq!(actual.duration, Duration::from_millis(expected_ms));
         }
@@ -274,6 +303,7 @@ mod tests {
                     "symbols": ["Fast", "Slow"],
                     "budget_ms": 200
                 }),
+                tokio::time::Instant::now(),
             )
             .is_none()
         );

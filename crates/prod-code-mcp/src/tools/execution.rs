@@ -16,9 +16,7 @@ use super::dispatch_tool;
 use super::inspection_handlers::with_indexing_notes;
 use super::references::references_across;
 use super::schemas::SYMBOL_ADDRESSABLE;
-use super::workspace_exec_lock;
 pub(crate) use super::workspace_writer::workspace_mutation_lock;
-use super::workspace_writer::{WorkspaceMutationGuard, workspace_writer_gate};
 use crate::protocol::McpToolCallResult;
 
 mod budgets;
@@ -26,6 +24,10 @@ mod confinement;
 mod context;
 #[cfg(test)]
 mod issue_1811_tests;
+#[cfg(test)]
+mod issue_1814_tests;
+mod locks;
+pub(crate) use self::budgets::navigation_deadline;
 mod positions;
 mod symbol_resolution;
 use self::budgets::{
@@ -115,9 +117,27 @@ pub fn execute_tool<'a>(
     tool_name: &'a str,
     args: serde_json::Value,
 ) -> impl std::future::Future<Output = Result<McpToolCallResult>> + Send + 'a {
+    execute_tool_at(
+        remote,
+        workspace_root,
+        tool_name,
+        args,
+        tokio::time::Instant::now(),
+    )
+}
+
+/// [`execute_tool`] for a request read at `received`: a navigation budget counts from then, so
+/// time spent before this call, such as a failed first attempt, is not given back (#1814).
+pub fn execute_tool_at<'a>(
+    remote: SocketAddr,
+    workspace_root: &'a Path,
+    tool_name: &'a str,
+    args: serde_json::Value,
+    received: tokio::time::Instant,
+) -> impl std::future::Future<Output = Result<McpToolCallResult>> + Send + 'a {
     let configured_workspace_root = workspace_root.to_path_buf();
-    let budget = definition_budget(tool_name, &args);
-    let reference_budget = references_budget(tool_name, &args);
+    let budget = definition_budget(tool_name, &args, received);
+    let reference_budget = references_budget(tool_name, &args, received);
     Box::pin(async move {
         if tool_name == "code_workflow" {
             // Each nested operation acquires its own locks. Holding an outer workspace
@@ -255,25 +275,23 @@ fn execute_selected<'a>(
                 | "code_coverage"
                 | "code_diagnose_failure"
         );
-        let _exec_guard = if !read_only || workspace_command {
-            Some(workspace_exec_lock(workspace_root).lock_owned().await)
-        } else {
-            None
-        };
-        // Commands may write back files, so serialize them with other writers even while
-        // readers proceed during the remote execution phase.
-        let _writer = if read_only {
-            None
-        } else {
-            Some(workspace_writer_gate(workspace_root).lock_owned().await)
-        };
-        let lock = workspace_mutation_lock(workspace_root);
-        let _guard = if tool_name == "code_exec" {
-            None // its writeback takes this lock only while applying changes
-        } else if read_only {
-            Some(WorkspaceMutationGuard::Read(lock.read_owned().await))
-        } else {
-            Some(WorkspaceMutationGuard::Write(lock.write_owned().await))
+        // A budgeted reference call stops waiting for the checkout at its deadline (#1814); a
+        // budgeted definition is bounded by `execute_tool_at`, which reads the queue stage.
+        let queue_deadline = reference_budget.map(|budget| budget.deadline);
+        let Some(_locks) = locks::acquire(
+            workspace_root,
+            tool_name,
+            read_only,
+            workspace_command,
+            queue_deadline,
+        )
+        .await
+        else {
+            let budget = reference_budget.expect("only a deadline ends the wait");
+            return Ok(McpToolCallResult::error(references_busy_message(
+                budget,
+                Some(crate::sync::types::QUEUED_FOR_WRITER),
+            )));
         };
         // A pull names checkout-relative artifact paths that need not exist locally (#1145).
         if tool_name == "code_pull" {

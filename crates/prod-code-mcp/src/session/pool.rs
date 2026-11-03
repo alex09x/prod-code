@@ -190,9 +190,13 @@ pub(crate) async fn pooled_query_with_budget(
     let (file, params) = real_request(&root, file, params);
     let file = file.as_path();
     let slot = QueryLease::new(session_slot(&key).await);
-    let mut stored = tokio::time::timeout_at(deadline, slot.lock())
-        .await
-        .map_err(|_| timeout_error("waiting for another query in this workspace", budget))?;
+    // A caller whose own budget ends during this wait reports a queued call, not a busy
+    // analyzer: nothing of this query has reached the gateway yet (#1814).
+    crate::sync::types::set_active_sync_stage(Some(crate::sync::types::QUEUED_FOR_SESSION));
+    let stored = tokio::time::timeout_at(deadline, slot.lock()).await;
+    crate::sync::types::set_active_sync_stage(None);
+    let mut stored =
+        stored.map_err(|_| timeout_error(crate::sync::types::QUEUED_FOR_SESSION, budget))?;
     // The slot stays empty while the request owns the connection. Cancellation drops the
     // connection too, rather than caching an interrupted sync or an unread reply (#430).
     let mut session = stored.take();
