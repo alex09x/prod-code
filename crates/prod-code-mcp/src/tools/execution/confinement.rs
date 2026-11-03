@@ -26,7 +26,12 @@ pub(super) fn validate_workspace_paths(
         _ if has_explicit_workspace => PATH_HINT_KEYS,
         _ => return Ok(()),
     };
-    for key in keys {
+    // A move's destination is a file path in the selected workspace too (#1811).
+    let destination: &[&str] = match tool_name {
+        "code_move" | "code_move_module" if has_explicit_workspace => &["to"],
+        _ => &[],
+    };
+    for key in keys.iter().chain(destination) {
         let Some(value) = args.get(*key) else {
             continue;
         };

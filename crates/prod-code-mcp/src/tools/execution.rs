@@ -24,6 +24,8 @@ use crate::protocol::McpToolCallResult;
 mod budgets;
 mod confinement;
 mod context;
+#[cfg(test)]
+mod issue_1811_tests;
 mod positions;
 mod symbol_resolution;
 use self::budgets::{

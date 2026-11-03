@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **Mutation Worktree Selection** (`crates/prod-code-mcp`, #1811): Refactoring tools accept a verified sibling Git worktree through `workspace`, resolving paths, locks and analyzer routing against that checkout before any mutation. Unrelated roots and paths escaping the selected checkout are refused, including move destinations.
 - **Ripgrep Filename Discovery Guard** (`scripts/hooks`, #1803): `rg --files` is treated as filename enumeration, including clustered glob flags. Search-mode overrides and option values that contain `--files` retain normal source-content interception. The argument parser is included in the versioned hook bundle.
 
 ## v0.3.49 — 2026-11-02

@@ -9,7 +9,9 @@
  */
 
 use super::super::compile_gate::resolve_file_path;
-use super::super::schemas::WORKSPACE_SELECTABLE;
+use super::super::schemas::{
+    WORKSPACE_SELECTABLE, WORKSPACE_SELECTABLE_MUTATIONS, is_workspace_selectable,
+};
 use super::confinement::validate_workspace_paths;
 use anyhow::{Context, Result, bail, ensure};
 use std::path::{Component, Path, PathBuf};
@@ -22,15 +24,16 @@ pub(crate) fn resolve_workspace_root(
     tool_name: &str,
     args: &mut serde_json::Value,
 ) -> Result<PathBuf> {
-    let supported = WORKSPACE_SELECTABLE.contains(&tool_name);
+    let supported = is_workspace_selectable(tool_name);
     let explicit = match args.get("workspace") {
         None | Some(serde_json::Value::Null) => None,
         Some(serde_json::Value::Bool(_)) if tool_name == "code_coverage" => None,
         Some(value) => {
             ensure!(
                 supported,
-                "workspace is supported only by {}",
-                WORKSPACE_SELECTABLE.join(", ")
+                "workspace is supported only by {}, {}",
+                WORKSPACE_SELECTABLE.join(", "),
+                WORKSPACE_SELECTABLE_MUTATIONS.join(", ")
             );
             Some(
                 value
@@ -73,6 +76,13 @@ pub(crate) fn resolve_workspace_root(
         object.insert(key, serde_json::Value::String(path));
     }
     validate_workspace_paths(&selected, tool_name, args, has_explicit_workspace)?;
+    // A mutation handler works on the selected root alone; the selector is consumed here so
+    // no handler or nested adapter can reinterpret it (#1811).
+    if WORKSPACE_SELECTABLE_MUTATIONS.contains(&tool_name)
+        && let Some(object) = args.as_object_mut()
+    {
+        object.remove("workspace");
+    }
     Ok(selected)
 }
 
