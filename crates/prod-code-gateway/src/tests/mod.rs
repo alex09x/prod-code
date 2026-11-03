@@ -17,6 +17,7 @@ mod cluster;
 mod command_exec;
 mod engine_state;
 mod gossip_auth;
+mod issue_1823_exec_mode;
 mod placement;
 mod protocol;
 mod refactoring;

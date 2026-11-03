@@ -22,6 +22,21 @@ pub async fn write_synced_file(
         .map(|_| ())
 }
 
+/// Whether the copy's file has any executable bit, the one property of its mode a sync
+/// carries (#1823). Unreadable metadata counts as not executable.
+pub(crate) fn is_executable(path: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
+    }
+}
+
 /// Returns the hash of the exact successfully committed representation, including config
 /// coordination. An error never acknowledges a write to the sync transaction.
 pub(crate) async fn write_synced_file_for_workspace(

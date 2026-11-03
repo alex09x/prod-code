@@ -31,6 +31,42 @@ fn a_message_without_its_optional_fields_still_decodes() {
     assert!(!file.is_executable);
 }
 
+/// A probe stamp's executable bit is optional both ways (#1823): an older client's stamp
+/// decodes as "unknown", never as "not executable", and an unknown bit is not put on the wire,
+/// so an older gateway sees the exact bytes it always did.
+#[test]
+fn issue_1823_file_stamp_mode_is_optional_and_backward_compatible() {
+    use super::super::sync::FileStamp;
+    let legacy: FileStamp =
+        serde_json::from_str(r#"{"relative_path":"run.py","size":3,"hash":7}"#).unwrap();
+    assert_eq!(legacy.is_executable, None);
+    assert_eq!(
+        serde_json::to_string(&legacy).unwrap(),
+        r#"{"relative_path":"run.py","size":3,"hash":7}"#
+    );
+    let executable = FileStamp {
+        is_executable: Some(true),
+        ..legacy.clone()
+    };
+    let json = serde_json::to_string(&executable).unwrap();
+    assert!(json.contains(r#""is_executable":true"#), "{json}");
+    assert_eq!(
+        serde_json::from_str::<FileStamp>(&json).unwrap(),
+        executable
+    );
+    let plain = FileStamp {
+        is_executable: Some(false),
+        ..legacy
+    };
+    let json = serde_json::to_string(&plain).unwrap();
+    assert_eq!(
+        serde_json::from_str::<FileStamp>(&json)
+            .unwrap()
+            .is_executable,
+        Some(false)
+    );
+}
+
 #[test]
 fn a_wire_message_keeps_its_kind_through_a_round_trip() {
     let original = WireMessage::SyncResponse(SyncResponse {

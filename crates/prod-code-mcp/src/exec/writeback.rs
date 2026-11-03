@@ -9,7 +9,7 @@
  */
 
 use super::{layout::layout_only, platform::platform_dependent};
-use crate::sync::{apply_pulled_files_for, scan_workspace_files};
+use crate::sync::{LocalMode, apply_pulled_files_with, scan_workspace_files};
 use anyhow::Result;
 use prod_code_protocol::FileDelta;
 use std::{
@@ -18,6 +18,10 @@ use std::{
     path::Path,
     time::SystemTime,
 };
+
+#[cfg(all(test, unix))]
+#[path = "writeback_tests.rs"]
+mod tests;
 
 #[derive(PartialEq)]
 struct FileState {
@@ -238,7 +242,14 @@ impl Writeback {
             }
             written.push(delta);
         }
-        let applied = apply_pulled_files_for(root, node, &written)?;
+        // A formatter's rewrite keeps the local mode: the node copy's bit may be stale (#1823).
+        let applied = apply_pulled_files_with(root, node, &written, LocalMode::Preserve)?;
+        for refused in written
+            .iter()
+            .filter(|d| !applied.contains(&d.relative_path))
+        {
+            self.kept.push(refused.relative_path.clone());
+        }
         for rel in &applied {
             // Our own write is the expected state for another batch, not a local conflict.
             // A deleted file may now be a directory containing this batch's new children.

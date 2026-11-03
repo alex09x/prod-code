@@ -10,6 +10,8 @@
 
 use crate::sync::cache::{load_sync_cache_for, save_sync_cache_for};
 use crate::sync::entry::sync_file_entry;
+pub use crate::sync::pull_write::LocalMode;
+use crate::sync::pull_write::{REFUSED, replace_pulled_file};
 use anyhow::Result;
 use prod_code_protocol::FileDelta;
 use std::path::{Path, PathBuf};
@@ -22,8 +24,21 @@ pub fn apply_pulled_files(root: &Path, files: &[FileDelta]) -> Result<Vec<String
 }
 
 /// [`apply_pulled_files`] recording the files as synced with gateway `node`, the node that
-/// produced them.
+/// produced them. The node's executable bit replaces the local one ([`LocalMode::FollowNode`]).
 pub fn apply_pulled_files_for(root: &Path, node: &str, files: &[FileDelta]) -> Result<Vec<String>> {
+    apply_pulled_files_with(root, node, files, LocalMode::FollowNode)
+}
+
+/// [`apply_pulled_files_for`] with the permission `policy` for files that exist locally. Each
+/// file is replaced atomically; a target the checkout must not write through (a link out of
+/// it, a special file, a parent resolving elsewhere) is skipped and not returned. The watermark
+/// records the node's executable bit, so a local bit kept apart from it is sent next sync.
+pub fn apply_pulled_files_with(
+    root: &Path,
+    node: &str,
+    files: &[FileDelta],
+    policy: LocalMode,
+) -> Result<Vec<String>> {
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let mut state = load_sync_cache_for(&canonical_root, node);
     let mut touched = Vec::with_capacity(files.len());
@@ -39,34 +54,24 @@ pub fn apply_pulled_files_for(root: &Path, node: &str, files: &[FileDelta]) -> R
         let target = canonical_root.join(rel);
         match &delta.content {
             Some(content) => {
-                if let Some(parent) = target.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::write(&target, content)?;
-                #[cfg(unix)]
-                if delta.is_executable {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ =
-                        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755));
-                } else {
-                    // The node says the file is not executable: a local copy that was keeps its
-                    // other permission bits but loses the executable ones (#1477).
-                    use std::os::unix::fs::PermissionsExt;
-                    if let Ok(metadata) = target.metadata() {
-                        let mode = metadata.permissions().mode();
-                        if mode & 0o111 != 0 {
-                            let _ = std::fs::set_permissions(
-                                &target,
-                                std::fs::Permissions::from_mode(mode & !0o111),
-                            );
-                        }
+                let written = match replace_pulled_file(
+                    &canonical_root,
+                    rel,
+                    content,
+                    delta.is_executable,
+                    policy,
+                ) {
+                    Ok(written) => written,
+                    Err(error) if error.kind() == REFUSED => {
+                        tracing::warn!(file = %delta.relative_path, %error, "pulled file not written");
+                        continue;
                     }
-                }
-                if let Ok(metadata) = target.metadata() {
-                    state.files.insert(
-                        delta.relative_path.clone(),
-                        sync_file_entry(&metadata, content),
-                    );
+                    Err(error) => return Err(error.into()),
+                };
+                if let Ok(metadata) = std::fs::metadata(&written) {
+                    let mut entry = sync_file_entry(&metadata, content);
+                    entry.executable = Some(delta.is_executable);
+                    state.files.insert(delta.relative_path.clone(), entry);
                 }
             }
             None => {

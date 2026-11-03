@@ -27,7 +27,15 @@ pub(crate) fn sync_file_entry(metadata: &std::fs::Metadata, content: &[u8]) -> S
         mtime_nsec: duration.subsec_nanos(),
         size: metadata.len(),
         hash: content_hash(content),
+        // `chmod +x` changes neither mtime, size nor bytes: without the bit a mode-only change
+        // was never sent, and the node kept the script 0644 (#1823).
+        executable: Some(is_executable(metadata)),
     }
+}
+
+/// Whether the watermark `stored` already describes `current`, mode included (#1823).
+pub(crate) fn unchanged(stored: Option<&SyncFileEntry>, current: &SyncFileEntry) -> bool {
+    stored.is_some_and(|stored| stored.matches(current))
 }
 
 /// Whether a file of this size is sent at all: large files are datasets, not sources.

@@ -183,11 +183,13 @@ async fn concurrent_sync_during_active_exec_preserves_formatted_new_go_files() {
             relative_path: "internal/server/router.go".to_string(),
             size: unformatted_router.len() as u64,
             hash: content_hash(unformatted_router),
+            is_executable: None,
         },
         FileStamp {
             relative_path: "internal/server/types.go".to_string(),
             size: unformatted_types.len() as u64,
             hash: content_hash(unformatted_types),
+            is_executable: None,
         },
     ];
     let (missing, deleted) = reconcile_manifest(&root, &stamps);

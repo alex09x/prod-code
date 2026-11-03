@@ -104,6 +104,7 @@ async fn sync_and_probe_answer_while_a_query_holds_the_rust_engine() {
                             relative_path: rel.to_string(),
                             size: bytes.len() as u64,
                             hash: content_hash(&bytes),
+                            is_executable: None,
                         }
                     })
                     .collect(),

@@ -41,6 +41,7 @@ async fn test_delta_sync_reports_fresh_until_probed() {
                 relative_path: "src/lib.rs".to_string(),
                 size: 9,
                 hash: content_hash(b"fn a() {}"),
+                is_executable: None,
             }],
         },
     )
@@ -72,16 +73,19 @@ async fn test_sync_probe_seeds_and_reconciles() {
                 relative_path: "Cargo.toml".to_string(),
                 size: 24,
                 hash: content_hash(b"[package]\nname = \"repo\"\n"),
+                is_executable: None,
             },
             FileStamp {
                 relative_path: "src/lib.rs".to_string(),
                 size: 21,
                 hash: content_hash(b"pub fn a() -> u8 {}"),
+                is_executable: None,
             },
             FileStamp {
                 relative_path: "src/new.rs".to_string(),
                 size: 3,
                 hash: content_hash(b"// n"),
+                is_executable: None,
             },
         ],
     };
@@ -112,6 +116,7 @@ async fn test_sync_probe_seeds_and_reconciles() {
                 relative_path: "Cargo.toml".to_string(),
                 size: 24,
                 hash: content_hash(b"[package]\nname = \"repo\"\n"),
+                is_executable: None,
             }],
         },
     )
@@ -143,11 +148,13 @@ async fn test_typescript_type_roots_survive_manifest_reconciliation_and_upload()
                 relative_path: "package.json".to_string(),
                 size: package.len() as u64,
                 hash: content_hash(package),
+                is_executable: None,
             },
             FileStamp {
                 relative_path: "tsconfig.json".to_string(),
                 size: config.len() as u64,
                 hash: content_hash(config),
+                is_executable: None,
             },
         ],
     };
