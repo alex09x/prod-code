@@ -44,10 +44,11 @@ fn main() {
 
     if let Some(ref common) = common_dir {
         let common_path = std::path::Path::new(common);
-        println!(
-            "cargo:rerun-if-changed={}",
-            common_path.join("packed-refs").display()
-        );
+        let packed_refs = common_path.join("packed-refs");
+        // Cargo considers a missing watched file dirty on every invocation.
+        if packed_refs.exists() {
+            println!("cargo:rerun-if-changed={}", packed_refs.display());
+        }
     }
 
     if let Some(ref_rel) = std::process::Command::new("git")
@@ -59,19 +60,16 @@ fn main() {
         .map(|ref_name| ref_name.trim().to_string())
         .filter(|ref_rel| !ref_rel.is_empty())
     {
-        if let Some(ref common) = common_dir {
-            let common_path = std::path::Path::new(common);
-            println!(
-                "cargo:rerun-if-changed={}",
-                common_path.join(&ref_rel).display()
-            );
-        }
-        if let Some(ref dir) = git_dir.filter(|dir| common_dir.as_deref() != Some(dir.as_str())) {
-            let dir_path = std::path::Path::new(dir);
-            println!(
-                "cargo:rerun-if-changed={}",
-                dir_path.join(&ref_rel).display()
-            );
+        // Git resolves shared versus per-worktree references; do not invent a second
+        // private branch path that does not exist in a linked worktree.
+        if let Some(reference) = std::process::Command::new("git")
+            .args(["rev-parse", "--git-path", &ref_rel])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+        {
+            watch_reference(std::path::Path::new(reference.trim()));
         }
     }
     let commit = std::env::var("PROD_CODE_GIT_COMMIT").ok().or_else(|| {
@@ -91,4 +89,17 @@ fn main() {
     if let Some(c) = commit {
         println!("cargo:rustc-env=PROD_CODE_GIT_COMMIT={c}");
     }
+}
+
+fn watch_reference(path: &std::path::Path) {
+    let mut observed = path;
+    // A packed or unborn branch has no loose ref yet. Watch its existing parent so
+    // creating the loose ref still invalidates the embedded commit identity.
+    while !observed.exists() {
+        let Some(parent) = observed.parent() else {
+            return;
+        };
+        observed = parent;
+    }
+    println!("cargo:rerun-if-changed={}", observed.display());
 }
