@@ -3534,7 +3534,12 @@ pub fn report<'a, T: Copy + Into<i64> + std::fmt::Display, const N: usize>(
     window.total([extra]) + window.copied().first().into()
 }
 "#;
-    const MAIN: &str = r#"mod report;
+    const MAIN: &str = r#"mod conditional_impl;
+mod commented_conditional_impl;
+mod conditional_method;
+mod self_inline;
+mod self_where;
+mod report;
 mod window;
 
 use window::Window;
