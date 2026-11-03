@@ -45,10 +45,18 @@ pub fn resolve_workspace_root(
     };
     let configured = std::fs::canonicalize(configured_root)
         .with_context(|| "configured workspace root cannot be read")?;
+    if tool_name == "code_source"
+        && let Some(raw) = args.get("path").and_then(|value| value.as_str())
+        && raw.starts_with("file:")
+    {
+        args["path"] = crate::remote_fs::uri_to_path(raw).into();
+    }
     let has_explicit_workspace = explicit.is_some();
     let hint = implicit_workspace_hint(tool_name, args);
     let selected = if let Some(raw) = explicit {
         explicit_workspace_root(&configured, &raw)?
+    } else if tool_name == "code_source" {
+        source_workspace_root(&configured, args.get("path").and_then(|v| v.as_str()))?
     } else if let Some((_, raw)) = &hint {
         infer_workspace_from_hint(&configured, raw)?
     } else {
@@ -84,6 +92,36 @@ pub fn resolve_workspace_root(
         object.remove("workspace");
     }
     Ok(selected)
+}
+
+/// A local definition can name a sibling worktree. Only a proven common Git directory
+/// permits selecting that checkout; unrelated absolute SDK/cache paths remain remote reads.
+fn source_workspace_root(configured: &Path, raw: Option<&str>) -> Result<PathBuf> {
+    let Some(path) = raw.map(Path::new).filter(|path| path.is_absolute()) else {
+        return Ok(configured.to_path_buf());
+    };
+    let Ok(canonical) = path.canonicalize() else {
+        return Ok(configured.to_path_buf());
+    };
+    if canonical.starts_with(configured) {
+        return Ok(configured.to_path_buf());
+    }
+    let Some(parent) = canonical.parent() else {
+        return Ok(configured.to_path_buf());
+    };
+    let (Ok((top, common)), Ok((_, configured_common))) =
+        (git_identity(parent), git_identity(configured))
+    else {
+        return Ok(configured.to_path_buf());
+    };
+    if common != configured_common {
+        return Ok(configured.to_path_buf());
+    }
+    ensure!(
+        !path.components().any(|part| part == Component::ParentDir),
+        "source path must not contain '..' segments"
+    );
+    explicit_workspace_root(configured, &top.to_string_lossy())
 }
 
 fn explicit_workspace_root(configured: &Path, raw: &str) -> Result<PathBuf> {

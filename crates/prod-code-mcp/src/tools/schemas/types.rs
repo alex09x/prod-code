@@ -55,6 +55,7 @@ pub const SYMBOL_ADDRESSABLE: &[&str] = &[
 /// Tools that accept `workspace` to select the configured Git checkout root or a verified sibling
 /// Git worktree sharing the same common Git directory (#1759).
 pub const WORKSPACE_SELECTABLE: &[&str] = &[
+    "code_source",
     "code_workflow",
     "code_test",
     "code_exec",
