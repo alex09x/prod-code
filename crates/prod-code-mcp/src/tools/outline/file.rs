@@ -106,22 +106,22 @@ pub async fn outline_file(
         params,
         OUTLINE_QUERY_BUDGET,
     );
-    let (res, warmup_note) = if engine == Some("swift") {
+    let (res, note) = if engine == Some("swift") {
         match tokio::time::timeout(std::time::Duration::from_secs(4), query_fut).await {
-            Ok(res) => (res?, false),
+            Ok(res) => swift_result(source.as_deref(), res)?,
             Err(_) => (
                 local_swift_outline_symbols(source.as_deref().unwrap_or("")),
-                true,
+                Some(
+                    "outlined locally from Swift source while the remote analyzer is warming or unavailable; this is a lexical outline, not analyzer output. Run `prod-code cluster` to inspect gateway health",
+                ),
             ),
         }
     } else {
-        (query_fut.await?, false)
+        (query_fut.await?, None)
     };
     let (mut text, _) = render_outline_with(&res, path_str, options, source.as_deref());
-    if warmup_note {
-        text.push_str(
-            "\n\n(note: outlined from Swift source while sourcekit-lsp finishes package warmup)",
-        );
+    if let Some(note) = note {
+        text.push_str(&format!("\n\n(note: {note})"));
     }
     let (text, _) = cut_block(
         &text,
@@ -129,6 +129,58 @@ pub async fn outline_file(
         options.max_items.unwrap_or(usize::MAX),
     );
     Ok(text)
+}
+
+/// Immediate connection failures used to escape before the four-second lexical fallback.
+/// Preserve protocol/security errors; a local outline is no proof that an analyzer answered.
+fn swift_result(
+    source: Option<&str>,
+    result: Result<serde_json::Value>,
+) -> Result<(serde_json::Value, Option<&'static str>)> {
+    match result {
+        Ok(symbols) => Ok((symbols, None)),
+        Err(error) => {
+            let message = format!("{error:#}").to_lowercase();
+            let transport = error.chain().any(|cause| {
+                cause.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                    matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionRefused
+                            | std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::ConnectionAborted
+                            | std::io::ErrorKind::NotConnected
+                            | std::io::ErrorKind::TimedOut
+                            | std::io::ErrorKind::BrokenPipe
+                            | std::io::ErrorKind::UnexpectedEof
+                    )
+                })
+            }) || message.contains("host is down")
+                || message.contains("no route to host")
+                || message.contains("network is unreachable");
+            let protected = [
+                "tls",
+                "certificate",
+                "authentication",
+                "pinned",
+                "pin confirmation",
+            ]
+            .iter()
+            .any(|word| message.contains(word));
+            if transport
+                && !protected
+                && let Some(source) = source
+            {
+                Ok((
+                    local_swift_outline_symbols(source),
+                    Some(
+                        "outlined locally because the Swift gateway connection failed; this is a lexical outline, not analyzer output. Run `prod-code cluster` to inspect gateway health, then retry",
+                    ),
+                ))
+            } else {
+                Err(error).context("Swift outline unavailable; run `prod-code cluster` to inspect gateway health and retry with a reachable Swift node")
+            }
+        }
+    }
 }
 
 async fn outline_query(

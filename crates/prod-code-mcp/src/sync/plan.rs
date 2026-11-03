@@ -251,7 +251,8 @@ pub fn prepare_workspace_sync_for(
     }
 
     for p in state.files.keys() {
-        if !is_synced_git_path(p) && is_synced_git_path_with(p, &sync_include) {
+        if filter.includes(p) && !is_synced_git_path(p) && is_synced_git_path_with(p, &sync_include)
+        {
             state.include_paths.insert(p.clone());
         }
     }

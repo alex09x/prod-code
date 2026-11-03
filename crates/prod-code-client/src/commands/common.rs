@@ -183,8 +183,8 @@ where
             }
         }
         // The MCP navigation timer may return its busy result in the same tick as the
-        // outer timer. Keep the CLI references timeout an error, not a process exit.
-        if tool == "code_references"
+        // outer timer. Keep CLI navigation timeouts errors, not process exits.
+        if matches!(tool, "code_references" | "code_definition")
             && tokio::time::Instant::now() >= deadline
             && result.as_ref().is_ok_and(|reply| reply.is_error)
         {
