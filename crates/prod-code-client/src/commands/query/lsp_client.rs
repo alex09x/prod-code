@@ -53,6 +53,7 @@ pub async fn execute_lsp_query(
     let mut timing = QueryTiming::new();
     // The checkout's pin is confirmed on each connection before its sync (#1793).
     let policy = prod_code_mcp::cluster::policy_for_root(&ws_root)?;
+    remote = prod_code_mcp::cluster::place_within(&policy, remote)?;
     let mut framed = {
         let mut attempt = 0;
         let mut refused_by = Vec::new();
@@ -328,6 +329,24 @@ fn busy_note(payload: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn issue_1793_cli_cross_checkout_query_reaches_its_pinned_node() {
+        let target = crate::commands::common::pin_tests::OldPinnedCheckout::new().await;
+        let error = super::execute_lsp_query(
+            target.other_node(),
+            &target.file(),
+            "textDocument/hover",
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("did not confirm the node pin"),
+            "{error:#}"
+        );
+        assert_eq!(target.pin_requests(), 1);
+    }
+
     /// The indexing note is turned into a warning; other messages are not notes (#1520).
     #[test]
     fn an_indexing_note_becomes_a_warning() {

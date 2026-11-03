@@ -113,6 +113,11 @@ pub async fn rename(
         let edit = match rename_symbol(remote, root, &o.file, line, character, new_name).await {
             Ok(edit) => edit,
             Err(err) => {
+                if crate::cluster::node_policy().is_pinned() {
+                    return Err(err.context(
+                        "semantic schema rename failed under the checkout's node pin; nothing was written",
+                    ));
+                }
                 notes.push(format!(
                     "{}:{}:{} — rename refused: {}",
                     display(root, &o.file),

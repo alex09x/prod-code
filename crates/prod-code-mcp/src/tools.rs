@@ -8,7 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-pub(crate) use self::execution::resolve_workspace_root;
+pub use self::execution::resolve_workspace_root;
 use crate::protocol::{McpTool, McpToolCallResult};
 use crate::report::ReportRequest;
 use anyhow::{Context, Result};

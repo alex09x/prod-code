@@ -33,7 +33,7 @@ use self::budgets::{
     definition_subrequest_timeout_message, is_timeout_error, references_budget,
     references_busy_message, references_subrequest_timeout_message,
 };
-pub(crate) use self::context::resolve_workspace_root;
+pub use self::context::resolve_workspace_root;
 pub(crate) use self::context::{PATH_HINT_KEYS, routed_path};
 use positions::validate_position_arguments;
 use symbol_resolution::{
