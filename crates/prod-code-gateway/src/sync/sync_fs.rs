@@ -146,7 +146,13 @@ pub fn reconcile_manifest(
                             server_hash,
                         )
                 });
-                if !same {
+                // Equal bytes with another executable bit are still a different file: without
+                // this, a script made executable after its first upload stays 0644 here (#1823).
+                // A stamp from an older client carries no bit and is judged by content alone.
+                let same_mode = stamp
+                    .is_executable
+                    .is_none_or(|wanted| crate::sync::file_write::is_executable(path) == wanted);
+                if !same || !same_mode {
                     missing.push(rel.clone());
                 }
             }

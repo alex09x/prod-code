@@ -331,6 +331,7 @@ mod tests {
                     relative_path: "go.mod".to_string(),
                     size: 24,
                     hash: 123,
+                    is_executable: None,
                 }],
             },
         )

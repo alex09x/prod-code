@@ -84,6 +84,7 @@ fn a_directory_gone_locally_is_gone_from_the_copy() {
         relative_path: rel.to_string(),
         size: body.len() as u64,
         hash: content_hash(body.as_bytes()),
+        is_executable: None,
     };
     let manifest = [
         stamp("Sources/NewApp/main.swift", "new"),
@@ -137,6 +138,7 @@ fn reconciliation_never_deletes_through_a_directory_symlink() {
         relative_path: "src/value.rs".to_string(),
         size: 1,
         hash: content_hash(b"v"),
+        is_executable: None,
     }];
     let (missing, deleted) = reconcile_manifest(root, &manifest);
     assert!(missing.is_empty(), "{missing:?}");

@@ -79,6 +79,7 @@ async fn sync_restore_transaction_review_engine_wait_allows_following_sync_and_p
                             relative_path,
                             size,
                             hash,
+                            is_executable: None,
                         },
                     )
                     .collect(),
