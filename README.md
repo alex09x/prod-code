@@ -774,22 +774,26 @@ hosted CI).
 
 ## Citation
 
-If you use `prod-code` in academic work or research, please cite the archived release (v0.3.18):
+If you use `prod-code` in academic work or research, please cite the archived release (v0.3.49):
 
 ```bibtex
-@software{panasenko_2026_prodcode,
+@software{panasenko_2026_23905176,
   author       = {Panasenko, Alexander},
-  title        = {prod-code: Remote code intelligence for AI coding agents},
-  month        = sep,
+  title        = {prod-code — Remote Code Intelligence for Fleets of
+                   Coding Agents
+                  },
+  month        = nov,
   year         = 2026,
   publisher    = {Zenodo},
-  version      = {0.3.18},
-  doi          = {10.5281/zenodo.23028285},
-  url          = {https://doi.org/10.5281/zenodo.23028285}
+  version      = {0.3.49},
+  doi          = {10.5281/zenodo.23905176},
+  url          = {https://doi.org/10.5281/zenodo.23905176},
 }
 ```
 
 See [CITATION.cff](CITATION.cff) for complete citation metadata.
+The [historical v0.3.18 archive](https://doi.org/10.5281/zenodo.23028285) remains unchanged;
+the [concept DOI](https://doi.org/10.5281/zenodo.23028284) represents all archived versions.
 
 ## License
 
