@@ -146,8 +146,11 @@ fn download_and_install_places_executable_and_replaces_old_binary() {
     let second_bytes = crate::update::behavior_tests::test_developer_id_binary_bytes();
     #[cfg(not(target_os = "macos"))]
     let second_bytes = b"#!/bin/sh\necho second\n".to_vec();
-    std::fs::write(&asset, &second_bytes).unwrap();
-    download_and_install(&url, &install_dir).unwrap();
+    let second_asset = src.path().join("second-asset");
+    std::fs::write(&second_asset, &second_bytes).unwrap();
+    std::fs::remove_file(&asset).unwrap();
+    let second_url = format!("file://{}", second_asset.display());
+    download_and_install(&second_url, &install_dir).unwrap();
     assert_eq!(std::fs::read(&bin).unwrap(), second_bytes);
     let names: Vec<_> = std::fs::read_dir(&install_dir)
         .unwrap()

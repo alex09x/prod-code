@@ -68,6 +68,15 @@ pub(crate) fn test_negative_macos_binary_payloads(scratch_dir: &Path) -> [Vec<u8
         .status()
         .unwrap();
     assert!(adhoc_status.success());
+    assert!(
+        Command::new("codesign")
+            .args(["--verify", "--deep", "--strict"])
+            .arg(&adhoc_copy)
+            .status()
+            .unwrap()
+            .success(),
+        "the ad-hoc negative control must have a valid cryptographic signature"
+    );
     let adhoc_bytes = std::fs::read(&adhoc_copy).unwrap();
     let _ = std::fs::remove_file(&adhoc_copy);
 

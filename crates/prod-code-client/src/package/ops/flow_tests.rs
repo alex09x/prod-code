@@ -195,6 +195,16 @@ fn install_flow_decides_between_skip_install_and_refusal() {
         dest.path(),
     );
     res.unwrap();
+    // On macOS both fixtures preserve the same public signed bytes. Remove the old
+    // source and poison the destination so neither URL reuse nor skipping can pass.
+    std::fs::remove_file(
+        assets
+            .path()
+            .join("v1.0.0")
+            .join(format!("prod-code-{target}")),
+    )
+    .unwrap();
+    std::fs::write(&bin, b"must-download-the-new-release").unwrap();
     let (res, _) = run(
         "1.0.0",
         json!({"tag_name": "v2.0.0"}),
