@@ -60,6 +60,31 @@ fn sh(script: &str) -> ExecRequest {
     request(&["sh", "-c", script])
 }
 
+#[tokio::test]
+async fn issue_1799_git_metadata_failure_explains_local_validation() {
+    let result = run(request(&["git", "shortlog", "-sne", "HEAD"]), &[], true).await;
+    assert_eq!(result.exit().exit_code, Some(129));
+    let stderr = result.output(true);
+    assert!(
+        stderr.contains("arguments given outside repository"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("mirror without Git metadata"), "{stderr}");
+    assert!(
+        stderr.contains("read-only Git validation locally"),
+        "{stderr}"
+    );
+    assert!(!result.workspace().join(".git").exists());
+}
+
+#[tokio::test]
+async fn issue_1799_git_version_needs_no_repository_guidance() {
+    let result = run(request(&["git", "--version"]), &[], true).await;
+    assert_eq!(result.exit().exit_code, Some(0));
+    assert!(result.output(false).starts_with("git version"));
+    assert!(!result.output(true).contains("mirror without Git metadata"));
+}
+
 async fn run(req: ExecRequest, files: &[(&str, &str)], make_workspace: bool) -> Run {
     let storage = tempfile::tempdir().unwrap();
     if make_workspace {
