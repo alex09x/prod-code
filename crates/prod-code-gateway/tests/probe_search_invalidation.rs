@@ -157,6 +157,7 @@ fn stamp(path: &str, content: &[u8]) -> FileStamp {
         relative_path: path.to_string(),
         size: content.len() as u64,
         hash: content_hash(content),
+        is_executable: None,
     }
 }
 

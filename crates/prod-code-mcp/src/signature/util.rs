@@ -28,6 +28,25 @@ pub fn display(root: &Path, path: &Path) -> String {
         .into_owned()
 }
 
+/// The errors of an overlay check, one line each: the message's first line, its code, and where.
+pub fn error_lines(reports: &[crate::diagnostics::types::DiagnosticsReport]) -> Vec<String> {
+    reports
+        .iter()
+        .flat_map(|r| r.items.iter().map(move |d| (r.file.clone(), d)))
+        .filter(|(_, d)| d.severity == "error")
+        .map(|(f, d)| {
+            let code = d.code.as_deref().map(|c| format!(" [{c}]"));
+            let message = d.message.lines().next().unwrap_or("");
+            format!(
+                "{message}{} ({f}:{}:{})",
+                code.unwrap_or_default(),
+                d.line,
+                d.col
+            )
+        })
+        .collect()
+}
+
 /// A parameter list on one line, for the report.
 pub fn normalize(list: &str) -> String {
     let one_line = list.split_whitespace().collect::<Vec<_>>().join(" ");

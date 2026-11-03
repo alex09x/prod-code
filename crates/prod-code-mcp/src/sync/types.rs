@@ -27,6 +27,22 @@ pub struct SyncFileEntry {
     pub size: u64,
     #[serde(default)]
     pub hash: u64,
+    /// Executable bit of the copy the node holds (#1823). `None` is a watermark written before
+    /// modes were tracked: compared as "not executable", so only executable files are sent
+    /// again, and kept out of the probe manifest, so the gateway does not judge an unknown mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable: Option<bool>,
+}
+
+impl SyncFileEntry {
+    /// Whether the node already holds the file this entry describes: same stamp, same mode.
+    pub(crate) fn matches(&self, current: &SyncFileEntry) -> bool {
+        self.mtime_sec == current.mtime_sec
+            && self.mtime_nsec == current.mtime_nsec
+            && self.size == current.size
+            && self.hash == current.hash
+            && self.executable.unwrap_or(false) == current.executable.unwrap_or(false)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -76,6 +92,7 @@ impl SyncPlan {
                 relative_path: path.clone(),
                 size: entry.size,
                 hash: entry.hash,
+                is_executable: entry.executable,
             })
             .collect();
         stamps.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));

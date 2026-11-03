@@ -24,7 +24,7 @@ use crate::signature::references::{
 };
 use crate::signature::rewrite::{apply_fallback_rewrites, attribute};
 use crate::signature::types::{Modifiers, Param, Plan, SignatureChange};
-use crate::signature::util::{display, normalize, read_caller};
+use crate::signature::util::{display, error_lines, normalize, read_caller};
 
 /// Changes the parameter list of the function at `file:line:col`.
 #[allow(clippy::too_many_arguments)]
@@ -69,6 +69,10 @@ pub async fn change_with(
     apply: bool,
     force: bool,
 ) -> Result<SignatureChange> {
+    if super::borrow::requested(request) {
+        let at = (file, line, col);
+        return super::borrow::change(remote, root, at, request, modifiers, apply).await;
+    }
     if file.extension().is_some_and(|e| e == "go") {
         return crate::signature_go::change_with(
             remote, root, file, line, col, request, modifiers, apply, force,
@@ -121,7 +125,7 @@ pub async fn change_with(
         .iter()
         .filter_map(|p| match p {
             Param::Add { value, .. } => Some(value.as_str()),
-            Param::Keep(_) => None,
+            Param::Keep(_) | Param::Borrow(_) => None,
         })
         .collect();
     let order_changed =
@@ -341,23 +345,7 @@ pub async fn change_with(
         files
     };
     let reports = crate::diagnostics::validate_texts(remote, root, &edits, &callers).await?;
-    let diagnostics: Vec<String> = reports
-        .iter()
-        .flat_map(|r| r.items.iter().map(move |d| (r.file.clone(), d)))
-        .filter(|(_, d)| d.severity == "error")
-        .map(|(f, d)| {
-            format!(
-                "{}{} ({f}:{}:{})",
-                d.message.lines().next().unwrap_or(""),
-                d.code
-                    .as_deref()
-                    .map(|c| format!(" [{c}]"))
-                    .unwrap_or_default(),
-                d.line,
-                d.col
-            )
-        })
-        .collect();
+    let diagnostics = error_lines(&reports);
 
     let edit = apply.then(|| whole_file_edit(&rewritten));
     let mut change = SignatureChange {

@@ -9,7 +9,7 @@
  */
 
 use crate::sync::cache::{load_sync_cache_for, save_sync_cache_for};
-use crate::sync::entry::{fits_sync, is_executable, sync_file_entry};
+use crate::sync::entry::{fits_sync, is_executable, sync_file_entry, unchanged};
 use crate::sync::filter_path::{SyncPathFilter, is_filesystem_root, is_synced_git_path};
 use crate::sync::git::{
     changed_paths, git_head, git_listed_paths, git_output, tracked_contained_dir_symlink_files,
@@ -101,6 +101,7 @@ pub fn prepare_workspace_sync_for(
             }
             tracked_set.insert(exp);
         }
+        upgrade_legacy_modes(&canonical_root, &mut state, &mut changes);
         state
             .files
             .retain(|path, _| tracked_set.contains(path) || current_dirty.contains(path));
@@ -134,7 +135,9 @@ pub fn prepare_workspace_sync_for(
             continue;
         }
         let entry = sync_file_entry(&meta, &content);
-        if state.files.get(&relative_path) == Some(&entry) {
+        if unchanged(state.files.get(&relative_path), &entry) {
+            // Re-recorded so a watermark from before modes were tracked learns the bit.
+            state.files.insert(relative_path, entry);
             continue;
         }
 
@@ -219,6 +222,29 @@ pub fn prepare_workspace_sync_for(
     })
 }
 
+/// A watermark written before modes were tracked (#1823) has no executable bit. Git reports
+/// no change for an unchanged executable file, so the node's 0644 copy would never be fixed:
+/// one stat finds such files and plans them; a plain file just records its bit, unsent.
+fn upgrade_legacy_modes(
+    root: &Path,
+    state: &mut SyncCache,
+    changes: &mut std::collections::BTreeMap<String, bool>,
+) {
+    for (rel, entry) in state.files.iter_mut() {
+        if entry.executable.is_some() {
+            continue;
+        }
+        let Ok(metadata) = std::fs::metadata(root.join(rel)) else {
+            continue;
+        };
+        if is_executable(&metadata) {
+            changes.entry(rel.clone()).or_insert(false);
+        } else {
+            entry.executable = Some(false);
+        }
+    }
+}
+
 /// A manifest-based checkout has no Git baseline for a diff. Walk its relevant source tree and
 /// compare file stamps with the acknowledged watermark instead, retaining deletions from the
 /// previous scan and honoring explicit resend requests.
@@ -268,7 +294,7 @@ fn prepare_non_git_workspace_sync(
         }
         let entry = sync_file_entry(&metadata, content);
         present.insert(delta.relative_path.clone());
-        if state.files.get(&relative_path) != Some(&entry) {
+        if !unchanged(state.files.get(&relative_path), &entry) {
             delta.is_executable = is_executable(&metadata);
             files.push(delta);
         }

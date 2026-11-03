@@ -15,6 +15,7 @@ pub mod filter_path;
 pub mod git;
 pub mod plan;
 pub mod pull;
+pub(crate) mod pull_write;
 pub mod push;
 pub(crate) mod read;
 pub mod relevance;
@@ -39,7 +40,10 @@ pub mod artifact;
 pub mod artifact_list;
 pub use artifact::{PullOutcome, pull_remote_files_from};
 pub use artifact_list::{ArtifactListOutcome, list_remote_artifacts_from};
-pub use pull::{apply_pulled_files, apply_pulled_files_for, pull_remote_files};
+pub use pull::{
+    LocalMode, apply_pulled_files, apply_pulled_files_for, apply_pulled_files_with,
+    pull_remote_files,
+};
 pub use push::{gateway_node, push_session_sync, push_workspace_sync};
 pub use relevance::is_relevant_code_or_manifest_file;
 pub use scan::{collect_dirty_files, collect_dirty_files_incremental, scan_workspace_files};

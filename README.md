@@ -265,6 +265,10 @@ resolve against that worktree. Omitting `workspace` uses the MCP session's confi
 workspace. For these calls, use filesystem paths without `..` components; file URIs are
 not accepted.
 
+`code_source` and `prod-code source <path> --line N --context K` read checkout files
+directly with the existing byte limit and line window; their language server is not
+required. External library and SDK paths retain gateway routing and access checks.
+
 **Find code**
 
 | tool | what it does |
@@ -310,7 +314,7 @@ and SVG vector graphics are validated directly through built-in syntax parsers.
 | `code_validate_edit` · `code_validate_edits` | in-memory analyzer diagnostics and syntax validation for proposed contents across one or many files before writing; detects broken references and schema violations |
 | `code_diagnostics` | diagnostics for a file, in memory, without running a full build |
 | `code_rename` · `code_safe_delete` | semantic rename across the workspace (a field with its accessors, with `accessors`); delete declaration only when zero references exist, or parameter with arguments |
-| `code_change_signature` | Rust signature changes; Go reorder/removal through gopls and typed literal additions to ordinary functions with compiler checks |
+| `code_change_signature` | Rust signature changes, including `&name` to borrow an owned parameter with every resolved call (the preview is the analyzer's check, which has no borrow checker; it is written only with `apply` and `verify: "compile"`, after `cargo check` accepts it); Go reorder/removal through gopls and typed literal additions to ordinary functions with compiler checks |
 | `code_move` | a declaration moved to another module across languages, with imports it takes and leaves behind |
 | `code_move_method` · `code_move_module` | a method moved to the type of one of its parameters; a whole module moved to another parent with all referencing paths |
 | `code_extract_function` | a selection extracted into a named function across languages; duplicate replacement defaults on within the file (`duplicates: true`); cross-file search requires `other_files: true`, and parameterized matching requires `parameterize: true` (both default false) |
@@ -770,22 +774,26 @@ hosted CI).
 
 ## Citation
 
-If you use `prod-code` in academic work or research, please cite the archived release (v0.3.18):
+If you use `prod-code` in academic work or research, please cite the archived release (v0.3.49):
 
 ```bibtex
-@software{panasenko_2026_prodcode,
+@software{panasenko_2026_23905176,
   author       = {Panasenko, Alexander},
-  title        = {prod-code: Remote code intelligence for AI coding agents},
-  month        = sep,
+  title        = {prod-code — Remote Code Intelligence for Fleets of
+                   Coding Agents
+                  },
+  month        = nov,
   year         = 2026,
   publisher    = {Zenodo},
-  version      = {0.3.18},
-  doi          = {10.5281/zenodo.23028285},
-  url          = {https://doi.org/10.5281/zenodo.23028285}
+  version      = {0.3.49},
+  doi          = {10.5281/zenodo.23905176},
+  url          = {https://doi.org/10.5281/zenodo.23905176},
 }
 ```
 
 See [CITATION.cff](CITATION.cff) for complete citation metadata.
+The [historical v0.3.18 archive](https://doi.org/10.5281/zenodo.23028285) remains unchanged;
+the [concept DOI](https://doi.org/10.5281/zenodo.23028284) represents all archived versions.
 
 ## License
 

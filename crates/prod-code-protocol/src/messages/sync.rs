@@ -191,6 +191,12 @@ pub struct FileStamp {
     pub relative_path: String,
     pub size: u64,
     pub hash: u64,
+    /// Whether the client's file has an executable bit (#1823). `None` — an older client, or a
+    /// watermark recorded before modes were tracked — means unknown: the gateway then judges
+    /// the copy by content alone, as before. Omitted from the wire when unknown, and an older
+    /// gateway ignores it, so a copy with the wrong mode is only repaired by a newer gateway.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_executable: Option<bool>,
 }
 
 /// The client's complete manifest of relevant files, sent on first contact with a workspace

@@ -300,10 +300,16 @@ async fn a_text_search_is_not_routed_by_the_files_engine() {
         "{err:#}"
     );
     use crate::tools::execution::routed_path;
-    assert_eq!(routed_path("code_grep", Some("notes.md")), None);
     assert_eq!(
-        routed_path("code_outline", Some("notes.md")),
+        routed_path("code_grep", Some("notes.md"), std::path::Path::new(".")),
+        None
+    );
+    assert_eq!(
+        routed_path("code_outline", Some("notes.md"), std::path::Path::new(".")),
         Some("notes.md")
     );
-    assert_eq!(routed_path("code_definition", None), None);
+    assert_eq!(
+        routed_path("code_definition", None, std::path::Path::new(".")),
+        None
+    );
 }

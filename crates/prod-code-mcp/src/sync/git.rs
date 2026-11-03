@@ -338,7 +338,7 @@ pub(crate) fn collect_git_dirty_files(root: &Path, use_cache: bool) -> Result<Ve
                 }
 
                 let entry = sync_file_entry(&meta, &content);
-                if cache.files.get(rel_path) == Some(&entry) {
+                if crate::sync::entry::unchanged(cache.files.get(rel_path), &entry) {
                     // File was already synced and has not changed.
                     continue;
                 }

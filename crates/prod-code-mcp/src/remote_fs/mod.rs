@@ -72,22 +72,32 @@ pub async fn read_source(
     root: &Path,
     path_str: &str,
 ) -> Result<(Vec<u8>, bool)> {
+    match checkout_source_path(root, path_str)? {
+        Some(local_path) => read_local_source_file(root, &local_path),
+        None => read_remote_file(remote, &uri_to_path(path_str), 0).await,
+    }
+}
+
+/// Classifies a source path without reading its contents or contacting a gateway.
+/// External SDK/cache paths retain their remote routing; local paths obey the same
+/// containment checks as `read_source` (#1818).
+pub fn checkout_source_path(root: &Path, path_str: &str) -> Result<Option<PathBuf>> {
     let path = uri_to_path(path_str);
     let p = Path::new(&path);
     let root_canon = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
 
     if p.is_absolute() {
         if let Some(local_path) = absolute_checkout_source_path(root, &root_canon, p)? {
-            read_local_source_file(root, &local_path)
+            Ok(Some(local_path))
         } else if let Some(rel) = workspace_relative_path(root, &path) {
             let local_path = root.join(rel);
-            read_local_source_file(root, &local_path)
+            Ok(Some(local_path))
         } else {
-            read_remote_file(remote, &path, 0).await
+            Ok(None)
         }
     } else {
         let local_path = resolve_relative_checkout_path(root, &root_canon, p)?;
-        read_local_source_file(root, &local_path)
+        Ok(Some(local_path))
     }
 }
 
