@@ -44,6 +44,7 @@ REQUIRED_GUARD_RELPATHS = (
     f"{GUARD_PACKAGE_DIR}/__init__.py",
     f"{GUARD_PACKAGE_DIR}/shell.py",
     f"{GUARD_PACKAGE_DIR}/grep_patterns.py",
+    f"{GUARD_PACKAGE_DIR}/grep_args.py",
     f"{GUARD_PACKAGE_DIR}/grep_guard.py",
     f"{GUARD_PACKAGE_DIR}/sed_guard.py",
     f"{GUARD_PACKAGE_DIR}/shell_lex.py",

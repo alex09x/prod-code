@@ -12,6 +12,7 @@ import os
 import re
 import shlex
 
+from .grep_args import GREP_OPTS_WITH_ARG, parse_grep_arguments
 from .grep_patterns import (
     DEFINITION,
     IDENT,
@@ -47,29 +48,6 @@ __all__ = [
     "text_grep",
 ]
 
-GREP_OPTS_WITH_ARG = {
-    "-e",
-    "-f",
-    "-A",
-    "-B",
-    "-C",
-    "-m",
-    "-g",
-    "-t",
-    "-T",
-    "--glob",
-    "--type",
-    "--type-not",
-    "--regexp",
-    "--file",
-    "--max-count",
-    "--context",
-    "--after-context",
-    "--before-context",
-    "--include",
-    "--exclude",
-}
-
 
 def ripgrep_pattern(command, cwd, pat):
     """`pat`, from a grep in `command`, written the way `prod-code grep` reads it (#1581)."""
@@ -94,7 +72,10 @@ def _iter_grep_invocations(command, cwd):
             words = shlex.split(first)
         except ValueError:
             continue
-        while words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):
+        while words and (
+            re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0])
+            or words[0] in ("time", "exec", "nice", "env", "command", "sudo")
+        ):
             words = words[1:]
         if not words:
             continue
@@ -123,35 +104,11 @@ def _iter_grep_invocations(command, cwd):
             tool, args = "git-grep", args[1:]
         if tool not in ("grep", "egrep", "fgrep", "rg", "ag", "git-grep"):
             continue
-        recursive = tool != "grep" and tool != "egrep"
-        fixed_strings = tool == "fgrep"
-        basic = tool in ("grep", "git-grep")
-        patterns, rest, i = [], [], 0
-        while i < len(args):
-            a = args[i]
-            if a in ("-e", "--regexp") and i + 1 < len(args):
-                patterns.append(args[i + 1])
-                i += 2
-                continue
-            if a in GREP_OPTS_WITH_ARG and i + 1 < len(args):
-                i += 2
-                continue
-            if a == "--":
-                rest.extend(args[i + 1 :])
-                break
-            if a.startswith("-") and len(a) > 1:
-                if re.search(r"[rR]", a) or a == "--recursive":
-                    recursive = True
-                if "F" in a or a == "--fixed-strings":
-                    fixed_strings = True
-                if a in ("--extended-regexp", "--perl-regexp") or (
-                    not a.startswith("--") and re.search(r"[EP]", a)
-                ):
-                    basic = False
-                i += 1
-                continue
-            rest.append(a)
-            i += 1
+        patterns, rest, recursive, fixed_strings, basic, files_mode = (
+            parse_grep_arguments(tool, args)
+        )
+        if tool == "rg" and files_mode:
+            continue
         if not patterns and rest:
             patterns, rest = [rest[0]], rest[1:]
         if not patterns:
