@@ -172,12 +172,16 @@ impl RustEngineSnapshot {
     /// Generate outline / document symbols for a file.
     pub fn document_symbols(&self, path: &Path) -> Result<Vec<SymbolTarget>> {
         drop(self.analysis()?);
-        let file_id = self.file_id_for_path(path).ok_or_else(|| {
-            anyhow::anyhow!(
-                "{} is not a Rust file, and no language server of this workspace outlines it",
-                path.display()
-            )
-        })?;
+        let file_id = match self.file_id_for_path(path) {
+            Some(file_id) => file_id,
+            None if is_rust_source(path) => self.require_file_id(path)?,
+            None => {
+                anyhow::bail!(
+                    "{} is not a Rust file, and no language server of this workspace outlines it",
+                    path.display()
+                );
+            }
+        };
         if !is_rust_source(path) && self.analysis()?.crates_for(file_id)?.is_empty() {
             anyhow::bail!(
                 "{} is not a Rust file, and no language server of this workspace outlines it",
