@@ -203,8 +203,8 @@ fn install_dir_for(system: bool, home: Option<PathBuf>) -> PathBuf {
     }
 }
 
-/// Downloads `asset_url` with curl into `install_dir`, marks it executable, signs it on
-/// macOS and moves it to `install_dir/prod-code`. Returns the installed path.
+/// Downloads `asset_url` with curl into `install_dir`, marks it executable, verifies its
+/// code signature on macOS and moves it to `install_dir/prod-code`. Returns the installed path.
 fn download_and_install(asset_url: &str, install_dir: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(install_dir)?;
     let target_bin = install_dir.join("prod-code");
@@ -232,20 +232,7 @@ fn download_and_install(asset_url: &str, install_dir: &Path) -> Result<PathBuf> 
         std::fs::set_permissions(&temp_file, std::fs::Permissions::from_mode(0o755))?;
     }
 
-    #[cfg(target_os = "macos")]
-    {
-        let identity = std::env::var("PROD_CODE_SIGN_IDENTITY").unwrap_or_else(|_| {
-            "Apple Development: Alexander Panasenko (alex@prod.codes)".to_string()
-        });
-        let res = Command::new("codesign")
-            .args(["-s", &identity, "-f", temp_file.to_str().unwrap()])
-            .output();
-        if res.is_err() || !res.unwrap().status.success() {
-            let _ = Command::new("codesign")
-                .args(["-s", "-", "-f", temp_file.to_str().unwrap()])
-                .output();
-        }
-    }
+    crate::update::verify_downloaded_binary(&temp_file)?;
 
     std::fs::rename(&temp_file, &target_bin)
         .with_context(|| format!("failed to move binary into {}", target_bin.display()))?;

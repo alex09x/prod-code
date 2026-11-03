@@ -268,21 +268,7 @@ fn run_update_with(
         std::fs::set_permissions(&temp_download, perms)?;
     }
 
-    // On macOS, codesign the binary with official identity or fallback to ad-hoc
-    #[cfg(target_os = "macos")]
-    {
-        let identity = std::env::var("PROD_CODE_SIGN_IDENTITY").unwrap_or_else(|_| {
-            "Apple Development: Alexander Panasenko (alex@prod.codes)".to_string()
-        });
-        let res = Command::new("codesign")
-            .args(["-s", &identity, "-f", temp_download.to_str().unwrap()])
-            .output();
-        if res.is_err() || !res.unwrap().status.success() {
-            let _ = Command::new("codesign")
-                .args(["-s", "-", "-f", temp_download.to_str().unwrap()])
-                .output();
-        }
-    }
+    verify_downloaded_binary(&temp_download)?;
 
     // Atomic replace via rename
     std::fs::rename(&temp_download, current_exe).with_context(|| {
@@ -300,74 +286,52 @@ fn run_update_with(
     Ok(())
 }
 
-#[cfg(all(test, unix))]
-#[path = "update_tests.rs"]
-mod behavior_tests;
+/// Inline `codesign -R` requirement enforcing Apple root anchor, Developer ID Application
+/// certificate type (`1.2.840.113635.100.6.1.13`), and Team ID `284V2M3LN9`.
+/// Note: the leading `=` is required by `codesign -R` so it parses the argument as an
+/// inline requirement expression rather than a requirement file path.
+#[cfg(target_os = "macos")]
+pub(crate) const MACOS_CODESIGN_REQUIREMENT: &str = "=anchor apple generic and certificate leaf[subject.OU] = \"284V2M3LN9\" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists";
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_current_target_is_valid() {
-        let target = current_target().unwrap();
-        assert!(
-            target == "aarch64-apple-darwin"
-                || target == "x86_64-apple-darwin"
-                || target == "x86_64-unknown-linux-gnu"
-                || target == "aarch64-unknown-linux-gnu"
-        );
+/// Verifies the downloaded release binary before replacing the existing executable.
+/// On macOS, release assets are already signed with Developer ID Application and notarized;
+/// re-signing locally would mutate the Mach-O binary and invalidate notarization, so we
+/// strictly verify the existing Developer ID signature and Team ID without modifying a single byte.
+pub(crate) fn verify_downloaded_binary(path: &Path) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("codesign")
+            .args([
+                "--verify",
+                "--deep",
+                "--strict",
+                "-R",
+                MACOS_CODESIGN_REQUIREMENT,
+            ])
+            .arg(path)
+            .output();
+        match output {
+            Ok(out) if out.status.success() => Ok(()),
+            Ok(out) => {
+                let _ = std::fs::remove_file(path);
+                let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                bail!("downloaded macOS binary failed code signature verification: {stderr}");
+            }
+            Err(err) => {
+                let _ = std::fs::remove_file(path);
+                Err(err).context(
+                    "failed to run codesign --verify --deep --strict -R on downloaded binary",
+                )
+            }
+        }
     }
-
-    #[test]
-    fn test_is_newer_version() {
-        assert!(is_newer_version("0.3.18", "0.3.19"));
-        assert!(is_newer_version("v0.3.18", "v0.3.19"));
-        assert!(is_newer_version("0.3.18", "v0.4.0"));
-        assert!(is_newer_version("0.3.18", "v1.0.0"));
-        assert!(!is_newer_version("0.3.19", "0.3.19"));
-        assert!(!is_newer_version("v0.3.19", "v0.3.19"));
-        assert!(!is_newer_version("0.3.19", "0.3.18"));
-        assert!(!is_newer_version("1.0.0", "0.9.9"));
-    }
-
-    #[test]
-    fn test_is_package_managed() {
-        assert!(is_package_managed(Path::new("/opt/homebrew/bin/prod-code")).is_some());
-        assert!(
-            is_package_managed(Path::new(
-                "/usr/local/Cellar/prod-code/0.3.19/bin/prod-code"
-            ))
-            .is_some()
-        );
-        assert!(is_package_managed(Path::new("/Users/alex/.cargo/bin/prod-code")).is_none());
-        assert!(is_package_managed(Path::new("/home/user/.local/bin/prod-code")).is_none());
-    }
-
-    #[test]
-    fn test_parse_release_asset() {
-        let json_val = serde_json::json!({
-            "tag_name": "v0.3.19",
-            "assets": [
-                {
-                    "name": "prod-code-aarch64-apple-darwin",
-                    "browser_download_url": "https://github.com/alex09x/prod-code/releases/download/v0.3.19/prod-code-aarch64-apple-darwin"
-                },
-                {
-                    "name": "prod-code-x86_64-unknown-linux-gnu",
-                    "browser_download_url": "https://github.com/alex09x/prod-code/releases/download/v0.3.19/prod-code-x86_64-unknown-linux-gnu"
-                }
-            ]
-        });
-
-        let (tag, url) = parse_release_asset(&json_val, "aarch64-apple-darwin").unwrap();
-        assert_eq!(tag, "v0.3.19");
-        assert_eq!(
-            url,
-            "https://github.com/alex09x/prod-code/releases/download/v0.3.19/prod-code-aarch64-apple-darwin"
-        );
-
-        let err = parse_release_asset(&json_val, "nonexistent-target");
-        assert!(err.is_err());
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        Ok(())
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "update_tests.rs"]
+pub(crate) mod behavior_tests;

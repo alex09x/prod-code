@@ -118,14 +118,18 @@ async fn verify_flow_propagates_hash_and_fetch_errors() {
 fn install_flow_decides_between_skip_install_and_refusal() {
     let target = current_target().unwrap();
     let assets = tempfile::tempdir().unwrap();
-    for tag in ["v1.0.0", "v2.0.0"] {
+    #[cfg(target_os = "macos")]
+    let v1_bytes = crate::update::behavior_tests::test_developer_id_binary_bytes();
+    #[cfg(not(target_os = "macos"))]
+    let v1_bytes = b"#!/bin/sh\necho fake-v1.0.0\n".to_vec();
+    #[cfg(target_os = "macos")]
+    let v2_bytes = crate::update::behavior_tests::test_developer_id_binary_bytes();
+    #[cfg(not(target_os = "macos"))]
+    let v2_bytes = b"#!/bin/sh\necho fake-v2.0.0\n".to_vec();
+    for (tag, payload) in [("v1.0.0", &v1_bytes), ("v2.0.0", &v2_bytes)] {
         let tag_dir = assets.path().join(tag);
         std::fs::create_dir_all(&tag_dir).unwrap();
-        std::fs::write(
-            tag_dir.join(format!("prod-code-{target}")),
-            format!("#!/bin/sh\necho fake-{tag}\n"),
-        )
-        .unwrap();
+        std::fs::write(tag_dir.join(format!("prod-code-{target}")), payload).unwrap();
     }
     let base = format!("file://{}", assets.path().display());
     let run = |current: &str, tag: serde_json::Value, flags: (bool, bool), dir: &Path| {
@@ -181,10 +185,7 @@ fn install_flow_decides_between_skip_install_and_refusal() {
             "Running MCP server instances will hot-reload automatically.".to_string(),
         ]
     );
-    assert_eq!(
-        std::fs::read_to_string(&bin).unwrap(),
-        "#!/bin/sh\necho fake-v1.0.0\n"
-    );
+    assert_eq!(std::fs::read(&bin).unwrap(), v1_bytes);
 
     // An explicit version installs even when it is not newer; a newer release installs by default.
     let (res, _) = run(
@@ -194,6 +195,16 @@ fn install_flow_decides_between_skip_install_and_refusal() {
         dest.path(),
     );
     res.unwrap();
+    // On macOS both fixtures preserve the same public signed bytes. Remove the old
+    // source and poison the destination so neither URL reuse nor skipping can pass.
+    std::fs::remove_file(
+        assets
+            .path()
+            .join("v1.0.0")
+            .join(format!("prod-code-{target}")),
+    )
+    .unwrap();
+    std::fs::write(&bin, b"must-download-the-new-release").unwrap();
     let (res, _) = run(
         "1.0.0",
         json!({"tag_name": "v2.0.0"}),
@@ -201,10 +212,7 @@ fn install_flow_decides_between_skip_install_and_refusal() {
         dest.path(),
     );
     res.unwrap();
-    assert_eq!(
-        std::fs::read_to_string(&bin).unwrap(),
-        "#!/bin/sh\necho fake-v2.0.0\n"
-    );
+    assert_eq!(std::fs::read(&bin).unwrap(), v2_bytes);
 
     // Refusals: no tag in the release payload, and a tag without a published asset.
     let (res, lines) = run("1.0.0", json!({"name": "x"}), (true, false), dest.path());
