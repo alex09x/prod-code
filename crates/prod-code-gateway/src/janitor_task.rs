@@ -93,7 +93,7 @@ async fn janitor_loop(
 
         // An engine installed while the daemon runs is picked up here, on a thread that is
         // allowed to block, instead of by the next request that needs the list.
-        let _ = tokio::task::spawn_blocking(cached_available_engines).await;
+        let _ = tokio::task::spawn_blocking(refresh_available_engines).await;
 
         // Periodically compute workspaces directory storage bytes
         let storage_root_dir = state.storage_root.clone();

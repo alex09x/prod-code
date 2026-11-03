@@ -174,7 +174,7 @@ impl RustEngineSnapshot {
         drop(self.analysis()?);
         let file_id = match self.file_id_for_path(path) {
             Some(file_id) => file_id,
-            None if is_rust_source(path) => return Err(self.require_file_id(path).unwrap_err()),
+            None if is_rust_source(path) => self.require_file_id(path)?,
             None => {
                 anyhow::bail!(
                     "{} is not a Rust file, and no language server of this workspace outlines it",
