@@ -20,13 +20,28 @@ pub(super) fn validate_workspace_paths(
     args: &serde_json::Value,
     has_explicit_workspace: bool,
 ) -> Result<()> {
+    if has_explicit_workspace
+        && tool_name == "code_schema_rename"
+        && let Some(repos) = args.get("repos").filter(|value| !value.is_null())
+    {
+        ensure!(
+            repos.as_array().is_some_and(Vec::is_empty),
+            "cannot combine `workspace` with non-empty `repos`; select one checkout or omit \
+             `workspace` for the explicit multi-repository operation"
+        );
+    }
     let keys: &[&str] = match tool_name {
         "code_exec" => &["cwd"],
         "code_test" => PATH_HINT_KEYS,
         _ if has_explicit_workspace => PATH_HINT_KEYS,
         _ => return Ok(()),
     };
-    for key in keys {
+    // A move's destination is a file path in the selected workspace too (#1811).
+    let destination: &[&str] = match tool_name {
+        "code_move" | "code_move_module" if has_explicit_workspace => &["to"],
+        _ => &[],
+    };
+    for key in keys.iter().chain(destination) {
         let Some(value) = args.get(*key) else {
             continue;
         };

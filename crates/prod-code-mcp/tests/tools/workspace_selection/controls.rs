@@ -123,7 +123,8 @@ async fn navigation_workspace_selector_rejects_unrelated_and_invalid_roots() {
     assert!(!format!("{err:#}").contains("Git worktree"), "{err:#}");
 
     // Unsupported tools continue to reject explicit workspace selection.
-    for unsupported in ["code_rename", "code_check", "code_slice", "code_source"] {
+    // The mutation catalog accepts it since #1811; a gate, a slice and a source read do not.
+    for unsupported in ["code_lint", "code_check", "code_slice", "code_source"] {
         let err = execute_tool(
             nowhere(),
             &trees.ws.root(),

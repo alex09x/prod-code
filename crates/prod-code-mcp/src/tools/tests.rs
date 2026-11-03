@@ -390,7 +390,7 @@ fn workspace_selectable_tools_advertise_workspace_selector() {
         coverage.input_schema["properties"]["workspace"]["type"],
         "boolean"
     );
-    for unsupported in ["code_rename", "code_check", "code_slice", "code_source"] {
+    for unsupported in ["code_lint", "code_check", "code_slice", "code_source"] {
         let tool = tools.iter().find(|t| t.name == unsupported).unwrap();
         assert!(tool.input_schema["properties"].get("workspace").is_none());
     }

@@ -69,7 +69,50 @@ pub const WORKSPACE_SELECTABLE: &[&str] = &[
     "code_implementations",
     "code_supertypes",
     "code_type_at",
+    "code_assists",
 ];
+
+/// The mutation catalog (#1811): the refactoring tools and `code_assist` accept the same
+/// `workspace` selector. The selected root replaces the configured one before path validation,
+/// locks, analyzer routing and the write; the selector itself is consumed there.
+pub const WORKSPACE_SELECTABLE_MUTATIONS: &[&str] = &[
+    "code_assist",
+    "code_safe_delete",
+    "code_rename",
+    "code_schema_rename",
+    "code_encapsulate_field",
+    "code_migrate_type",
+    "code_extract_field",
+    "code_generify",
+    "code_invert_boolean",
+    "code_make_static",
+    "code_convert_to_method",
+    "code_inline_parameter",
+    "code_extract_delegate",
+    "code_extract_trait",
+    "code_loop_to_iterator",
+    "code_replace_constructor_with_factory",
+    "code_replace_constructor_with_builder",
+    "code_pull_up",
+    "code_push_down",
+    "code_replace_inheritance_with_delegation",
+    "code_replace_conditional_with_polymorphism",
+    "code_extract_interface",
+    "code_extract_function",
+    "code_introduce_variable",
+    "code_wrap_return",
+    "code_extract_parameter",
+    "code_introduce_parameter_object",
+    "code_move",
+    "code_move_module",
+    "code_move_method",
+    "code_change_signature",
+];
+
+/// Whether `tool_name` advertises and accepts the string `workspace` selector.
+pub fn is_workspace_selectable(tool_name: &str) -> bool {
+    WORKSPACE_SELECTABLE.contains(&tool_name) || WORKSPACE_SELECTABLE_MUTATIONS.contains(&tool_name)
+}
 
 pub const WORKSPACE_SELECTOR_DESCRIPTION: &str = "Absolute path to the configured Git checkout \
      or a sibling Git worktree of this repository; defaults to the MCP server's configured \
