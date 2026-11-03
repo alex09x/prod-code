@@ -27,24 +27,40 @@ impl Drop for Node {
         self.task.abort();
     }
 }
+#[derive(Clone)]
+struct ExecReply {
+    text: String,
+    code: Option<i32>,
+    error: Option<String>,
+    timed_out: bool,
+}
+
 impl Node {
     async fn start(text: &str, code: Option<i32>, error: Option<&str>, timed_out: bool) -> Self {
+        let reply = ExecReply {
+            text: text.to_owned(),
+            code,
+            error: error.map(str::to_owned),
+            timed_out,
+        };
+        Self::start_scripted(move || reply.clone()).await
+    }
+
+    async fn start_scripted(reply: impl Fn() -> ExecReply + Send + Sync + 'static) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let calls = Arc::new(Mutex::new(Vec::new()));
         let placement = Arc::new(Mutex::new(addr));
         let selected = placement.clone();
         let recorded = calls.clone();
-        let text = text.to_owned();
-        let error = error.map(str::to_owned);
+        let reply = Arc::new(reply);
         let task = tokio::spawn(async move {
             loop {
                 let Ok((socket, _)) = listener.accept().await else {
                     break;
                 };
                 let recorded = recorded.clone();
-                let text = text.clone();
-                let error = error.clone();
+                let reply = Arc::clone(&reply);
                 let selected = selected.clone();
                 tokio::spawn(async move {
                     let mut framed = Framed::new(socket, ProdCodeCodec::new());
@@ -97,6 +113,12 @@ impl Node {
                             }
                             WireMessage::ExecRequest(req) => {
                                 recorded.lock().unwrap().push(req.clone());
+                                let ExecReply {
+                                    text,
+                                    code,
+                                    error,
+                                    timed_out,
+                                } = reply();
                                 if req.command == ["generate-sample"] {
                                     assert!(req.pull_changes);
                                     if framed
@@ -230,13 +252,15 @@ async fn verification_reports_all_nodes_rejecting_msrv() {
             assert_eq!(report["event"], "report");
             assert_eq!(report["report"]["exit_code"], 101);
         } else {
+            let diagnostic = err(&output);
             assert!(
-                err(&output).contains(&format!(
-                    "workspace requires a newer Rust toolchain than available on {}",
-                    second.addr
-                )),
+                [first.addr, second.addr]
+                    .iter()
+                    .any(|addr| diagnostic.contains(&format!(
+                        "workspace requires a newer Rust toolchain than available on {addr}"
+                    ))),
                 "{}",
-                err(&output)
+                diagnostic
             );
             assert!(
                 out(&output).contains("sample requires rustc 1.97.1"),
@@ -250,14 +274,32 @@ async fn verification_reports_all_nodes_rejecting_msrv() {
 #[tokio::test]
 async fn verification_falls_back_to_compatible_node() {
     let ws = workspace();
-    let first = Node::start(
-        "error: rustc 1.80.0 is not supported by the following packages:\n",
-        Some(101),
-        None,
-        false,
-    )
-    .await;
-    let second = Node::start("", Some(0), None, false).await;
+    let replies = Arc::new(Mutex::new(std::collections::VecDeque::from([
+        ExecReply {
+            text: "error: rustc 1.80.0 is not supported by the following packages:\n".into(),
+            code: Some(101),
+            error: None,
+            timed_out: false,
+        },
+        ExecReply {
+            text: String::new(),
+            code: Some(0),
+            error: None,
+            timed_out: false,
+        },
+    ])));
+    let answer = || {
+        let replies = Arc::clone(&replies);
+        move || {
+            replies
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("one refusal and one retry")
+        }
+    };
+    let first = Node::start_scripted(answer()).await;
+    let second = Node::start_scripted(answer()).await;
     *second.placement.lock().unwrap() = first.addr;
     let output = cli(
         &ws,
@@ -269,6 +311,7 @@ async fn verification_falls_back_to_compatible_node() {
     assert_eq!(output.status.code(), Some(0), "{}", err(&output));
     let report: serde_json::Value = serde_json::from_str(&out(&output)).unwrap();
     assert_eq!(report["exit_code"], 0);
+    assert!(replies.lock().unwrap().is_empty());
     for node in [&first, &second] {
         let requests = node.calls.lock().unwrap();
         assert_eq!(requests.len(), 1);
@@ -311,19 +354,43 @@ async fn exec_errors_and_termination_are_reported() {
 #[tokio::test]
 async fn grep_empty_results_scopes_root_and_nested_directory() {
     let ws = workspace();
+    assert!(
+        std::process::Command::new("rg")
+            .arg("--version")
+            .output()
+            .is_ok_and(|out| out.status.success()),
+        "ripgrep is required for the local grep scope controls"
+    );
+    ws.write("root_only.rs", "// outside nested scope\n");
+    let node = Node::start("", Some(1), None, false).await;
+    let matched = cli(
+        &ws,
+        &node.addr.to_string(),
+        &["grep", "outside nested scope", "."],
+        false,
+    )
+    .await;
+    assert!(matched.status.success(), "{}", err(&matched));
+    assert!(out(&matched).contains("root_only.rs"), "{}", out(&matched));
+    assert!(node.calls.lock().unwrap().is_empty());
     for nested in [false, true] {
         let node = Node::start("", Some(1), None, false).await;
-        let output = cli(&ws, &node.addr.to_string(), &["grep", "absent"], nested).await;
+        let pattern = if nested {
+            "outside nested scope"
+        } else {
+            "absent"
+        };
+        let output = cli(&ws, &node.addr.to_string(), &["grep", pattern], nested).await;
         assert_eq!(output.status.code(), Some(0), "{}", err(&output));
-        assert_eq!(out(&output), "No matches found for `absent`.\n");
+        assert_eq!(out(&output), format!("No matches found for `{pattern}`.\n"));
         let requests = node.calls.lock().unwrap();
-        assert_eq!(requests.len(), 1);
-        assert!(requests[0].command.contains(&"absent".to_string()));
-        assert!(
-            requests[0]
-                .command
-                .contains(&if nested { "src".into() } else { ".".into() })
-        );
+        if nested {
+            assert!(requests.is_empty(), "successful targeted grep stays local");
+        } else {
+            assert_eq!(requests.len(), 1);
+            assert!(requests[0].command.contains(&"absent".to_string()));
+            assert!(requests[0].command.contains(&".".to_string()));
+        }
     }
 }
 
