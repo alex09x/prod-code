@@ -27,8 +27,23 @@ fn descendant_retaining_stdout_pipe_is_terminated_and_reaped_on_timeout() {
     );
     make_executable_script(&fake_npm, &script);
 
+    // Observe the child before measuring pipe cleanup: script startup may consume the
+    // entire short deadline on a busy host, without ever creating a descendant.
+    let mut cmd = std::process::Command::new(&fake_npm);
+    let group = OwnedProcessGroup::spawn(&mut cmd).expect("spawn fixture script");
+    let startup_deadline = Instant::now() + Duration::from_secs(10);
+    let descendant_pid: i32 = loop {
+        if let Some(pid) = std::fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|text| text.trim().parse().ok())
+        {
+            break pid;
+        }
+        assert!(Instant::now() < startup_deadline, "descendant must start");
+        std::thread::sleep(Duration::from_millis(10));
+    };
     let start = Instant::now();
-    let result = probe_npm_root(&fake_npm, Duration::from_millis(200), []);
+    let result = wait_with_timeout(group, Duration::from_millis(200));
     let elapsed = start.elapsed();
 
     // 1. Must timeout promptly, not hang for 60s
@@ -39,9 +54,6 @@ fn descendant_retaining_stdout_pipe_is_terminated_and_reaped_on_timeout() {
     );
 
     // 2. Read descendant PID
-    let pid_str = std::fs::read_to_string(&pid_file).expect("descendant pid file must exist");
-    let descendant_pid: i32 = pid_str.trim().parse().expect("valid descendant pid");
-
     // 3. Observable verification that descendant was terminated
     unsafe extern "C" {
         fn kill(pid: i32, sig: i32) -> i32;
