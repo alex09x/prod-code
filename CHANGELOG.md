@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **HTML Function Source Fallback** (`crates/prod-code-mcp`, #1846): A missing optional HTML language server no longer blocks an explicit HTML-file and function-name lookup when a unique local JavaScript declaration can be read safely. Results identify syntax-only provenance; comments/strings, ambiguity, source confinement and output limits remain enforced.
+
 ## v0.3.50 — 2026-11-03
 
 ### Added

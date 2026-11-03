@@ -20,6 +20,7 @@ pub(crate) use super::workspace_writer::workspace_mutation_lock;
 use crate::protocol::McpToolCallResult;
 
 mod budgets;
+use super::definition::html_fallback;
 mod confinement;
 mod context;
 #[cfg(test)]
@@ -144,6 +145,7 @@ pub fn execute_tool_at<'a>(
             // lock while calling back into execute_tool would deadlock writers.
             return super::workflow::execute(remote, &configured_workspace_root, args).await;
         }
+        let fallback = html_fallback::request(tool_name, &args);
         let run = execute_tool_inner(
             remote,
             &configured_workspace_root,
@@ -151,6 +153,7 @@ pub fn execute_tool_at<'a>(
             args,
             reference_budget,
         );
+        let run = html_fallback::with_fallback(workspace_root, fallback, run);
         match budget {
             Some(budget) => {
                 let sync_stage = crate::sync::types::SyncStageTracker::new();

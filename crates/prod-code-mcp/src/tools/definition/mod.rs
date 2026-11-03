@@ -20,6 +20,7 @@ use super::{execute_lsp_query, resolve_file_path};
 use crate::protocol::McpToolCallResult;
 
 pub(crate) mod body;
+pub(crate) mod html_fallback;
 pub(crate) mod range;
 
 pub(crate) use body::*;
