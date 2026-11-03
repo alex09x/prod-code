@@ -19,7 +19,7 @@ use std::process::Command;
 
 pub(crate) const PATH_HINT_KEYS: &[&str] = &["path", "file_path", "file", "package", "crate"];
 
-pub(crate) fn resolve_workspace_root(
+pub fn resolve_workspace_root(
     configured_root: &Path,
     tool_name: &str,
     args: &mut serde_json::Value,

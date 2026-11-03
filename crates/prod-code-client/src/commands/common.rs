@@ -17,6 +17,9 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 #[path = "common_tests.rs"]
 mod coverage_tests;
+#[cfg(test)]
+#[path = "common_pin_tests.rs"]
+pub(crate) mod pin_tests;
 
 /// The position a command was given, when it was not given `--symbol`.
 pub fn position(
@@ -69,53 +72,11 @@ pub async fn run_tool_in(
     tool: &str,
     args: serde_json::Value,
 ) -> Result<()> {
-    let root = root.to_path_buf();
-    let mut remote = remote;
-    let timeout = prod_code_mcp::resolve_tool_call_timeout(&args);
-    let mut result = tokio::time::timeout(
-        timeout,
-        prod_code_mcp::tools::execute_tool(remote, &root, tool, args.clone()),
-    )
-    .await
-    .map_err(|_| {
-        anyhow::anyhow!(
-            "{tool} timed out after {}s; pass a file path hint or check gateway connectivity",
-            timeout.as_secs()
-        )
-    })?;
-    // A pinned workspace retries only a call that never started, and only within its pin; any
-    // move is reported (#1793).
-    if let Err(ref e) = result
-        && prod_code_mcp::server::retry_permitted(&prod_code_mcp::cluster::node_policy(), tool, e)
-        && let Some(new_addr) = prod_code_mcp::rediscover_node(remote, &root).await
-    {
-        eprintln!(
-            "{}",
-            prod_code_mcp::server::failover_pin::relocation_note(remote, new_addr, e)
-        );
-        remote = new_addr;
-        let identity = prod_code_mcp::sync::workspace_identity(&root);
-        let name = identity.base.unwrap_or(identity.name);
-        prod_code_mcp::cluster::remember_placement(&name, new_addr);
-        result = tokio::time::timeout(
-            timeout,
-            prod_code_mcp::tools::execute_tool(remote, &root, tool, args),
-        )
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "{tool} timed out after {}s on failover node; check gateway connectivity",
-                timeout.as_secs()
-            )
-        })?;
-    }
-    let result = result?;
+    let result = run_tool_result_in(remote, root, tool, args).await?;
     if tool == "code_definition"
         && result.content.len() == 1
-        && matches!(
-            &result.content[0],
-            prod_code_mcp::protocol::McpContentItem::Text { text } if text.trim() == "No definition found."
-        )
+        && matches!(&result.content[0], prod_code_mcp::protocol::McpContentItem::Text { text }
+            if text.trim() == "No definition found.")
     {
         anyhow::bail!("no definition found");
     }
@@ -127,6 +88,114 @@ pub async fn run_tool_in(
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Executes one CLI tool under its selected checkout's policy, including retries.
+pub(super) async fn run_tool_result_in(
+    remote: SocketAddr,
+    root: &Path,
+    tool: &str,
+    args: serde_json::Value,
+) -> Result<prod_code_mcp::protocol::McpToolCallResult> {
+    run_tool_in_with(remote, root, tool, args, |old, root| async move {
+        prod_code_mcp::rediscover_node(old, &root).await
+    })
+    .await
+}
+
+async fn run_tool_in_with<D, F>(
+    remote: SocketAddr,
+    root: &Path,
+    tool: &str,
+    args: serde_json::Value,
+    rediscover: D,
+) -> Result<prod_code_mcp::protocol::McpToolCallResult>
+where
+    D: Fn(SocketAddr, PathBuf) -> F,
+    F: std::future::Future<Output = Option<SocketAddr>>,
+{
+    let timeout = prod_code_mcp::resolve_tool_call_timeout(&args);
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut args = args;
+    let selector = if tool == "code_workflow" {
+        "code_definition"
+    } else {
+        tool
+    };
+    let root = prod_code_mcp::tools::resolve_workspace_root(root, selector, &mut args)?;
+    let policy = prod_code_mcp::cluster::policy_for_root(&root)?;
+    let remote = prod_code_mcp::cluster::place_within(&policy, remote)?;
+    prod_code_mcp::cluster::with_root_policy(&root, policy.clone(), async {
+        let mut remote = remote;
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!(
+                "{tool} timed out after {}s; pass a file path hint or check gateway connectivity",
+                timeout.as_secs()
+            );
+        }
+        let mut result = tokio::time::timeout_at(
+            deadline,
+            prod_code_mcp::tools::execute_tool(remote, &root, tool, args.clone()),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "{tool} timed out after {}s; pass a file path hint or check gateway connectivity",
+                timeout.as_secs()
+            )
+        })?;
+        // A pinned workspace retries only a call that never started, and only within its pin; any
+        // move is reported (#1793).
+        if let Err(ref e) = result
+            && prod_code_mcp::server::retry_permitted(&policy, tool, e)
+            && tokio::time::Instant::now() < deadline
+            && (!policy.is_pinned() || !policy.alternatives(remote).is_empty())
+            && let Ok(Some(new_addr)) =
+                tokio::time::timeout_at(deadline, rediscover(remote, root.clone())).await
+            && policy.allows(new_addr)
+        {
+            let note = prod_code_mcp::server::failover_pin::relocation_note(remote, new_addr, e);
+            remote = new_addr;
+            if tokio::time::Instant::now() >= deadline {
+                anyhow::bail!(
+                    "{tool} timed out after {}s on failover node; check gateway connectivity",
+                    timeout.as_secs()
+                );
+            }
+            result = tokio::time::timeout_at(
+                deadline,
+                prod_code_mcp::tools::execute_tool(remote, &root, tool, args),
+            )
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "{tool} timed out after {}s on failover node; check gateway connectivity",
+                    timeout.as_secs()
+                )
+            })?;
+            if result.is_ok() {
+                if !policy.is_pinned() {
+                    let identity = prod_code_mcp::sync::workspace_identity(&root);
+                    let name = identity.base.unwrap_or(identity.name);
+                    prod_code_mcp::cluster::remember_placement(&name, new_addr);
+                }
+                eprintln!("{note}");
+            }
+        }
+        // The MCP navigation timer may return its busy result in the same tick as the
+        // outer timer. Keep the CLI references timeout an error, not a process exit.
+        if tool == "code_references"
+            && tokio::time::Instant::now() >= deadline
+            && result.as_ref().is_ok_and(|reply| reply.is_error)
+        {
+            anyhow::bail!(
+                "{tool} timed out after {}s; pass a file path hint or check gateway connectivity",
+                timeout.as_secs()
+            );
+        }
+        result
+    })
+    .await
 }
 
 /// A position command given `--symbol`: the MCP tool resolves the name, exactly as for an agent,

@@ -187,9 +187,11 @@ where
                                     .filter(|addr| policy.allows(*addr))
                                 {
                                     call_remote = new_addr;
-                                    let identity = crate::sync::workspace_identity(&selected);
-                                    let name = identity.base.unwrap_or(identity.name);
-                                    crate::cluster::remember_placement(&name, new_addr);
+                                    if selected == home && !policy.is_pinned() {
+                                        let identity = crate::sync::workspace_identity(&selected);
+                                        let name = identity.base.unwrap_or(identity.name);
+                                        crate::cluster::remember_placement(&name, new_addr);
+                                    }
                                     tracing::info!(
                                         old = %old,
                                         new = %new_addr,
