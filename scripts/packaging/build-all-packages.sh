@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# prod-code — Remote code intelligence
+# Copyright (c) 2026 Alexander Panasenko
+#
+# Contact: alex@prod.codes
+# Author: https://prod.codes/about/
+# Project: https://github.com/alex09x/prod-code
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
 # build-all-packages.sh - Builds Debian packages, RPM packages, Arch packages, macOS installer .pkg, macOS .dmg, Homebrew formula, and SHA256 checksums.
 set -euo pipefail
 
@@ -63,6 +71,27 @@ PYCODE
 }
 verify_linux_arch "$CLIENT_BIN_X86_64" x86_64
 verify_linux_arch "$CLIENT_BIN_AARCH64" aarch64
+
+# Every Linux release binary, client and server, must load on the oldest supported
+# glibc without loader warnings. WEAK version needs count; see docs/distribution.md.
+# Only Linux ELF artifacts are gated here; the macOS binaries below are not ELF.
+LINUX_GLIBC_BASELINE="2.35"
+LINUX_RELEASE_BINS=("$CLIENT_BIN_X86_64" "$CLIENT_BIN_AARCH64")
+for server_bin in "${SERVER_BIN_X86_64:-}" "${SERVER_BIN_AARCH64:-}"; do
+    if [[ -n "$server_bin" ]]; then
+        LINUX_RELEASE_BINS+=("$server_bin")
+    fi
+done
+for candidate in \
+    "$ROOT_DIR"/dist/bin/prod-code*-unknown-linux-gnu \
+    "$ROOT_DIR"/target/x86_64-unknown-linux-gnu/release/prod-code-server \
+    "$ROOT_DIR"/target/aarch64-unknown-linux-gnu/release/prod-code-server; do
+    if [[ -f "$candidate" ]]; then
+        LINUX_RELEASE_BINS+=("$candidate")
+    fi
+done
+echo "Checking Linux release binaries against glibc ${LINUX_GLIBC_BASELINE}..."
+python3 "$SCRIPT_DIR/glibc_compat.py" --baseline "$LINUX_GLIBC_BASELINE" "${LINUX_RELEASE_BINS[@]}"
 
 # 1. Debian packages (.deb)
 echo "Generating Debian package (arm64)..."
