@@ -131,6 +131,8 @@ jobs:
           key: cargo-registry-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
       - name: Test valid Developer ID, unsigned, tampered and ad-hoc downloads without secrets
         run: python3 scripts/ci/macos-signatures.py
+      - name: Verify Git build metadata on native macOS
+        run: cargo test --locked -p prod-code-protocol --test build_fingerprint
 
   ci:
     if: always()
