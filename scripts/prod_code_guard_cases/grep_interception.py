@@ -13,10 +13,10 @@ from __future__ import annotations
 import os
 import tempfile
 
-from .support import GuardTestCaseBase
+from .grep_arguments import GrepArgumentCasesMixin
 
 
-class GrepInterceptionCasesMixin(GuardTestCaseBase):
+class GrepInterceptionCasesMixin(GrepArgumentCasesMixin):
     temp_dir: tempfile.TemporaryDirectory[str] | None = None
     cwd: str = ""
 
@@ -27,6 +27,7 @@ class GrepInterceptionCasesMixin(GuardTestCaseBase):
         os.makedirs(os.path.join(self.cwd, ".git"), exist_ok=True)
         os.makedirs(os.path.join(self.cwd, "crates"), exist_ok=True)
         os.makedirs(os.path.join(self.cwd, "src"), exist_ok=True)
+        os.makedirs(os.path.join(self.cwd, "scripts"), exist_ok=True)
 
     def tearDown(self) -> None:
         if self.temp_dir is not None:
@@ -136,3 +137,247 @@ class GrepInterceptionCasesMixin(GuardTestCaseBase):
             guard.shell_command(claude_payload),
             'git grep -n -F -e meta.json -- ".rs"',
         )
+
+    def test_ripgrep_files_listing_allowed_issue_1803(self) -> None:
+        guard = self._guard()
+        # Issue #1803: bounded filename enumeration with --files must not be blocked as content search
+        cmd_exact = "rg --files scripts -g '*release*' -g '*deploy*' -g '*rollout*'"
+        self.assertIsNone(guard.symbol_grep(cmd_exact, self.cwd))
+        self.assertIsNone(guard.text_grep(cmd_exact, self.cwd))
+
+        payload = {
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": cmd_exact, "Cwd": self.cwd},
+            },
+            "workspacePaths": [self.cwd],
+        }
+        self.assertEqual(self._invoke_main_stdio(payload), "")
+
+        allowed_files_cases = [
+            "rg scripts --files -g '*release*'",
+            "rg -g '*release*' --files scripts",
+            "rg --files scripts",
+            "rg --files",
+            "rg --files .",
+            "rg --files -- scripts",
+            "rg --files --glob='*release*' scripts",
+            "rg --files --iglob='*release*' scripts",
+            "rg --files --type=py scripts",
+            "rg --files --type-not=rust scripts",
+            "rg --files -g'*release*' scripts",
+            "rg --files -tpy scripts",
+            "rg --files -Trust scripts",
+            "rg --files -t py scripts",
+            "rg --files -T rust scripts",
+            "rg --files scripts crates",
+            "rg --count --files scripts",
+            "rg -c --files scripts",
+            "rg -l --files scripts",
+            "rg -cl --files scripts",
+            "rg -zc --files scripts",
+            "rg --files-with-matches --files scripts",
+            "rg --files-without-match --files scripts",
+            "rg --count-matches --files scripts",
+            "rg --files --count scripts --files",
+            "rg --files -c scripts --files",
+        ]
+        for cmd in allowed_files_cases:
+            with self.subTest(command=cmd):
+                self.assertIsNone(
+                    guard.symbol_grep(cmd, self.cwd),
+                    f"Ripgrep file listing `{cmd}` should not be flagged as symbol grep",
+                )
+                self.assertIsNone(
+                    guard.text_grep(cmd, self.cwd),
+                    f"Ripgrep file listing `{cmd}` should not be flagged as text grep",
+                )
+
+    def test_ripgrep_last_mode_wins_content_modes_denied_after_files(self) -> None:
+        guard = self._guard()
+        # Content modes following --files switch ripgrep to content search and must be intercepted
+        content_symbol_cases = [
+            ("rg --files --count my_func crates/", "my_func"),
+            ("rg --files --files-with-matches my_func crates/", "my_func"),
+            ("rg --files --files-without-match my_func crates/", "my_func"),
+            ("rg --files --count-matches my_func crates/", "my_func"),
+            ("rg --files -c my_func crates/", "my_func"),
+            ("rg --files -l my_func crates/", "my_func"),
+            ("rg --files -cl my_func crates/", "my_func"),
+            ("rg --files -zc my_func crates/", "my_func"),
+            ("rg --files -zl my_func crates/", "my_func"),
+            ("rg --files -ic my_func crates/", "my_func"),
+        ]
+        for cmd, sym in content_symbol_cases:
+            with self.subTest(command=cmd):
+                res = guard.symbol_grep(cmd, self.cwd)
+                self.assertIsNotNone(
+                    res,
+                    f"Content mode after --files `{cmd}` must intercept symbol `{sym}`",
+                )
+                self.assertEqual(res[0], sym)
+                payload = {
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": cmd, "Cwd": self.cwd},
+                    },
+                    "workspacePaths": [self.cwd],
+                }
+                out = self._invoke_main_stdio(payload)
+                self.assertIn(f"Grep for code symbol `{sym}` is blocked", out)
+
+        content_text_cases = [
+            ("rg --files --count 'fn test_' crates/", "fn test_", "crates/"),
+            (
+                "rg --files --files-with-matches 'fn test_' crates/",
+                "fn test_",
+                "crates/",
+            ),
+            (
+                "rg --files --files-without-match 'fn test_' crates/",
+                "fn test_",
+                "crates/",
+            ),
+            ("rg --files --count-matches 'fn test_' crates/", "fn test_", "crates/"),
+            ("rg --files -c 'fn test_' crates/", "fn test_", "crates/"),
+            ("rg --files -l 'fn test_' crates/", "fn test_", "crates/"),
+            ("rg --files -cl 'fn test_' crates/", "fn test_", "crates/"),
+            ("rg --files -zc 'fn test_' crates/", "fn test_", "crates/"),
+            ("rg --files -zl 'fn test_' crates/", "fn test_", "crates/"),
+        ]
+        for cmd, pat, path in content_text_cases:
+            with self.subTest(command=cmd):
+                res = guard.text_grep(cmd, self.cwd)
+                self.assertIsNotNone(
+                    res,
+                    f"Content mode after --files `{cmd}` must intercept text pattern `{pat}`",
+                )
+                self.assertEqual(res, (pat, path))
+                payload = {
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": cmd, "Cwd": self.cwd},
+                    },
+                    "workspacePaths": [self.cwd],
+                }
+                out = self._invoke_main_stdio(payload)
+                self.assertIn(
+                    f"Grep for text pattern `{pat}` over source files is blocked", out
+                )
+
+    def test_compound_command_with_files_preserves_content_denials(self) -> None:
+        guard = self._guard()
+        # Compound commands: --files in one segment must not allow content/identifier searches
+        compound_symbol_cases = [
+            ("rg --files scripts && rg my_func crates/", "my_func"),
+            ("rg my_func crates/ && rg --files scripts", "my_func"),
+            ("bash -c 'rg --files scripts && rg my_func crates/'", "my_func"),
+            ("sh -c 'rg --files scripts; rg my_func crates/'", "my_func"),
+        ]
+        for cmd, sym in compound_symbol_cases:
+            with self.subTest(command=cmd):
+                res = guard.symbol_grep(cmd, self.cwd)
+                self.assertIsNotNone(
+                    res, f"Compound command `{cmd}` must intercept symbol `{sym}`"
+                )
+                self.assertEqual(res[0], sym)
+                payload = {
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": cmd, "Cwd": self.cwd},
+                    },
+                    "workspacePaths": [self.cwd],
+                }
+                out = self._invoke_main_stdio(payload)
+                self.assertIn(f"Grep for code symbol `{sym}` is blocked", out)
+
+        compound_text_cases = [
+            ("rg --files scripts && rg 'fn test_' crates/", "fn test_", "crates/"),
+            ("rg 'fn test_' crates/ && rg --files scripts", "fn test_", "crates/"),
+            ("rg --files scripts; rg 'fn test_' crates/", "fn test_", "crates/"),
+            (
+                "bash -c 'rg --files scripts && rg \"fn test_\" crates/'",
+                "fn test_",
+                "crates/",
+            ),
+        ]
+        for cmd, pat, path in compound_text_cases:
+            with self.subTest(command=cmd):
+                res = guard.text_grep(cmd, self.cwd)
+                self.assertIsNotNone(
+                    res, f"Compound command `{cmd}` must intercept text pattern `{pat}`"
+                )
+                self.assertEqual(res, (pat, path))
+                payload = {
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": cmd, "Cwd": self.cwd},
+                    },
+                    "workspacePaths": [self.cwd],
+                }
+                out = self._invoke_main_stdio(payload)
+                self.assertIn(
+                    f"Grep for text pattern `{pat}` over source files is blocked", out
+                )
+
+    def test_negative_content_search_examples(self) -> None:
+        guard = self._guard()
+        # Non-file-listing searches using literal '--files' pattern must be denied
+        negative_text_cases = [
+            ("rg -- --files scripts", "--files", "scripts"),
+            ("rg -e --files scripts", "--files", "scripts"),
+            ("rg --regexp=--files scripts", "--files", "scripts"),
+            ("rg -e=--files scripts", "--files", "scripts"),
+            ("rg -g --files 'fn test_' crates/", "fn test_", "crates/"),
+            ("rg --glob=--files 'fn test_' crates/", "fn test_", "crates/"),
+            ("rg -g'*--files*' 'fn test_' crates/", "fn test_", "crates/"),
+        ]
+        for cmd, pat, path in negative_text_cases:
+            with self.subTest(command=cmd):
+                self.assertIsNone(guard.symbol_grep(cmd, self.cwd))
+                self.assertEqual(guard.text_grep(cmd, self.cwd), (pat, path))
+                payload = {
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": cmd, "Cwd": self.cwd},
+                    },
+                    "workspacePaths": [self.cwd],
+                }
+                out = self._invoke_main_stdio(payload)
+                self.assertIn(
+                    f"Grep for text pattern `{pat}` over source files is blocked", out
+                )
+
+        # Options with equals and attached forms for symbol searches must be denied
+        symbol_option_cases = [
+            ("rg --type=rust my_func crates/", "my_func"),
+            ("rg -trust my_func crates/", "my_func"),
+            ("rg --glob='*.rs' my_func crates/", "my_func"),
+            ("rg -g'*.rs' my_func crates/", "my_func"),
+            ("rg --regexp=my_func crates/", "my_func"),
+            ("rg -e=my_func crates/", "my_func"),
+            ("rg -emy_func crates/", "my_func"),
+            ("rg -g --files my_func crates/", "my_func"),
+            ("rg --glob=--files my_func crates/", "my_func"),
+            ("rg -g'*--files*' my_func crates/", "my_func"),
+        ]
+        for cmd, sym in symbol_option_cases:
+            with self.subTest(command=cmd):
+                res = guard.symbol_grep(cmd, self.cwd)
+                self.assertIsNotNone(res, f"`{cmd}` must intercept symbol `{sym}`")
+                self.assertEqual(res[0], sym)
+
+        # Options with equals and attached forms for text searches must be denied
+        text_option_cases = [
+            ("rg --type=rust 'fn test_' crates/", "fn test_", "crates/"),
+            ("rg -trust 'fn test_' crates/", "fn test_", "crates/"),
+            ("rg --glob='*.rs' 'fn test_' crates/", "fn test_", "crates/"),
+            ("rg -g'*.rs' 'fn test_' crates/", "fn test_", "crates/"),
+            ("rg --regexp='fn test_' crates/", "fn test_", "crates/"),
+            ("rg -e='fn test_' crates/", "fn test_", "crates/"),
+            ("rg -e'fn test_' crates/", "fn test_", "crates/"),
+        ]
+        for cmd, pat, path in text_option_cases:
+            with self.subTest(command=cmd):
+                self.assertIsNone(guard.symbol_grep(cmd, self.cwd))
+                self.assertEqual(guard.text_grep(cmd, self.cwd), (pat, path))

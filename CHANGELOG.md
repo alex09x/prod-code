@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Ripgrep Filename Discovery Guard** (`scripts/hooks`, #1803): `rg --files` is treated as filename enumeration, including clustered glob flags. Search-mode overrides and option values that contain `--files` retain normal source-content interception. The argument parser is included in the versioned hook bundle.
+
 ## v0.3.49 — 2026-11-02
 
 ### Added

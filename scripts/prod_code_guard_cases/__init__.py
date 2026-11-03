@@ -18,6 +18,7 @@ CASE_SUBMODULES = (
     "support.py",
     "classification_and_build.py",
     "grep_interception.py",
+    "grep_arguments.py",
     "rename_unit.py",
     "rename_hook.py",
     "symbol_grep_policy.py",
