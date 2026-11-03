@@ -22,8 +22,17 @@ cargo build --release --locked -p prod-code-client -p prod-code-gateway --bins -
 out="$RUNNER_TEMP/native-assets"
 mkdir -p "$out"
 for binary in prod-code prod-code-server; do
-    version=$("target/release/$binary" --version)
-    test "$version" = "$binary $RELEASE_VERSION"
+    if ! version=$("target/release/$binary" --version); then
+        printf 'Version probe failed for %s\n' "$binary" >&2
+        exit 1
+    fi
+    # Linux startup diagnostics can precede the final canonical version banner.
+    version=${version##*$'\n'}
+    if test "$version" != "$binary $RELEASE_VERSION"; then
+        printf 'Unexpected version for %s: expected "%s", got "%s"\n' \
+            "$binary" "$binary $RELEASE_VERSION" "$version" >&2
+        exit 1
+    fi
     install -m 755 "target/release/$binary" "$out/$binary-$RELEASE_TARGET"
 done
 if test "$(uname -s)" = Linux; then
