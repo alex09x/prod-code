@@ -16,6 +16,7 @@ use super::cluster::{
 };
 use super::exec::{ExecChanges, ExecChunk, ExecExit, ExecRequest};
 use super::handshake::{HandshakeRequest, HandshakeResponse};
+use super::pin::{NodePinRequest, NodePinResponse};
 use super::pull::{PullFileRequest, PullFileResponse};
 use super::remote_exec::{RemoteExecRequest, RemoteExecResult, RemoteExecStream};
 use super::search::{SearchRequest, SearchResponse};
@@ -97,6 +98,10 @@ pub enum WireMessage {
     RemoteExecStream(RemoteExecStream),
     /// Final execution verdict, diagnostics, and test summary (Roadmap 6.1).
     RemoteExecResult(RemoteExecResult),
+    /// A client with a strict node pin asks the gateway to run this connection's work itself
+    /// (#1793). Older gateways cannot decode it and close the connection.
+    NodePinRequest(NodePinRequest),
+    NodePinResponse(NodePinResponse),
     /// Lightweight HTTP probe (e.g. GET /health or GET /status) received on gateway port.
     HttpProbe {
         method: String,

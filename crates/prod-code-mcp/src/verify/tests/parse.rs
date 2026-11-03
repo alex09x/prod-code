@@ -334,6 +334,7 @@ fn benchmark_results_are_read_from_criterion_libtest_and_go() {
         benches: found,
         usage: None,
         platform: None,
+        executor: None,
     };
     let text = report.render(10);
     assert!(
@@ -388,6 +389,7 @@ fn test_toolchain_msrv_rejection_detection() {
         benches: vec![],
         usage: None,
         platform: None,
+        executor: None,
     };
     assert!(report.is_toolchain_msrv_rejection());
 

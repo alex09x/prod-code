@@ -39,8 +39,20 @@ pub async fn rename_across(
     for root in roots {
         let _ = crate::session::take_indexing_notes(root);
     }
-    for root in roots {
-        match rename(remote, root, field, to, false, force, None).await {
+    for (index, root) in roots.iter().enumerate() {
+        let candidate = if index == 0 {
+            remote
+        } else {
+            crate::cluster::route_for_checkout(remote, root).await?
+        };
+        let (policy, repo_remote) = crate::cluster::place_call(root, candidate)?;
+        let planned = crate::cluster::with_root_policy(
+            root,
+            policy,
+            rename(repo_remote, root, field, to, false, force, None),
+        )
+        .await;
+        match planned {
             Ok(plan) => repos.push(plan),
             Err(err) if format!("{err}").contains(NOT_FOUND) => missing.push(root.clone()),
             Err(err) => return Err(err.context(format!("in {}", root.display()))),

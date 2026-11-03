@@ -10,7 +10,10 @@
 
 pub mod dispatch;
 pub mod failover;
+pub mod failover_pin;
 pub mod rebalance;
+#[cfg(test)]
+mod rebalance_pin_tests;
 mod reload;
 mod stdin;
 #[cfg(unix)]
@@ -40,4 +43,5 @@ pub use dispatch::{
     MAX_TOOL_CALL_TIMEOUT, MCP_TOOL_CALL_TIMEOUT, handle_mcp_request, resolve_tool_call_timeout,
 };
 pub use failover::{is_retryable_connection_error, rediscover_node};
+pub use failover_pin::{is_unstarted_connection_error, retry_permitted};
 pub use transport::{run_stdio_mcp_server, serve_mcp_requests};

@@ -31,9 +31,14 @@ pub async fn pull_remote_files_from(
 ) -> Result<PullOutcome> {
     let root = std::fs::canonicalize(root)?;
     let identity = super::workspace_identity(&root);
+    // Artifacts come only from a node the checkout's pin allows, confirmed under a strict pin
+    // before anything is asked of it (#1793).
+    let policy = crate::cluster::policy_for_root(&root)?;
+    policy.check(remote, "pulling artifacts")?;
     let stream = prod_code_protocol::transport::connect(remote).await
         .with_context(|| format!("cannot pull from node {remote}; use the node printed by prod-code exec (--remote NODE)"))?;
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    crate::cluster::confirm_gate(&mut framed, remote, &root, &policy).await?;
     let mut copy = String::new();
     let mut pulled = Vec::new();
     for path in files {
@@ -92,7 +97,9 @@ pub async fn pull_remote_files_from(
                 "artifact copy or offset changed during pull from node {remote}"
             );
             if let Some(error) = response.file.error {
-                let exec_node = crate::exec::last_exec_node(&root).unwrap_or(remote);
+                let exec_node = crate::exec::last_exec_node(&root)
+                    .filter(|node| policy.allows(*node))
+                    .unwrap_or(remote);
                 anyhow::bail!(
                     "failed to pull {name} on node {remote}, copy {copy}: {error}. Check the node printed by prod-code exec; retry with prod-code --remote {exec_node} pull {name} (MCP: code_pull remote={exec_node})"
                 );

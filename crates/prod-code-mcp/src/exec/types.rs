@@ -9,11 +9,42 @@
  */
 
 use prod_code_protocol::{ExecExit, RemoteExecResult};
+use serde::{Deserialize, Serialize};
+
+/// Where a command actually ran (#1793): the gateway it was sent to and, under a strict pin, the
+/// node that gateway confirmed on the same connection that it executes the work on.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Executor {
+    /// The gateway address the command ran on.
+    pub node: String,
+    /// The node the gateway confirmed, when the workspace is strictly pinned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmed_node: Option<String>,
+}
+
+impl Executor {
+    pub fn new(node: std::net::SocketAddr, confirmed_node: Option<String>) -> Self {
+        Self {
+            node: node.to_string(),
+            confirmed_node,
+        }
+    }
+
+    /// `node A` or `node A (gateway confirms B)`.
+    pub fn render(&self) -> String {
+        match &self.confirmed_node {
+            Some(confirmed) => format!("node {} (gateway confirms {confirmed})", self.node),
+            None => format!("node {}", self.node),
+        }
+    }
+}
 
 /// Result of a remote command: its exit record plus the checkout files the command changed on
 /// the server and that were written back locally.
 #[derive(Debug, Clone)]
 pub struct RemoteOutcome {
+    /// The node the command ran on.
+    pub executor: Executor,
     pub exit: ExecExit,
     pub pulled_files: Vec<String>,
     /// Rust files rewritten by a known formatter with proven ordered whitespace equivalence.
@@ -49,6 +80,8 @@ impl RemoteOutcome {
 /// Result of a polyglot remote command execution including structured results.
 #[derive(Debug, Clone)]
 pub struct PolyglotRemoteOutcome {
+    /// The node the command ran on.
+    pub executor: Executor,
     pub result: RemoteExecResult,
     pub pulled_files: Vec<String>,
     pub relaid_files: Vec<String>,

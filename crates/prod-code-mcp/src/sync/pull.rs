@@ -95,7 +95,7 @@ pub async fn pull_remote_files(
     root: &Path,
     files: &[PathBuf],
 ) -> Result<Vec<String>> {
-    let node = crate::exec::last_exec_node(root).unwrap_or(remote);
+    let node = crate::exec::pull_node(root, remote, None)?;
     Ok(super::artifact::pull_remote_files_from(node, root, files)
         .await?
         .files)

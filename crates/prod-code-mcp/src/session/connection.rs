@@ -11,13 +11,12 @@
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage, supported_protocol_versions,
+    HandshakeRequest, PROTOCOL_VERSION, WireMessage, supported_protocol_versions,
     validate_selected_protocol_version,
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path;
-use tokio_util::codec::Framed;
 
 use crate::sync::{
     WorkspaceIdentity, engine_project, gateway_node, push_workspace_sync, resend_lost_files,
@@ -91,11 +90,14 @@ impl LspSession {
         }
         let mut redirect_count = 0;
         let mut refused_by = Vec::new();
+        // A pinned workspace offers no redirects and follows none outside its pin, and every
+        // connection, a redirected one included, is confirmed before the sync (#1793).
+        let policy = crate::cluster::policy_for_root(&root)?;
         let (framed, handshake) = loop {
-            let stream = prod_code_protocol::transport::connect(remote)
-                .await
-                .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
-            let mut framed = Framed::new(stream, ProdCodeCodec::new());
+            let mut framed =
+                crate::cluster::connect_gated_with(remote, &root, &policy, "this session")
+                    .await?
+                    .framed;
             push_workspace_sync(&mut framed, &root, &identity, None)
                 .await
                 .context("pre-flight workspace sync failed")?;
@@ -121,7 +123,7 @@ impl LspSession {
                         multi_root: true,
                         sync_chunking: false,
                         unix_socket_local: cfg!(unix),
-                        redirects: true,
+                        redirects: policy.offers_redirects(),
                     }),
                     client_name: "prod-code-batch".to_string(),
                     client_pid: std::process::id(),
@@ -147,6 +149,7 @@ impl LspSession {
                     if redirect_count > 3 {
                         anyhow::bail!("too many gateway redirects: {reason:?}");
                     }
+                    policy.check_redirect(&target_addr)?;
                     refused_by.push(remote.to_string());
                     tracing::info!(%target_addr, ?reason, "received transparent redirect from gateway");
                     remote = crate::cluster::parse_remotes(&target_addr)?

@@ -38,6 +38,7 @@ fn verify_render_keeps_failure_details_after_oversized_diagnostic() {
         benches: vec![],
         usage: None,
         platform: None,
+        executor: None,
     };
 
     let rendered = report.render(10);
@@ -87,6 +88,7 @@ fn verify_render_reserves_budget_for_test_failures_despite_many_diagnostics() {
         benches: vec![],
         usage: None,
         platform: None,
+        executor: None,
     };
 
     let text = report.render(40);
@@ -120,6 +122,7 @@ fn verify_render_reports_failures_omitted_by_byte_budget() {
         benches: vec![],
         usage: None,
         platform: None,
+        executor: None,
     };
 
     let text = report.render(10);

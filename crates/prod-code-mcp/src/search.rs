@@ -15,10 +15,9 @@
 use crate::sync::{WorkspaceIdentity, push_workspace_sync, workspace_identity};
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use prod_code_protocol::{ProdCodeCodec, SearchRequest, SearchResponse, WireMessage};
+use prod_code_protocol::{SearchRequest, SearchResponse, WireMessage};
 use std::net::SocketAddr;
 use std::path::Path;
-use tokio_util::codec::Framed;
 
 /// Sends the query and returns the gateway's answer.
 pub async fn search(
@@ -30,10 +29,10 @@ pub async fn search(
 ) -> Result<SearchResponse> {
     anyhow::ensure!(!query.trim().is_empty(), "empty query");
     let identity: WorkspaceIdentity = workspace_identity(root);
-    let stream = prod_code_protocol::transport::connect(remote)
-        .await
-        .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
-    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    // The search syncs the checkout first: the pin is confirmed before that (#1793).
+    let mut framed = crate::cluster::connect_gated(remote, root, "this search")
+        .await?
+        .framed;
     push_workspace_sync(&mut framed, root, &identity, None)
         .await
         .context("pre-flight workspace sync failed")?;

@@ -14,12 +14,9 @@ use super::types::{HypothesisOutcome, HypothesisSpec, ShadowOutcome};
 use crate::sync::{WorkspaceIdentity, push_workspace_sync, workspace_identity};
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use prod_code_protocol::{
-    FileDelta, ProdCodeCodec, ShadowHypothesis, ShadowRunRequest, WireMessage,
-};
+use prod_code_protocol::{FileDelta, ShadowHypothesis, ShadowRunRequest, WireMessage};
 use std::net::SocketAddr;
 use std::path::Path;
-use tokio_util::codec::Framed;
 
 /// Performs one shadow request and builds its local report.
 #[allow(clippy::too_many_arguments)]
@@ -38,10 +35,10 @@ pub(crate) async fn run_shadow_once(
     anyhow::ensure!(!command.is_empty(), "empty command");
     anyhow::ensure!(!specs.is_empty(), "no hypotheses");
     let identity: WorkspaceIdentity = workspace_identity(root);
-    let stream = prod_code_protocol::transport::connect(remote)
-        .await
-        .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
-    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    // A shadow run syncs and runs commands: the pin is confirmed before either (#1793).
+    let mut framed = crate::cluster::connect_gated(remote, root, "this shadow run")
+        .await?
+        .framed;
     push_workspace_sync(&mut framed, root, &identity, None)
         .await
         .context("pre-flight workspace sync failed")?;

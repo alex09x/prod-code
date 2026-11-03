@@ -73,6 +73,7 @@ fn a_formatter_s_rewrite_is_layout_and_an_edit_is_not() {
         "uncertain closure changes still warn"
     );
     let outcome = RemoteOutcome {
+        executor: Default::default(),
         exit: ExecExit {
             exit_code: Some(0),
             duration_ms: 1,

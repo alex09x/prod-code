@@ -161,6 +161,9 @@ async fn run_exec_command(
     if exit.error.is_none() {
         crate::exec::remember_exec_node(workspace_root, remote);
     }
+    // The node that ran it as the gateway confirmed on the command's own connection under a
+    // strict pin, not only the address it was sent to (#1793).
+    let ran_on = outcome.executor.render();
     let status = match (&exit.error, exit.timed_out, exit.exit_code) {
         (Some(err), _, _) => format!("failed to start: {err}"),
         (None, true, _) => "timed out".to_string(),
@@ -168,7 +171,7 @@ async fn run_exec_command(
         (None, false, None) => "killed by signal".to_string(),
     };
     let mut text = format!(
-        "$ {}\n[{status} in {:.1}s{} on node {remote}, copy {}{}; {} bytes of output{}]\n",
+        "$ {}\n[{status} in {:.1}s{} on {ran_on}, copy {}{}; {} bytes of output{}]\n",
         argv.join(" "),
         exit.duration_ms as f64 / 1000.0,
         exit.usage

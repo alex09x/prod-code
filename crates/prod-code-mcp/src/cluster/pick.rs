@@ -50,6 +50,35 @@ pub async fn pick_node_with(
     os: Option<&str>,
     placement_file: Option<&Path>,
 ) -> Result<SocketAddr> {
+    pick_node_policy(nodes, workspace_name, engine, os, placement_file, true).await
+}
+
+/// Selects only among explicitly configured endpoints, including DNS alternatives.
+pub async fn pick_pinned_node(
+    nodes: &[SocketAddr],
+    workspace_name: &str,
+    engine: Option<&str>,
+    os: Option<&str>,
+) -> Result<SocketAddr> {
+    pick_node_policy(
+        nodes,
+        workspace_name,
+        engine,
+        os,
+        placement_path().as_deref(),
+        false,
+    )
+    .await
+}
+
+pub(crate) async fn pick_node_policy(
+    nodes: &[SocketAddr],
+    workspace_name: &str,
+    engine: Option<&str>,
+    os: Option<&str>,
+    placement_file: Option<&Path>,
+    allow_unlisted: bool,
+) -> Result<SocketAddr> {
     let listed = |nodes: &[SocketAddr]| {
         nodes
             .iter()
@@ -90,6 +119,7 @@ pub async fn pick_node_with(
                             os,
                         )
                         .await
+                        .filter(|(node, _)| allow_unlisted || nodes.contains(node))
                         {
                             if let Some(path) = placement_file {
                                 placement
@@ -114,7 +144,12 @@ pub async fn pick_node_with(
         // Ask the cluster first: any live node knows (by gossip) who already holds the
         // workspace and who is quietest, and it can move an idle workspace off an
         // overloaded node.
-        for seed in rendezvous_order(nodes, workspace_name) {
+        let placement_seeds = if allow_unlisted {
+            rendezvous_order(nodes, workspace_name)
+        } else {
+            Vec::new()
+        };
+        for seed in placement_seeds {
             let Ok(answer) = ask_placement(seed, workspace_name, engine, os).await else {
                 continue;
             };
@@ -123,6 +158,7 @@ pub async fn pick_node_with(
                 .node
                 .as_deref()
                 .and_then(|a| a.parse::<SocketAddr>().ok())
+                && (allow_unlisted || nodes.contains(&chosen))
                 && node_fits(chosen, engine, os).await
             {
                 if let Ok(status) = node_status(chosen).await {
@@ -144,6 +180,7 @@ pub async fn pick_node_with(
                             os,
                         )
                         .await
+                        .filter(|(node, _)| allow_unlisted || nodes.contains(node))
                     {
                         if let Some(path) = placement_file {
                             placement
@@ -256,7 +293,8 @@ pub async fn pick_node_with(
         );
     };
     let loopback: SocketAddr = "127.0.0.1:9400".parse().unwrap();
-    if *only == loopback
+    if allow_unlisted
+        && *only == loopback
         && (!is_alive(*only).await || (engine.is_some() && !node_fits(*only, engine, os).await))
         && let Some(path) = placement_file
     {
@@ -297,3 +335,7 @@ pub async fn pick_node_with(
     }
     Ok(*only)
 }
+
+#[cfg(test)]
+#[path = "pick_tests.rs"]
+mod tests;

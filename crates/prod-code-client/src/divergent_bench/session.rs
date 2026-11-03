@@ -119,6 +119,21 @@ pub(crate) async fn initial_sync_with_timeout(
     })?
 }
 
+fn place_bench_root(
+    root: &Path,
+    remote: SocketAddr,
+) -> Result<(prod_code_mcp::cluster::NodePolicy, SocketAddr)> {
+    let (policy, remote) = prod_code_mcp::cluster::place_call(root, remote)?;
+    if !policy.is_pinned() {
+        let scoped = prod_code_mcp::cluster::node_policy();
+        if scoped.is_pinned() {
+            let remote = prod_code_mcp::cluster::place_within(&scoped, remote)?;
+            return Ok((scoped, remote));
+        }
+    }
+    Ok((policy, remote))
+}
+
 pub(crate) async fn initial_sync_unbounded(
     remote: SocketAddr,
     root: &Path,
@@ -130,10 +145,11 @@ pub(crate) async fn initial_sync_unbounded(
         base: origin_of(workspace_name),
     };
     let start = Instant::now();
-    let stream = prod_code_protocol::transport::connect(remote)
-        .await
-        .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
-    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    let (policy, remote) = place_bench_root(root, remote)?;
+    let mut framed =
+        prod_code_mcp::cluster::connect_gated_with(remote, root, &policy, "this benchmark")
+            .await?
+            .framed;
     let outcome =
         prod_code_mcp::sync::push_workspace_sync(&mut framed, root, &identity, None).await?;
     let _ = framed
@@ -182,10 +198,11 @@ pub(crate) async fn open_session_unbounded(
     client_name: String,
 ) -> Result<Framed<AnyStream, ProdCodeCodec>> {
     let ws_root_str = wt.root.to_string_lossy().to_string();
-    let stream = prod_code_protocol::transport::connect(remote)
-        .await
-        .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
-    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    let (policy, remote) = place_bench_root(&wt.root, remote)?;
+    let mut framed =
+        prod_code_mcp::cluster::connect_gated_with(remote, &wt.root, &policy, "this benchmark")
+            .await?
+            .framed;
 
     let identity = prod_code_mcp::sync::WorkspaceIdentity {
         name: wt.workspace_name.clone(),

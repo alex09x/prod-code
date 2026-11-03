@@ -61,18 +61,36 @@ async fn connect_to_redirect_target(remote: SocketAddr) -> Result<prod_code_prot
     Ok(stream)
 }
 
+/// Opens a connection for the editor session's work, through the node pin gate (#1793): only to
+/// a node the checkout's policy allows, and under a strict pin confirmed by the gateway before
+/// any sync or handshake. A redirected connection keeps its authenticated TLS.
+async fn connect_editor(
+    remote: SocketAddr,
+    cwd: &Path,
+    policy: &prod_code_mcp::cluster::NodePolicy,
+    redirected: bool,
+) -> Result<Framed<prod_code_protocol::AnyStream, ProdCodeCodec>> {
+    policy.check(remote, "this editor session")?;
+    let stream = if redirected {
+        connect_to_redirect_target(remote).await?
+    } else {
+        prod_code_protocol::transport::connect(remote)
+            .await
+            .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?
+    };
+    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    prod_code_mcp::cluster::confirm_gate(&mut framed, remote, cwd, policy).await?;
+    Ok(framed)
+}
+
 async fn sync_after_handshake(
     remote: SocketAddr,
     cwd: &Path,
     identity: &prod_code_mcp::sync::WorkspaceIdentity,
     redirected: bool,
 ) -> Result<()> {
-    let stream = if redirected {
-        connect_to_redirect_target(remote).await?
-    } else {
-        prod_code_protocol::transport::connect(remote).await?
-    };
-    let mut sync = Framed::new(stream, ProdCodeCodec::new());
+    let policy = prod_code_mcp::cluster::policy_for_root(cwd)?;
+    let mut sync = connect_editor(remote, cwd, &policy, redirected).await?;
     prod_code_mcp::sync::push_workspace_sync(&mut sync, cwd, identity, None).await?;
     let _ = sync
         .send(WireMessage::Disconnect {
@@ -97,15 +115,9 @@ pub async fn open_editor_session(
     let supported_versions = supported_protocol_versions();
     let mut redirect_count = initial_redirect_count;
     let mut refused_by = Vec::new();
+    let policy = prod_code_mcp::cluster::policy_for_root(cwd)?;
     loop {
-        let stream = if redirect_count > 0 {
-            connect_to_redirect_target(remote).await?
-        } else {
-            prod_code_protocol::transport::connect(remote)
-                .await
-                .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?
-        };
-        let mut framed = Framed::new(stream, ProdCodeCodec::new());
+        let mut framed = connect_editor(remote, cwd, &policy, redirect_count > 0).await?;
         if redirect_count == 0 {
             let generation = prod_code_mcp::watch::current_generation(cwd);
             prod_code_mcp::sync::push_workspace_sync(&mut framed, cwd, &identity, None)
@@ -118,7 +130,7 @@ pub async fn open_editor_session(
                 protocol_version: PROTOCOL_VERSION,
                 supported_versions: Some(supported_versions.clone()),
                 capabilities: Some(prod_code_protocol::ClientCapabilities {
-                    redirects: true,
+                    redirects: policy.offers_redirects(),
                     ..Default::default()
                 }),
                 client_name: "prod-code-client".to_string(),
@@ -145,6 +157,8 @@ pub async fn open_editor_session(
                 if redirect_count > 3 {
                     anyhow::bail!("too many gateway redirects: {reason:?}");
                 }
+                // A pinned workspace follows no redirect off its pin (#1793).
+                policy.check_redirect(&target_addr)?;
                 refused_by.push(remote.to_string());
                 tracing::info!(%target_addr, ?reason, "received transparent redirect from gateway");
                 remote = resolve_redirect_target(&target_addr)

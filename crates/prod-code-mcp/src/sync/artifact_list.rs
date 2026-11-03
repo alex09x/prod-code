@@ -70,6 +70,9 @@ pub async fn list_remote_artifacts_from(
         .context("list path must be UTF-8")?
         .to_string();
     let identity = super::workspace_identity(&root);
+    // Listed only on a node the checkout's pin allows, confirmed under a strict pin (#1793).
+    let policy = crate::cluster::policy_for_root(&root)?;
+    policy.check(remote, "listing artifacts")?;
     let stream = prod_code_protocol::transport::connect(remote)
         .await
         .with_context(|| {
@@ -78,6 +81,7 @@ pub async fn list_remote_artifacts_from(
             )
         })?;
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    crate::cluster::confirm_gate(&mut framed, remote, &root, &policy).await?;
     framed
         .send(WireMessage::PullFileRequest(PullFileRequest {
             client_workspace_root: root.to_string_lossy().into_owned(),

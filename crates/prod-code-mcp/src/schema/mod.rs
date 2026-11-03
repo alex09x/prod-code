@@ -18,6 +18,8 @@ pub mod scan;
 pub mod types;
 
 #[cfg(test)]
+mod pin_tests;
+#[cfg(test)]
 mod tests;
 
 pub use across::rename_across;

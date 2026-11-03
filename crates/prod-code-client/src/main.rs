@@ -18,6 +18,7 @@ mod cli;
 pub mod commands;
 mod lsp_bridge;
 mod package;
+mod pin;
 mod timing;
 mod update;
 mod validation;
@@ -47,8 +48,17 @@ async fn run_cli() -> Result<()> {
     // subcommand, and until this timer existed none of it was measured: the query timer
     // starts after it. See the report on stderr under `PROD_CODE_TIMING=1`.
     let mut startup = QueryTiming::labelled("startup");
-    let (cli, pinned) = cli::argv::parse(env::args());
+    let (cli, remote_typed) = cli::argv::parse(env::args());
     startup.mark("parse_args");
+
+    // The workspace's configuration, its node pin included, is read before any endpoint is
+    // discovered (#1793).
+    let cwd_root = env::current_dir()
+        .ok()
+        .map(|d| find_workspace_root(&d).unwrap_or(d));
+    startup.mark("workspace_root");
+    let policy = pin::startup_policy(&cli, remote_typed, cwd_root.as_deref())?;
+    let pinned = policy.is_pinned();
 
     let mut remote_spec = cli.remote.clone();
     if !pinned
@@ -57,20 +67,20 @@ async fn run_cli() -> Result<()> {
     {
         remote_spec = "auto".to_string();
     }
-    let seeds = prod_code_mcp::cluster::parse_remotes(&remote_spec)?;
-    // Nodes named with `--remote` on the command line are the ones to use, as given (#125);
-    // otherwise one seed is enough and the rest of the cluster comes from its gossip view.
+    // Nodes named with `--remote` on the command line are the ones to use, as given (#125), and a
+    // strict pin uses its one endpoint (#1793); otherwise one seed is enough and the rest of the
+    // cluster comes from its gossip view.
+    let seeds = if pinned {
+        policy.allowed()
+    } else {
+        prod_code_mcp::cluster::parse_remotes(&remote_spec)?
+    };
     let remotes = if pinned {
         seeds.clone()
     } else {
         prod_code_mcp::cluster::discover_nodes(&seeds).await
     };
     startup.mark("discover_nodes");
-
-    let cwd_root = env::current_dir()
-        .ok()
-        .map(|d| find_workspace_root(&d).unwrap_or(d));
-    startup.mark("workspace_root");
     // Placement follows the origin repository: every worktree lands on the node that holds
     // the origin's copy, so seeding from that copy and the shared cargo target directory
     // work. The workspace name itself stays per worktree (`<repo>--wt-<hash>`).
@@ -192,25 +202,35 @@ async fn run_cli() -> Result<()> {
     } else {
         None
     };
-    // A pinned shell command only needs a live gateway; its toolchain can be installed even when
-    // the node does not host the workspace's language server (for example, Cargo on macOS).
-    let engine_for_pick =
-        match cli.command.as_ref() {
-            Some(
-                Commands::Exec { .. } | Commands::Pull { .. } | Commands::Sync { pull: true, .. },
-            ) if pinned => None,
-            _ => cwd_engine,
-        };
+    // Pinned status and shell commands need a live gateway, not the checkout's language server.
+    let engine_for_pick = match cli.command.as_ref() {
+        Some(
+            Commands::Status { .. }
+            | Commands::Exec { .. }
+            | Commands::Pull { .. }
+            | Commands::Sync { pull: true, .. },
+        ) if pinned => None,
+        _ => cwd_engine,
+    };
+    let os_for_pick = if pinned && matches!(cli.command, Some(Commands::Status { .. })) {
+        None
+    } else {
+        macos_cgo.as_ref().map(|_| "macos")
+    };
     let picked = if let Some(node) = artifact_node {
         Ok(node)
-    } else {
-        prod_code_mcp::cluster::pick_node(
+    } else if pinned {
+        prod_code_mcp::cluster::pick_pinned_node(
             &remotes,
             &placement_key,
             engine_for_pick,
-            macos_cgo.as_ref().map(|_| "macos"),
+            os_for_pick,
         )
         .await
+        .with_context(|| format!("this workspace is {}", policy.describe()))
+    } else {
+        prod_code_mcp::cluster::pick_node(&remotes, &placement_key, engine_for_pick, os_for_pick)
+            .await
     }
     .map_err(|err| match &macos_cgo {
         Some((file, named)) => err.context(format!(
@@ -280,6 +300,8 @@ async fn run_cli() -> Result<()> {
         startup.report();
         let target = if pinned && seeds.len() == 1 {
             seeds[0]
+        } else if pinned {
+            picked?
         } else {
             picked.unwrap_or(seeds[0])
         };
@@ -317,7 +339,7 @@ async fn run_cli() -> Result<()> {
         }
         (_, Err(err)) => return Err(err),
     };
-    prod_code_mcp::cluster::set_routing(remotes.clone(), cwd_workspace.clone());
+    prod_code_mcp::cluster::set_routing_with_policy(remotes.clone(), cwd_workspace.clone(), policy);
     startup.mark("pick_node");
     startup.report();
 
