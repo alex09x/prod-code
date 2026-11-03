@@ -11,6 +11,32 @@
 use super::commands::Commands;
 use std::path::{Path, PathBuf};
 
+/// A named local HTML definition can be served by the bounded source fallback. Keep endpoint
+/// selection/pins, but defer the optional language capability decision to the tool executor.
+pub fn can_defer_html_definition(command: Option<&Commands>, root: Option<&Path>) -> bool {
+    let (
+        Some(Commands::Def {
+            file: Some(file),
+            symbol,
+            ..
+        }),
+        Some(root),
+    ) = (command, root)
+    else {
+        return false;
+    };
+    if symbol.is_empty()
+        || !file
+            .extension()
+            .and_then(|s| s.to_str())
+            .is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "html" | "htm"))
+    {
+        return false;
+    }
+    matches!(prod_code_mcp::remote_fs::checkout_source_path(root, &file.to_string_lossy()),
+        Ok(Some(path)) if path.is_file())
+}
+
 pub fn command_path_tokens(command: Option<&Commands>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     let Some(cmd) = command else {
