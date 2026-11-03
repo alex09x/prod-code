@@ -4918,7 +4918,7 @@ async fn a_trait_method_parameter_goes_from_every_implementation_and_call() {
 }
 
 const MM_ORDER: &str = "pub mod tax;\n\npub struct Order {\n    pub total: u32,\n}\n\nimpl Order {\n    pub fn new(total: u32) -> Self {\n        Order { total }\n    }\n\n    /// The price with the tax applied.\n    pub fn price_with(&self, tax: &tax::Tax, extra: u32) -> u32 {\n        self.total + self.total * tax.rate / 100 + extra\n    }\n}\n\npub fn checkout(o: &Order, t: &tax::Tax) -> u32 {\n    o.price_with(t, 1) + Order::price_with(o, t, 2)\n}\n\npub fn fresh(t: &tax::Tax) -> u32 {\n    Order::new(1).price_with(t, 3)\n}\n\npub fn later(t: &tax::Tax) -> u32 {\n    Order::price_with(&Order::new(4), t, 5)\n}\n";
-const MM_TAX: &str = "pub struct Tax {\n    pub rate: u32,\n}\n\nimpl Tax {\n    pub fn zero() -> Self {\n        Tax { rate: 0 }\n    }\n}\n";
+const MM_TAX: &str = "pub struct Tax {\n    pub rate: u32,\n}\n\nimpl Tax {\n    pub fn zero() -> Self {\n        Tax { rate: 0 }\n    }\n}\n\npub struct Order;\n";
 
 /// Moving `Order::price_with(&self, tax: &Tax, extra)` to `Tax`: the parameter becomes `&self`,
 /// the receiver becomes `order: &crate::Order`, the body swaps the two, the method joins
@@ -4962,11 +4962,18 @@ async fn a_method_moves_to_the_type_of_its_parameter() {
                 .and_then(|u| u.as_str())
                 .unwrap_or_default();
             if uri.ends_with("tax.rs") {
-                serde_json::json!([{
-                    "name": "Order", "kind": 23,
-                    "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 16 } },
-                    "selectionRange": { "start": { "line": 0, "character": 11 }, "end": { "line": 0, "character": 16 } }
-                }])
+                serde_json::json!([
+                    {
+                        "name": "Tax", "kind": 23,
+                        "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 2, "character": 1 } },
+                        "selectionRange": { "start": { "line": 0, "character": 11 }, "end": { "line": 0, "character": 14 } }
+                    },
+                    {
+                        "name": "Order", "kind": 23,
+                        "range": { "start": { "line": 10, "character": 0 }, "end": { "line": 10, "character": 17 } },
+                        "selectionRange": { "start": { "line": 10, "character": 11 }, "end": { "line": 10, "character": 16 } }
+                    }
+                ])
             } else {
                 serde_json::json!([{
                     "name": "price_with", "kind": 6,
