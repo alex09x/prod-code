@@ -29,6 +29,7 @@ pub fn is_retryable_connection_error(tool_name: &str, e: &anyhow::Error) -> bool
     if msg.contains("result is unknown")
         || msg.contains("during exec")
         || msg.contains("command's result is unknown")
+        || is_busy_analyzer_timeout(&msg)
     {
         return false;
     }
@@ -53,6 +54,15 @@ pub fn is_retryable_connection_error(tool_name: &str, e: &anyhow::Error) -> bool
         || msg.contains("short of disk")
         || msg.contains("pre-flight workspace sync failed")
         || msg.contains("sync probe response")
+}
+
+/// Whether the lowercased `msg` is a node that answered and was slow: an analyzer request that
+/// outlived its wait, or a call that queued behind another one in this client (#1814). Such a
+/// node is alive and busy; another node would start the same work from cold, and moving the
+/// workspace there would outlast the call that asked.
+fn is_busy_analyzer_timeout(msg: &str) -> bool {
+    (msg.contains("timeout waiting for ") && !msg.contains("sync probe"))
+        || msg.contains("(including sync and engine load)")
 }
 
 /// Run a 250ms UDP discovery probe (multicast + unicast to the old address) and return
