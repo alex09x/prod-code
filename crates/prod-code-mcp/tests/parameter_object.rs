@@ -289,7 +289,7 @@ const TS_DEFAULTS: &str = "export function pad(text: string, width: number, fill
   return text.padStart(width, fill);
 }
 
-export function stamp(label: string, at: number = Date.now(), zone: string = \"utc\"): string {
+export function stamp(label: string = \"item\", at: number, zone: string = \"utc\"): string {
   return `${label} ${at} ${zone}`;
 }
 
@@ -298,7 +298,7 @@ export function edge(text: string, width: number, fill: string = \" \"): string 
 }
 
 export function run(ch: string): string {
-  return pad(\"a\", 3) + pad(\"b\", 4, \"*\") + pad(\"c\", 5, void 0) + stamp(\"s\") + edge(\"e\", 2, ch);
+  return pad(\"a\", 3) + pad(\"b\", 4, \"*\") + pad(\"c\", 5, void 0) + stamp(\"s\", 1) + edge(\"e\", 2, ch);
 }
 ";
 
@@ -313,10 +313,11 @@ fn spot(text: &str, needle: &str, skip: usize) -> (u32, u32) {
     (line, col)
 }
 
-/// A TypeScript default is not dropped (#436). A constant one moves into the literal where a
-/// call left the parameter off or passed `void 0`, as in JavaScript, and the interface field
-/// keeps the type; a default computed in the callee, and a variable passed where the default
-/// would apply when it is `undefined`, are refused, and nothing is written.
+/// A TypeScript default is preserved in the callee (#436, #1534). Bundled parameters destructure
+/// at their original callee position so an omitted field or `void 0` applies the default in the
+/// callee's scope, and the generated interface marks defaulted fields optional with `| undefined`;
+/// a non-bundled parameter between defaults, or a body binding that collides with a bundled
+/// defaulted parameter, is refused, and nothing is written.
 #[tokio::test]
 async fn a_typescript_constant_default_moves_into_the_literal_and_a_computed_one_is_refused() {
     let ws = Workspace::new(&[
@@ -347,8 +348,8 @@ async fn a_typescript_constant_default_moves_into_the_literal_and_a_computed_one
             _ if at == s("fill: string = \" \"): string {\n  return text.padStart") => {
                 vec![s("fill);\n}\n\nexport function stamp")]
             }
-            _ if at == stamp => vec![s("stamp(\"s\")")],
-            _ if at == s("at: number") => vec![s("at} ")],
+            _ if at == stamp => vec![s("stamp(\"s\"")],
+            _ if at == s("label: string") => vec![s("label} ")],
             _ if at == s("zone: string") => vec![s("zone}`")],
             _ if at == edge => vec![s("edge(\"e\"")],
             _ if at
@@ -391,7 +392,7 @@ async fn a_typescript_constant_default_moves_into_the_literal_and_a_computed_one
         done.was,
         "text: string, width: number, fill: string = \" \""
     );
-    assert_eq!(done.now, "text: string, opts: Pad");
+    assert_eq!(done.now, "text: string, { width, fill = \" \" }: Pad");
     assert_eq!(done.call_sites, 3);
     assert!(done.unmatched.is_empty(), "{:?}", done.unmatched);
     let text = rewritten(&done, "defaults.ts");
@@ -400,10 +401,11 @@ async fn a_typescript_constant_default_moves_into_the_literal_and_a_computed_one
             "/** The parameters `pad` takes together. */
 export interface Pad {
   width: number;
-  fill: string;
+  fill?: string | undefined;
 }
 
-export function pad(text: string, opts: Pad): string {
+export function pad(text: string, { width, fill = \" \" }: Pad): string {
+  const opts: Pad = { width: width, fill: fill };
   return text.padStart(opts.width, opts.fill);
 }
 "
@@ -412,32 +414,31 @@ export function pad(text: string, opts: Pad): string {
     );
     assert!(
         text.contains(
-            "return pad(\"a\", { width: 3, fill: \" \" }) + pad(\"b\", { width: 4, fill: \"*\" }) \
-             + pad(\"c\", { width: 5, fill: \" \" }) + stamp(\"s\")"
+            "return pad(\"a\", { width: 3 }) + pad(\"b\", { width: 4, fill: \"*\" }) \
+             + pad(\"c\", { width: 5, fill: void 0 }) + stamp(\"s\", 1)"
         ),
         "{text}"
     );
 
-    let call = s("edge(\"e\"");
-    for (at, params, reason) in [
+    for (at, params, binding, reason) in [
         (
             stamp,
-            ["at", "zone"],
-            "`at` defaults to `Date.now()`, which is evaluated in `stamp` on every call"
+            ["label", "zone"],
+            "opts",
+            "`stamp` has a non-bundled parameter between JavaScript/TypeScript defaults"
                 .to_string(),
         ),
         (
             edge,
             ["width", "fill"],
-            format!(
-                "`edge` at src/defaults.ts:{}:{} passes `ch` as `fill`, which defaults to `\" \"`",
-                call.0, call.1
-            ),
+            "fill",
+            "`fill` is also a bundled parameter of `edge`; preserving its default needs a distinct body binding"
+                .to_string(),
         ),
     ] {
         let params: Vec<String> = params.iter().map(|p| p.to_string()).collect();
         let err = match prod_code_mcp::parameter_object::introduce(
-            remote, &root, &file, at.0, at.1, &params, "Opts", "opts", true, false,
+            remote, &root, &file, at.0, at.1, &params, "Opts", binding, true, false,
         )
         .await
         {

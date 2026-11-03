@@ -37,6 +37,7 @@ pub mod worktree;
 /// In-memory Rust analysis engine core backed by a warm Salsa database.
 pub struct RustEngine {
     pub workspace_root: PathBuf,
+    pub(crate) absolute_workspace_root: AbsPathBuf,
     pub(crate) host: AnalysisHost,
     pub(crate) vfs: Arc<std::sync::RwLock<Vfs>>,
     pub(crate) snapshots: crate::snapshot::lifetime::SnapshotRegistry,
@@ -75,11 +76,18 @@ impl RustEngine {
 
     /// Obtain a lightweight, thread-safe analysis snapshot configured for a specific workspace or worktree view.
     pub fn snapshot_for(&self, root: &Path) -> RustEngineSnapshot {
-        let abs = AbsPathBuf::assert_utf8(root.to_path_buf());
+        // A requested Cargo member can differ from the parent workspace graph root.
+        // Keep the absolute load identity captured alongside the public relative path.
+        let root = if root.is_relative() && root == self.workspace_root.as_path() {
+            std::path::PathBuf::from(self.absolute_workspace_root.as_str())
+        } else {
+            root.to_path_buf()
+        };
+        let abs = AbsPathBuf::assert_utf8(root.clone());
         let views = self.worktrees.views();
         let overlay = views.overlay_of(&abs).cloned();
         RustEngineSnapshot::new(
-            root.to_path_buf(),
+            root,
             self.snapshots.track(self.host.analysis()),
             Arc::clone(&self.vfs),
             views,

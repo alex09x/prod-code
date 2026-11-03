@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Relative Rust Workspace Snapshots** (`crates/prod-code-engine-rust`, #1860): Snapshots of a workspace loaded through a relative base path use its captured absolute load identity, preventing a panic during freshness checks and preserving a requested member's root and the public load-root value.
+- **Single-Quoted Cargo Package Names and Polyglot Expression Fallback** (`crates/prod-code-mcp`, #1855): `cargo_package_name` strips TOML single quotes so scoped Cargo verification commands pass an unquoted `-p <package>` name, and polyglot expression helper codegen falls back to the `OutputKind::Expression` payload when `selection_body` is empty.
+
 ## v0.3.51 — 2026-11-03
 
 ### Fixed

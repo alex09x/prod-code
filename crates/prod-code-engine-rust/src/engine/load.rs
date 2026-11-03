@@ -216,6 +216,16 @@ impl RustEngine {
         };
         let manifest = ProjectManifest::discover_single(&abs_root)
             .map_err(|e| anyhow::anyhow!("Manifest discovery failed: {e}"))?;
+        let absolute_workspace_root = if workspace_root.is_relative() {
+            AbsPathBuf::assert_utf8(std::fs::canonicalize(abs_root.as_str()).map_err(|error| {
+                anyhow::anyhow!(
+                    "Cannot resolve workspace root {}: {error}",
+                    workspace_root.display()
+                )
+            })?)
+        } else {
+            abs_root.clone()
+        };
         let mut ws = ProjectWorkspace::load(manifest, &cargo_config, &|_| {})
             .map_err(|e| anyhow::anyhow!("Project workspace load failed: {e}"))?;
         if build_scripts && let Ok(scripts) = ws.run_build_scripts(&cargo_config, &|_| {}) {
@@ -324,6 +334,7 @@ impl RustEngine {
 
         let mut this = Self {
             workspace_root: workspace_root.to_path_buf(),
+            absolute_workspace_root,
             host,
             vfs: Arc::new(std::sync::RwLock::new(vfs)),
             snapshots: Default::default(),

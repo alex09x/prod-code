@@ -445,11 +445,18 @@ fn function_bodies_by_output_kind() {
 #[test]
 fn function_headers_with_return_types_visibility_and_receivers() {
     type Row = (&'static str, Gen<'static>, &'static str);
-    let with = |lang, output, method, exported, ret| Gen {
-        method,
-        exported,
-        ret,
-        ..mk(lang, output, "body")
+    let with = |lang, output: OutputKind, method, exported, ret| {
+        let body = if matches!(output, OutputKind::Expression(_)) {
+            ""
+        } else {
+            "body"
+        };
+        Gen {
+            method,
+            exported,
+            ret,
+            ..mk(lang, output, body)
+        }
     };
     let rows: Vec<Row> = vec![
         (
