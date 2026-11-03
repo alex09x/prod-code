@@ -13,7 +13,7 @@ full version; this is the part that is not optional.
   `documentation`, `perf`; `test` or `release` for PRs that are only that) and the areas it
   touches (`gateway`, `client`, `mcp`, `cluster`, `worktree`, `infra`, `test`). A PR takes
   the labels of the issue it closes. `report-issue --label X` / `code_report_issue {labels}`.
-- There is no hosted CI. Follow the Development validation policy: during the edit
+- Hosted CI checks completed PRs; see `docs/github-actions.md`. Follow the Development validation policy: during the edit
   loop, run only new or directly affected tests. Immediately before committing, run
   formatting and lint checks once on the completed change (`cargo fmt --all -- --check`,
   `code_lint`), followed by ONE final compile/test gate for the changed deliverable
