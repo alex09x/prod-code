@@ -128,6 +128,9 @@ async fn run_remote_rooted_inner(
         sync_omitted,
     } = prepare_rooted(remote, root, &identity, &mut on_output).await?;
     on_root(&server_root);
+    if !lock_writeback && let Some(warning) = crate::sync::sync_omission_warning(&sync_omitted) {
+        on_output(true, format!("[prod-code exec] {warning}\n").as_bytes());
+    }
     let mut monitor = ExecMonitor::new(timeout_secs);
     monitor
         .send(
@@ -241,8 +244,12 @@ pub async fn run_polyglot_remote(
     let Prepared {
         mut framed,
         executor,
+        sync_omitted,
         ..
     } = prepare_rooted(remote, root, &identity, &mut progress).await?;
+    if let Some(warning) = crate::sync::sync_omission_warning(&sync_omitted) {
+        progress(true, format!("[prod-code exec] {warning}\n").as_bytes());
+    }
     let mut monitor = ExecMonitor::new(req.timeout_secs);
     monitor
         .send(&mut framed, WireMessage::RemoteExecRequest(req))

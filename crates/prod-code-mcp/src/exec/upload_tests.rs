@@ -37,6 +37,22 @@ fn git(root: &Path, args: &[&str]) -> bool {
         .is_ok_and(|s| s.success())
 }
 
+fn git_commit_base(root: &Path) {
+    assert!(git(root, &["add", "."]));
+    assert!(git(
+        root,
+        &[
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@e",
+            "commit",
+            "-qm",
+            "base"
+        ]
+    ));
+}
+
 fn delta(path: &str, content: &[u8]) -> FileDelta {
     FileDelta {
         relative_path: path.into(),
@@ -55,19 +71,7 @@ fn issue_1813_written_back_fixtures_reach_node_b_and_results_warn() {
     std::fs::write(root.join(".gitignore"), "ignored/\n").unwrap();
     std::fs::create_dir(root.join("src")).unwrap();
     std::fs::write(root.join("src/lib.rs"), "pub fn f() {}\n").unwrap();
-    assert!(git(&root, &["add", "."]));
-    assert!(git(
-        &root,
-        &[
-            "-c",
-            "user.name=T",
-            "-c",
-            "user.email=t@e",
-            "commit",
-            "-qm",
-            "base"
-        ]
-    ));
+    git_commit_base(&root);
     let baseline = prepare_workspace_sync_for(&root, NODE_B, None).unwrap();
     commit_workspace_sync(&root, &baseline);
 
@@ -163,38 +167,29 @@ async fn spawn_mirror_exec_gateway(
                         .unwrap();
                 }
                 WireMessage::SyncRequest(req) => {
-                    let mut updated = 0;
-                    let mut deleted = 0;
-                    let mut bytes = 0;
+                    let (mut updated, mut deleted, mut bytes) = (0, 0, 0);
                     {
                         let mut guard = mirror.lock().unwrap();
                         for f in req.files {
-                            match f.content {
-                                Some(data) => {
-                                    bytes += data.len();
-                                    updated += 1;
-                                    guard.insert(f.relative_path, data);
-                                }
-                                None => {
-                                    if guard.remove(&f.relative_path).is_some() {
-                                        deleted += 1;
-                                    }
-                                }
+                            if let Some(data) = f.content {
+                                bytes += data.len();
+                                updated += 1;
+                                guard.insert(f.relative_path, data);
+                            } else if guard.remove(&f.relative_path).is_some() {
+                                deleted += 1;
                             }
                         }
                     }
-                    framed
-                        .send(WireMessage::SyncResponse(SyncResponse {
-                            server_workspace_root: "/mirror".into(),
-                            files_updated: updated,
-                            files_deleted: deleted,
-                            bytes_transferred: bytes,
-                            duration_ms: 1,
-                            workspace_was_fresh: false,
-                            stale_paths: vec![],
-                        }))
-                        .await
-                        .unwrap();
+                    let resp = SyncResponse {
+                        server_workspace_root: "/mirror".into(),
+                        files_updated: updated,
+                        files_deleted: deleted,
+                        bytes_transferred: bytes,
+                        duration_ms: 1,
+                        workspace_was_fresh: false,
+                        stale_paths: vec![],
+                    };
+                    framed.send(WireMessage::SyncResponse(resp)).await.unwrap();
                 }
                 WireMessage::ExecRequest(_) => {
                     let found_len = mirror.lock().unwrap().get(required_path).map(Vec::len);
@@ -202,25 +197,21 @@ async fn spawn_mirror_exec_gateway(
                         Some(len) => (0, format!("loaded {len} bytes\n")),
                         None => (1, format!("FileNotFoundError: '{required_path}'\n")),
                     };
-                    framed
-                        .send(WireMessage::ExecChunk(ExecChunk {
-                            stderr: code != 0,
-                            data: Some(out.into_bytes()),
-                        }))
-                        .await
-                        .unwrap();
-                    framed
-                        .send(WireMessage::ExecExit(ExecExit {
-                            exit_code: Some(code),
-                            duration_ms: 2,
-                            server_workspace_root: "/mirror".into(),
-                            timed_out: false,
-                            error: None,
-                            usage: None,
-                            platform: None,
-                        }))
-                        .await
-                        .unwrap();
+                    let chunk = ExecChunk {
+                        stderr: code != 0,
+                        data: Some(out.into_bytes()),
+                    };
+                    framed.send(WireMessage::ExecChunk(chunk)).await.unwrap();
+                    let exit = ExecExit {
+                        exit_code: Some(code),
+                        duration_ms: 2,
+                        server_workspace_root: "/mirror".into(),
+                        timed_out: false,
+                        error: None,
+                        usage: None,
+                        platform: None,
+                    };
+                    framed.send(WireMessage::ExecExit(exit)).await.unwrap();
                 }
                 WireMessage::Disconnect { .. } => break,
                 other => panic!("unexpected frame: {other:?}"),
@@ -239,19 +230,7 @@ async fn issue_1836_untracked_site_data_json_warns_then_uploads_with_sync_includ
     }
     std::fs::create_dir_all(root.join("scripts/site")).unwrap();
     std::fs::write(root.join("scripts/site/build.py"), "print('ok')\n").unwrap();
-    assert!(git(&root, &["add", "."]));
-    assert!(git(
-        &root,
-        &[
-            "-c",
-            "user.name=T",
-            "-c",
-            "user.email=t@e",
-            "commit",
-            "-qm",
-            "base"
-        ]
-    ));
+    git_commit_base(&root);
 
     // Exact #1836 shape: 539 KiB untracked, unignored JSON under `site/data/`.
     let payload = vec![b'x'; 539 * 1024];
@@ -259,6 +238,35 @@ async fn issue_1836_untracked_site_data_json_warns_then_uploads_with_sync_includ
     std::fs::write(root.join("site/data/benchmarks-v0.3.17.json"), &payload).unwrap();
 
     let mirror = Arc::new(Mutex::new(HashMap::new()));
+    // CLI streaming path (`run_remote`) emits `[prod-code exec] sync warning: ...` before command stderr.
+    let (addr0, g0) =
+        spawn_mirror_exec_gateway(Arc::clone(&mirror), "site/data/benchmarks-v0.3.17.json").await;
+    let mut streamed = Vec::new();
+    super::run_remote(
+        addr0,
+        &root,
+        None,
+        vec!["python3".into(), "scripts/site/build.py".into()],
+        vec![],
+        30,
+        true,
+        |is_stderr, data| streamed.push((is_stderr, String::from_utf8_lossy(data).into_owned())),
+    )
+    .await
+    .unwrap();
+    g0.await.unwrap();
+    assert!(
+        streamed.len() >= 2
+            && streamed[0].0
+            && streamed[0].1.starts_with(
+                "[prod-code exec] sync warning: 1 unignored local file(s) omitted from the remote mirror: site/data/benchmarks-v0.3.17.json"
+            )
+            && streamed[1].1.contains("FileNotFoundError"),
+        "{streamed:?}"
+    );
+    clear_sync_cache_for(&root, &addr0.to_string());
+
+    // MCP path (`handle_exec`) includes `[sync warning: ...]` and `structuredContent.sync_omitted` in the final tool result.
     let (addr1, g1) =
         spawn_mirror_exec_gateway(Arc::clone(&mirror), "site/data/benchmarks-v0.3.17.json").await;
     let res1 = crate::tools::exec_handler::handle_exec(
@@ -278,10 +286,6 @@ async fn issue_1836_untracked_site_data_json_warns_then_uploads_with_sync_includ
         "{text1}"
     );
     assert!(text1.contains("[sync] include"), "{text1}");
-    assert!(
-        text1.find("sync warning:").unwrap() < text1.find("FileNotFoundError").unwrap(),
-        "{text1}"
-    );
     assert_eq!(
         res1.structured_content,
         Some(serde_json::json!({

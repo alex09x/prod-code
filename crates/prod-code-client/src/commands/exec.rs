@@ -298,20 +298,13 @@ pub async fn run_exec(
         },
     )
     .await?;
-    let sync_warning = outcome.sync_warning();
     let warning = outcome.platform_warning(&root);
     let upload_warning = outcome.upload_warning();
     let exit = outcome.exit;
     if let Some(err) = &exit.error {
-        if let Some(warning) = sync_warning {
-            eprintln!("[prod-code exec] {warning}");
-        }
         anyhow::bail!("remote exec failed: {err}");
     }
     prod_code_mcp::exec::remember_exec_node(&root, remote);
-    if let Some(warning) = sync_warning {
-        eprintln!("[prod-code exec] {warning}");
-    }
     if !outcome.pulled_files.is_empty() {
         eprintln!(
             "[prod-code exec] {} file(s) changed by the command written back: {}",

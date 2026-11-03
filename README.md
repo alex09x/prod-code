@@ -458,10 +458,13 @@ between runs. Files a command changes are written back into your checkout.
 (`results/`, `artifacts/`, `site/data/`, `data/`, `target/`…), git-ignored or `.ignore`-matched
 paths, directories matched by `[watch] ignore` (non-Git workspaces), hidden paths, unlisted
 extensions (non-Git workspaces) and files over the per-file size cap. When unignored local
-files in output/data directories or over the size cap are omitted before `exec` or `sync`,
-`prod-code` prints a `sync warning` (`structuredContent.sync_omitted` in `code_exec` and
-`code_sync`), and when an `exec` writes back files that the next upload will skip, it prints an
-`upload warning` (`structuredContent.upload_excluded` in `code_exec`). To upload required
+files in output/data directories or over the size cap are omitted from the mirror, CLI
+`prod-code exec` streams `[prod-code exec] sync warning: …` to `stderr` after pre-flight sync and
+before sending the command request (`prod-code sync` prints `[prod-code sync] sync warning: …`),
+while MCP `code_exec` and `code_sync` include `[sync warning: …]` and
+`structuredContent.sync_omitted` in the final tool result. When an `exec` writes back files that
+the next upload will skip, it reports an `upload warning` (`structuredContent.upload_excluded` in
+`code_exec`). To upload required
 checkout inputs (such as `site/data/**` or non-Git CSV fixtures) within ignore, containment and
 size limits, add `[sync] include = ["site/data/**"]` to `prod-code.toml`; in a Git checkout,
 unignored `fixtures/`, `testdata/` or `tests/fixtures/` paths also upload any extension within
