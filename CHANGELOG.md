@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Hostname Gateway Address Fallback** (`crates/prod-code-mcp`, `crates/prod-code-client`, #1807): DNS resolution retains all unique endpoint addresses so a refused IPv6 endpoint can fall back to a reachable IPv4 endpoint. Explicit CLI gateway selection stays within the configured endpoints when cluster placement suggests another node.
+
 ## v0.3.49 — 2026-11-02
 
 ### Added

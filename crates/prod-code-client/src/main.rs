@@ -192,25 +192,34 @@ async fn run_cli() -> Result<()> {
     } else {
         None
     };
-    // A pinned shell command only needs a live gateway; its toolchain can be installed even when
-    // the node does not host the workspace's language server (for example, Cargo on macOS).
-    let engine_for_pick =
-        match cli.command.as_ref() {
-            Some(
-                Commands::Exec { .. } | Commands::Pull { .. } | Commands::Sync { pull: true, .. },
-            ) if pinned => None,
-            _ => cwd_engine,
-        };
+    // Pinned status and shell commands need a live gateway, not the checkout's language server.
+    let engine_for_pick = match cli.command.as_ref() {
+        Some(
+            Commands::Status { .. }
+            | Commands::Exec { .. }
+            | Commands::Pull { .. }
+            | Commands::Sync { pull: true, .. },
+        ) if pinned => None,
+        _ => cwd_engine,
+    };
+    let os_for_pick = if pinned && matches!(cli.command, Some(Commands::Status { .. })) {
+        None
+    } else {
+        macos_cgo.as_ref().map(|_| "macos")
+    };
     let picked = if let Some(node) = artifact_node {
         Ok(node)
-    } else {
-        prod_code_mcp::cluster::pick_node(
+    } else if pinned {
+        prod_code_mcp::cluster::pick_pinned_node(
             &remotes,
             &placement_key,
             engine_for_pick,
-            macos_cgo.as_ref().map(|_| "macos"),
+            os_for_pick,
         )
         .await
+    } else {
+        prod_code_mcp::cluster::pick_node(&remotes, &placement_key, engine_for_pick, os_for_pick)
+            .await
     }
     .map_err(|err| match &macos_cgo {
         Some((file, named)) => err.context(format!(
@@ -280,6 +289,8 @@ async fn run_cli() -> Result<()> {
         startup.report();
         let target = if pinned && seeds.len() == 1 {
             seeds[0]
+        } else if pinned {
+            picked?
         } else {
             picked.unwrap_or(seeds[0])
         };

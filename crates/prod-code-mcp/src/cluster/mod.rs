@@ -29,7 +29,7 @@ pub use discover::{
     discover_nodes_with_paths, node_metrics, node_status,
 };
 pub use parse::{discover_auto_nodes_sync, parse_remotes, resolve_auto_remotes};
-pub use pick::{pick_node, pick_node_with};
+pub use pick::{pick_node, pick_node_with, pick_pinned_node};
 pub use placement::{forget_placement, remember_placement, remembered_node};
 pub use rebalance::{evaluate_cluster_rebalance, evaluate_cluster_rebalance_with};
 pub use routing::{

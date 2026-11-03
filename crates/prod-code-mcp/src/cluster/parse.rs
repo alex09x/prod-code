@@ -23,6 +23,17 @@ mod tests;
 /// Supports `*.code.internal` virtual domains (e.g. `shop.code.internal`), resolving them via
 /// smart DNS and warm workspace mapping over discovered cluster nodes (Roadmap 5.2).
 pub fn parse_remotes(spec: &str) -> Result<Vec<SocketAddr>> {
+    parse_remotes_with(spec, |item| {
+        item.to_socket_addrs()
+            .or_else(|_| (item, 9400).to_socket_addrs())
+            .map(Iterator::collect)
+    })
+}
+
+fn parse_remotes_with(
+    spec: &str,
+    mut resolve: impl FnMut(&str) -> std::io::Result<Vec<SocketAddr>>,
+) -> Result<Vec<SocketAddr>> {
     let trimmed = spec.trim();
     if trimmed.eq_ignore_ascii_case("auto") {
         return resolve_auto_remotes();
@@ -55,21 +66,15 @@ pub fn parse_remotes(spec: &str) -> Result<Vec<SocketAddr>> {
                 ));
             }
         }
-        let addrs: Vec<SocketAddr> = match item.to_socket_addrs() {
-            Ok(parsed) => parsed.collect(),
-            Err(_) => match (item, 9400).to_socket_addrs() {
-                Ok(parsed) => parsed.collect(),
-                Err(err) => {
-                    return Err(anyhow!("cannot resolve gateway address {item}: {err}"));
-                }
-            },
-        };
-        let addr = addrs
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("gateway address {item} resolved to nothing"))?;
-        if !nodes.contains(&addr) {
-            nodes.push(addr);
+        let addrs =
+            resolve(item).map_err(|err| anyhow!("cannot resolve gateway address {item}: {err}"))?;
+        if addrs.is_empty() {
+            return Err(anyhow!("gateway address {item} resolved to nothing"));
+        }
+        for addr in addrs {
+            if !nodes.contains(&addr) {
+                nodes.push(addr);
+            }
         }
     }
     if nodes.is_empty() {
