@@ -161,11 +161,32 @@ fn execute_tool_inner<'a>(
     reference_budget: Option<DefinitionBudget>,
 ) -> impl std::future::Future<Output = Result<McpToolCallResult>> + Send + 'a {
     Box::pin(async move {
-        let mut reference_budget = reference_budget;
         let mut args = args;
         let workspace_root =
             resolve_workspace_root(configured_workspace_root, tool_name, &mut args)?;
-        let workspace_root = workspace_root.as_path();
+        // The selected checkout's own node pin governs the whole call, its routing, sessions,
+        // commands and verification included (#1793). It is scoped to this call's task: a
+        // concurrent call on another checkout keeps its own.
+        let (policy, remote) = crate::cluster::place_call(&workspace_root, remote)?;
+        crate::cluster::with_root_policy(
+            &workspace_root,
+            policy,
+            execute_selected(remote, &workspace_root, tool_name, args, reference_budget),
+        )
+        .await
+    })
+}
+
+/// [`execute_tool_inner`] once the call's checkout is selected and its policy scoped.
+fn execute_selected<'a>(
+    remote: SocketAddr,
+    workspace_root: &'a Path,
+    tool_name: &'a str,
+    args: serde_json::Value,
+    reference_budget: Option<DefinitionBudget>,
+) -> impl std::future::Future<Output = Result<McpToolCallResult>> + Send + 'a {
+    Box::pin(async move {
+        let mut reference_budget = reference_budget;
         // Invalid explicit positions are refused before symbol lookup, routing or any write.
         validate_position_arguments(tool_name, &args)?;
         validate_verify_mode(&args)?;

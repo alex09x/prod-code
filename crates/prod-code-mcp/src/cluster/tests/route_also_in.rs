@@ -41,6 +41,7 @@ async fn a_nested_project_of_another_checkout_is_placed_under_that_checkout() {
     let routing = Routing {
         nodes: vec![rust.addr, go.addr],
         workspace: placement_workspace(origin.path()),
+        policy: Default::default(),
     };
     let state = tempfile::tempdir().unwrap();
     let placement = state.path().join("placement.json");

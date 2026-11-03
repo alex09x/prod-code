@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 use crate::protocol::{
     self, JsonRpcRequest, JsonRpcResponse, MCP_PROTOCOL_VERSION, SERVER_NAME, SERVER_VERSION,
 };
-use crate::server::failover::{is_retryable_connection_error, rediscover_node};
+use crate::server::failover::rediscover_node;
+use crate::server::failover_pin::{relocation_note, retry_permitted};
 use crate::tools::{execute_tool, list_tools};
 
 /// Server-safe default timeout for MCP tool call execution when `timeout_secs` is omitted.
@@ -63,6 +64,23 @@ pub(crate) async fn handle_mcp_request_with<D, F>(
     remote: &mut SocketAddr,
     workspace_root: &Path,
     req_val: serde_json::Value,
+    rediscover: D,
+) -> Result<Option<serde_json::Value>>
+where
+    D: Fn(SocketAddr, PathBuf) -> F,
+    F: std::future::Future<Output = Option<SocketAddr>>,
+{
+    let policy = crate::cluster::node_policy();
+    handle_mcp_request_policy(remote, workspace_root, req_val, &policy, rediscover).await
+}
+
+/// [`handle_mcp_request_with`] under `policy` (#1793): a pinned workspace retries only a call
+/// that never started, only on a node the pin allows, and a retried call says where it ran.
+pub(crate) async fn handle_mcp_request_policy<D, F>(
+    remote: &mut SocketAddr,
+    workspace_root: &Path,
+    req_val: serde_json::Value,
+    policy: &crate::cluster::NodePolicy,
     rediscover: D,
 ) -> Result<Option<serde_json::Value>>
 where
@@ -130,37 +148,76 @@ where
             let call_timeout = resolve_tool_call_timeout(&arguments);
 
             let tool_execution = async {
-                let tool_fut = execute_tool(*remote, workspace_root, tool_name, arguments.clone());
-                match tool_fut.await {
-                    Ok(call_result) => Ok(call_result),
-                    Err(e) if is_retryable_connection_error(tool_name, &e) => {
-                        // Gateway unreachable before dispatch — try UDP discovery to find a live node.
-                        tracing::warn!(
-                            old_gateway = %remote,
-                            error = %e,
-                            tool = tool_name,
-                            "gateway unreachable, running UDP discovery"
-                        );
-                        let old = *remote;
-                        if let Some(new_addr) = rediscover(old, workspace_root.to_path_buf()).await
+                let mut arguments = arguments;
+                let selector = if tool_name == "code_workflow" {
+                    "code_definition"
+                } else {
+                    tool_name
+                };
+                let selected =
+                    crate::tools::resolve_workspace_root(workspace_root, selector, &mut arguments)?;
+                let selected_policy =
+                    crate::cluster::pin_scope::effective_policy(&selected, policy)?;
+                let home = std::fs::canonicalize(workspace_root)
+                    .unwrap_or_else(|_| workspace_root.to_path_buf());
+                let mut call_remote =
+                    crate::cluster::pin_scope::place_within(&selected_policy, *remote)?;
+                let outcome =
+                    crate::cluster::with_root_policy(&selected, selected_policy.clone(), async {
+                        let policy = &selected_policy;
+                        match execute_tool(call_remote, &selected, tool_name, arguments.clone())
+                            .await
                         {
-                            *remote = new_addr;
-                            let identity = crate::sync::workspace_identity(workspace_root);
-                            let name = identity.base.unwrap_or(identity.name);
-                            crate::cluster::remember_placement(&name, new_addr);
-                            tracing::info!(
-                                old = %old,
-                                new = %new_addr,
-                                "re-placed to a live gateway via UDP discovery"
-                            );
-                            // Retry the tool call on the new node.
-                            execute_tool(*remote, workspace_root, tool_name, arguments).await
-                        } else {
+                            Ok(call_result) => Ok(call_result),
                             Err(e)
+                                if retry_permitted(policy, tool_name, &e)
+                                    && (!policy.is_pinned()
+                                        || !policy.alternatives(call_remote).is_empty()) =>
+                            {
+                                // Gateway unreachable before dispatch — try UDP discovery to find a live node.
+                                tracing::warn!(
+                                    old_gateway = %call_remote,
+                                    error = %e,
+                                    tool = tool_name,
+                                    "gateway unreachable, running UDP discovery"
+                                );
+                                let old = call_remote;
+                                if let Some(new_addr) = rediscover(old, selected.clone())
+                                    .await
+                                    .filter(|addr| policy.allows(*addr))
+                                {
+                                    call_remote = new_addr;
+                                    let identity = crate::sync::workspace_identity(&selected);
+                                    let name = identity.base.unwrap_or(identity.name);
+                                    crate::cluster::remember_placement(&name, new_addr);
+                                    tracing::info!(
+                                        old = %old,
+                                        new = %new_addr,
+                                        "re-placed to a live gateway via UDP discovery"
+                                    );
+                                    // Retry the tool call on the new node, and say that it moved.
+                                    let note = relocation_note(old, new_addr, &e);
+                                    execute_tool(call_remote, &selected, tool_name, arguments)
+                                        .await
+                                        .map(|mut result| {
+                                            result.content.push(protocol::McpContentItem::Text {
+                                                text: note,
+                                            });
+                                            result
+                                        })
+                                } else {
+                                    Err(e)
+                                }
+                            }
+                            Err(e) => Err(e),
                         }
-                    }
-                    Err(e) => Err(e),
+                    })
+                    .await;
+                // A call on a sibling checkout does not relocate the configured checkout.
+                if selected == home {
+                    *remote = call_remote;
                 }
+                outcome
             };
 
             let executed = match tokio::time::timeout(call_timeout, tool_execution).await {

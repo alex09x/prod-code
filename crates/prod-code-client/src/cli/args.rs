@@ -31,6 +31,19 @@ pub struct Cli {
     )]
     pub remote: String,
 
+    /// Pin this workspace to one gateway endpoint (`host:port`): every command, query, retry
+    /// and failover stays on the addresses that name resolves to, or fails with the reason; a
+    /// gateway too old to confirm the pin is refused before anything runs. `remote` pins to the
+    /// `--remote` endpoint; `auto` turns off a `[cluster] pin` from `prod-code.toml`. Without a
+    /// pin, `--remote` typed on the command line still limits work to the gateways it lists.
+    #[arg(
+        long,
+        global = true,
+        env = "PROD_CODE_PIN_NODE",
+        value_name = "ENDPOINT"
+    )]
+    pub pin_node: Option<String>,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

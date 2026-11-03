@@ -14,13 +14,12 @@ use crate::workspace::{detect_workspace_name, find_workspace_root};
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage, supported_protocol_versions,
+    HandshakeRequest, PROTOCOL_VERSION, WireMessage, supported_protocol_versions,
     validate_selected_protocol_version,
 };
 use std::env;
 use std::net::SocketAddr;
 use std::path::Path;
-use tokio_util::codec::Framed;
 use url::Url;
 
 /// Helper to connect, initialize, and execute a targeted LSP request against the remote gateway.
@@ -52,15 +51,17 @@ pub async fn execute_lsp_query(
         .with_context(|| format!("Failed to read file {:?}", abs_path))?;
 
     let mut timing = QueryTiming::new();
+    // The checkout's pin is confirmed on each connection before its sync (#1793).
+    let policy = prod_code_mcp::cluster::policy_for_root(&ws_root)?;
     let mut framed = {
         let mut attempt = 0;
         let mut refused_by = Vec::new();
         loop {
             attempt += 1;
-            let stream = prod_code_protocol::transport::connect(remote)
-                .await
-                .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
-            let mut framed = Framed::new(stream, ProdCodeCodec::new());
+            let mut framed =
+                prod_code_mcp::cluster::connect_gated_with(remote, &ws_root, &policy, "this query")
+                    .await?
+                    .framed;
             timing.mark("connect");
 
             let identity = prod_code_mcp::sync::workspace_identity(&ws_root);
@@ -80,7 +81,7 @@ pub async fn execute_lsp_query(
                     protocol_version: PROTOCOL_VERSION,
                     supported_versions: Some(supported_versions.clone()),
                     capabilities: Some(prod_code_protocol::ClientCapabilities {
-                        redirects: true,
+                        redirects: policy.offers_redirects(),
                         ..Default::default()
                     }),
                     client_name: "prod-code-cli".to_string(),
@@ -110,6 +111,7 @@ pub async fn execute_lsp_query(
                     if attempt > 3 {
                         anyhow::bail!("too many gateway redirects: {reason:?}");
                     }
+                    policy.check_redirect(&target_addr)?;
                     refused_by.push(remote.to_string());
                     tracing::info!(%target_addr, ?reason, "received transparent redirect from gateway");
                     remote = resolve_redirect_target(&target_addr).with_context(|| {

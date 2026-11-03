@@ -11,6 +11,7 @@
 pub mod cluster;
 pub mod exec;
 pub mod handshake;
+pub mod pin;
 pub mod pull;
 pub mod remote_exec;
 pub mod search;
@@ -33,6 +34,7 @@ pub use handshake::{
     ANALYZER_PANIC_CODE, ClientCapabilities, HandshakeRequest, HandshakeResponse, PURPOSE_EDITOR,
     PURPOSE_VALIDATION, ServerCapabilities,
 };
+pub use pin::{NodePinRequest, NodePinResponse};
 pub use pull::{
     ARTIFACT_LIST_LIMIT, ArtifactEntry, ArtifactListing, PULL_CHUNK_BYTES, PullFileRequest,
     PullFileResponse,

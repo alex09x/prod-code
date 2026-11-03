@@ -8,6 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+use super::provenance::{Provenance, emit_report, may_retry, relocation_json, verify_candidates};
 use crate::workspace::find_workspace_root;
 use anyhow::{Context, Result};
 use prod_code_mcp::verify::VerifyKind;
@@ -77,26 +78,45 @@ pub async fn run_verify(
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let mut candidates = vec![remote];
-    for &r in remotes {
-        if !candidates.contains(&r) {
-            candidates.push(r);
+    // Candidates stay within the workspace's node policy, and every move is reported (#1793).
+    let policy = prod_code_mcp::cluster::node_policy();
+    policy.check(remote, &format!("this {}", kind.label()))?;
+    let candidates = verify_candidates(
+        remote,
+        remotes,
+        &policy,
+        prod_code_mcp::cluster::known_cluster_nodes,
+    );
+    let mut provenance = Provenance::new(remote);
+    let relocate = |provenance: &mut Provenance, to: SocketAddr, reason: String| {
+        let moved = provenance.relocate(to, reason);
+        if args.events {
+            let mut event = relocation_json(moved);
+            event["event"] = serde_json::Value::from("relocated");
+            println!("{event}");
+        } else {
+            eprintln!(
+                "[prod-code {}] moving from {} to {}: {}",
+                kind.label(),
+                moved.from,
+                moved.to,
+                moved.reason
+            );
         }
-    }
-    if candidates.len() <= 1 {
-        if let Some(known) = prod_code_mcp::cluster::known_cluster_nodes() {
-            for r in known {
-                if !candidates.contains(&r) {
-                    candidates.push(r);
-                }
-            }
-        }
-    }
+    };
 
     let mut last_msrv_report = None;
     let mut last_err = None;
+    let mut why_moved = String::new();
 
     for (idx, &current_remote) in candidates.iter().enumerate() {
+        if current_remote != provenance.node {
+            relocate(
+                &mut provenance,
+                current_remote,
+                std::mem::take(&mut why_moved),
+            );
+        }
         let result = prod_code_mcp::verify::run_verify_with(
             current_remote,
             &root,
@@ -123,6 +143,7 @@ pub async fn run_verify(
                         "remote toolchain rejected by workspace MSRV; trying next candidate"
                     );
                     last_msrv_report = Some((current_remote, report));
+                    why_moved = "its toolchain is older than the workspace requires".to_string();
                     continue;
                 }
 
@@ -132,50 +153,45 @@ pub async fn run_verify(
                     }
                 }
 
-                if args.events {
-                    println!(
-                        "{}",
-                        serde_json::json!({ "event": "report", "report": report })
+                emit_report(&report, &provenance, args.events, args.json, kind)?;
+                if !args.events && !args.json && report.is_toolchain_msrv_rejection() {
+                    eprintln!(
+                        "\nHint: The workspace requires a newer Rust toolchain than available on {current_remote}. Specify a compatible node with `--remote <addr>` or update the node's toolchain."
                     );
-                } else if args.json {
-                    println!("{}", serde_json::to_string_pretty(&report)?);
-                } else {
-                    print!("{}", report.render(200));
-                    if report.is_toolchain_msrv_rejection() {
-                        eprintln!(
-                            "\nHint: The workspace requires a newer Rust toolchain than available on {current_remote}. Specify a compatible node with `--remote <addr>` or update the node's toolchain."
-                        );
-                    }
                 }
                 std::process::exit(if report.ok() { 0 } else { 1 });
             }
             Err(e) => {
-                if prod_code_mcp::server::failover::is_retryable_connection_error("verify", &e)
-                    && idx + 1 < candidates.len()
-                {
+                if may_retry(&policy, &e) && idx + 1 < candidates.len() {
                     tracing::warn!(
                         remote = %current_remote,
                         error = %e,
                         "verify connection or pre-flight failed on candidate; trying next candidate"
                     );
+                    why_moved = format!("{e:#}").lines().next().unwrap_or("").to_string();
                     last_err = Some(e);
                     continue;
                 }
-                return Err(e);
+                let mut context = format!("the {} on node {current_remote} failed", kind.label());
+                if !provenance.relocations.is_empty() {
+                    context.push_str(&format!(" ({})", provenance.summary()));
+                }
+                if policy.is_pinned() {
+                    context.push_str(&format!(
+                        "; this workspace is {}, and no other node it allows could run it",
+                        policy.describe()
+                    ));
+                }
+                return Err(e.context(context));
             }
         }
     }
 
     if let Some((failed_remote, report)) = last_msrv_report {
-        if args.events {
-            println!(
-                "{}",
-                serde_json::json!({ "event": "report", "report": report })
-            );
-        } else if args.json {
-            println!("{}", serde_json::to_string_pretty(&report)?);
-        } else {
-            print!("{}", report.render(200));
+        let mut shown = provenance.clone();
+        shown.node = failed_remote;
+        emit_report(&report, &shown, args.events, args.json, kind)?;
+        if !args.events && !args.json {
             eprintln!(
                 "\nHint: The workspace requires a newer Rust toolchain than available on cluster nodes (tested {failed_remote}). Specify a compatible node with `--remote <addr>` or update the node's toolchain."
             );
@@ -305,8 +321,10 @@ pub async fn run_exec(
     if let Some(warning) = warning {
         eprintln!("[prod-code exec] {warning}");
     }
+    // The node that ran it, as the gateway confirmed on this command's connection (#1793).
+    let ran_on = outcome.executor.render();
     eprintln!(
-        "[prod-code exec] {} in {:.1}s (server {:.1}s{}) on node {remote}, copy {}{}",
+        "[prod-code exec] {} in {:.1}s (server {:.1}s{}) on {ran_on}, copy {}{}",
         match (exit.timed_out, exit.exit_code) {
             (true, _) => "timed out".to_string(),
             (false, Some(code)) => format!("exit {code}"),

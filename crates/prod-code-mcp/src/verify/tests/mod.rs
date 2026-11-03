@@ -15,6 +15,7 @@ mod failure_cause;
 mod matrix;
 mod parse;
 mod plan;
+mod plan_summary;
 mod render;
 mod wave2;
 mod wave2_js;

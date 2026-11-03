@@ -31,12 +31,9 @@ pub(crate) async fn handle_pull(
         })
         .collect::<Result<Vec<_>>>()?;
     anyhow::ensure!(!files.is_empty(), "files must not be empty");
-    let node = match args.get("remote").and_then(|v| v.as_str()) {
-        Some(node) => node
-            .parse()
-            .context("remote must be a node address (HOST:PORT)")?,
-        None => crate::exec::last_exec_node(root).unwrap_or(remote),
-    };
+    // Neither the remembered exec node nor a `remote` argument may take the pull outside the
+    // checkout's pin; another address of the pinned endpoint may (#1793).
+    let node = crate::exec::pull_node(root, remote, args.get("remote").and_then(|v| v.as_str()))?;
     if args.get("list").and_then(|v| v.as_bool()) == Some(true) {
         anyhow::ensure!(
             files.len() == 1,

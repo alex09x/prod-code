@@ -83,10 +83,16 @@ pub async fn run_tool_in(
             timeout.as_secs()
         )
     })?;
+    // A pinned workspace retries only a call that never started, and only within its pin; any
+    // move is reported (#1793).
     if let Err(ref e) = result
-        && prod_code_mcp::is_retryable_connection_error(tool, e)
+        && prod_code_mcp::server::retry_permitted(&prod_code_mcp::cluster::node_policy(), tool, e)
         && let Some(new_addr) = prod_code_mcp::rediscover_node(remote, &root).await
     {
+        eprintln!(
+            "{}",
+            prod_code_mcp::server::failover_pin::relocation_note(remote, new_addr, e)
+        );
         remote = new_addr;
         let identity = prod_code_mcp::sync::workspace_identity(&root);
         let name = identity.base.unwrap_or(identity.name);

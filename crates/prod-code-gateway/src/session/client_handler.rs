@@ -75,6 +75,8 @@ pub async fn handle_client(
     }
 
     let addr_str = addr.to_string();
+    // Set once a client pins its workspace to this node (#1793): the connection's work stays here.
+    let mut pinned = false;
     while let Some(msg_res) = framed.next().await {
         let msg = msg_res?;
         match msg {
@@ -302,7 +304,15 @@ pub async fn handle_client(
             WireMessage::Ping => {
                 framed.send(WireMessage::Pong).await?;
             }
-            WireMessage::HandshakeRequest(req) => {
+            WireMessage::NodePinRequest(req) => {
+                let answer = super::pin::answer_pin(&req, &state).await;
+                pinned |= answer.accepted;
+                framed.send(WireMessage::NodePinResponse(answer)).await?;
+            }
+            WireMessage::HandshakeRequest(mut req) => {
+                if pinned {
+                    super::pin::hold_handshake(&mut req);
+                }
                 return handle_handshake(req, &state, framed, &addr_str).await;
             }
             WireMessage::Disconnect { reason } => {

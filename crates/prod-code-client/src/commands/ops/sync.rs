@@ -10,11 +10,10 @@
 
 use anyhow::{Context, Result};
 use futures_util::SinkExt;
-use prod_code_protocol::{ProdCodeCodec, WireMessage};
+use prod_code_protocol::WireMessage;
 use std::env;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use tokio_util::codec::Framed;
 
 pub async fn run_mcp_server(remote: SocketAddr) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;
@@ -26,10 +25,10 @@ pub async fn run_sync(remote: SocketAddr, subpath: Option<PathBuf>) -> Result<()
     let start = std::time::Instant::now();
     let identity = prod_code_mcp::sync::workspace_identity(&cwd);
 
-    let stream = prod_code_protocol::transport::connect(remote)
-        .await
-        .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
-    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    // An explicit sync is held to the checkout's pin like a command (#1793).
+    let mut framed = prod_code_mcp::cluster::connect_gated(remote, &cwd, "this sync")
+        .await?
+        .framed;
 
     let outcome =
         prod_code_mcp::sync::push_workspace_sync(&mut framed, &cwd, &identity, subpath.as_deref())

@@ -37,6 +37,7 @@ fn render_truncates_large_failure_output() {
         benches: vec![],
         usage: None,
         platform: None,
+        executor: None,
     };
 
     let text = report.render(10);
@@ -75,6 +76,7 @@ fn verify_render_keeps_failure_details_after_oversized_diagnostic() {
         benches: vec![],
         usage: None,
         platform: None,
+        executor: None,
     };
 
     let text = report.render(10);
@@ -108,6 +110,7 @@ fn render_caps_total_output_with_many_failures() {
         benches: vec![],
         usage: None,
         platform: None,
+        executor: None,
     };
 
     let text = report.render(20);
@@ -136,6 +139,7 @@ fn render_truncates_large_tail_output() {
         benches: vec![],
         usage: None,
         platform: None,
+        executor: None,
     };
 
     let text = report.render(10);

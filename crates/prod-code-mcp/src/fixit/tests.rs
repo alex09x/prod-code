@@ -116,6 +116,7 @@ fn the_report_says_what_was_fixed_skipped_and_left() {
         benches: vec![],
         usage: None,
         platform: None,
+        executor: None,
     };
     let outcome = |skipped: Option<&str>| Outcome {
         file: "src/lib.rs".into(),
@@ -191,6 +192,7 @@ fn fixed_render_preserves_outcomes_and_post_fix_report() {
         benches: vec![],
         usage: None,
         platform: None,
+        executor: None,
     };
     let after = VerifyReport {
         kind: VerifyKind::Check,
@@ -208,6 +210,7 @@ fn fixed_render_preserves_outcomes_and_post_fix_report() {
         benches: vec![],
         usage: None,
         platform: None,
+        executor: None,
     };
     let outcomes = vec![
         Outcome {
@@ -260,6 +263,7 @@ fn fixed_render_caps_huge_outcomes_preserving_after_report() {
         benches: vec![],
         usage: None,
         platform: None,
+        executor: None,
     };
     let after = VerifyReport {
         kind: VerifyKind::Check,
@@ -277,6 +281,7 @@ fn fixed_render_caps_huge_outcomes_preserving_after_report() {
         benches: vec![],
         usage: None,
         platform: None,
+        executor: None,
     };
     let outcomes: Vec<Outcome> = (0..1_000)
         .map(|i| Outcome {

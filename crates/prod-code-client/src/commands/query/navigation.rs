@@ -37,9 +37,17 @@ pub async fn run_refs(remote: SocketAddr, args: serde_json::Value) -> Result<()>
         )
     })?;
     if let Err(ref e) = result
-        && prod_code_mcp::is_retryable_connection_error("code_references", e)
+        && prod_code_mcp::server::retry_permitted(
+            &prod_code_mcp::cluster::node_policy(),
+            "code_references",
+            e,
+        )
         && let Some(new_addr) = prod_code_mcp::rediscover_node(remote, &root).await
     {
+        eprintln!(
+            "{}",
+            prod_code_mcp::server::failover_pin::relocation_note(remote, new_addr, e)
+        );
         remote = new_addr;
         let identity = prod_code_mcp::sync::workspace_identity(&root);
         let name = identity.base.unwrap_or(identity.name);

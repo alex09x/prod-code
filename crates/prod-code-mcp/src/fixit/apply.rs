@@ -125,9 +125,12 @@ async fn tool_fix(
             outcome.kept_files.join(", ")
         )
     };
+    // A failed fixer names the node it ran on; a successful one is followed by a check
+    // report that does (#1793).
+    let ran_on = outcome.executor.render();
     if let Some(failure) = failure {
         anyhow::bail!(
-            "fixes: `{}` {failure}; {} changed file(s) already pulled: {}{kept}\n{}",
+            "fixes: `{}` {failure}; {} changed file(s) already pulled: {}{kept}; ran on {ran_on}\n{}",
             command.join(" "),
             outcome.pulled_files.len(),
             outcome.pulled_files.join(", "),

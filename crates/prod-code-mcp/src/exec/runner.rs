@@ -16,7 +16,7 @@ use futures_util::SinkExt;
 use prod_code_protocol::{ExecRequest, RemoteExecRequest, RemoteExecStream, WireMessage};
 
 use super::layout::rust_formatter;
-use super::progress::{ExecMonitor, prepare, prepare_rooted};
+use super::progress::{ExecMonitor, Prepared, prepare_rooted};
 use super::types::{PolyglotRemoteOutcome, RemoteOutcome};
 use super::writeback::Writeback;
 use crate::sync::{WorkspaceIdentity, workspace_identity};
@@ -121,7 +121,11 @@ async fn run_remote_rooted_inner(
     anyhow::ensure!(!command.is_empty(), "empty command");
     let identity: WorkspaceIdentity = workspace_identity(root);
     let mut writeback = Writeback::capture(root, pull_changes, rust_formatter(&command))?;
-    let (mut framed, server_root) = prepare_rooted(remote, root, &identity, &mut on_output).await?;
+    let Prepared {
+        mut framed,
+        server_root,
+        executor,
+    } = prepare_rooted(remote, root, &identity, &mut on_output).await?;
     on_root(&server_root);
     let mut monitor = ExecMonitor::new(timeout_secs);
     monitor
@@ -172,6 +176,7 @@ async fn run_remote_rooted_inner(
                     })
                     .await;
                 return Ok(RemoteOutcome {
+                    executor,
                     exit,
                     pulled_files: writeback.pulled,
                     relaid_files: writeback.relaid,
@@ -227,7 +232,11 @@ pub async fn run_polyglot_remote(
             data: Some(data.to_vec()),
         }))
     };
-    let mut framed = prepare(remote, root, &identity, &mut progress).await?;
+    let Prepared {
+        mut framed,
+        executor,
+        ..
+    } = prepare_rooted(remote, root, &identity, &mut progress).await?;
     let mut monitor = ExecMonitor::new(req.timeout_secs);
     monitor
         .send(&mut framed, WireMessage::RemoteExecRequest(req))
@@ -256,6 +265,7 @@ pub async fn run_polyglot_remote(
                     })
                     .await;
                 return Ok(PolyglotRemoteOutcome {
+                    executor,
                     result,
                     pulled_files: writeback.pulled,
                     relaid_files: writeback.relaid,
