@@ -72,9 +72,13 @@ fn issue_1813_written_back_fixtures_reach_node_b_and_results_warn() {
     std::fs::create_dir(root.join("src")).unwrap();
     std::fs::write(root.join("src/lib.rs"), "pub fn f() {}\n").unwrap();
     git_commit_base(&root);
+    let baseline_a = prepare_workspace_sync_for(&root, NODE_A, None).unwrap();
+    commit_workspace_sync(&root, &baseline_a);
     let baseline = prepare_workspace_sync_for(&root, NODE_B, None).unwrap();
     commit_workspace_sync(&root, &baseline);
 
+    crate::sync::apply_pulled_files_for(&root, NODE_A, &[delta("artifacts/out.bin", &[9, 9])])
+        .unwrap();
     let mut writeback = Writeback::capture(&root, true, false).unwrap();
     writeback
         .apply(
@@ -89,6 +93,13 @@ fn issue_1813_written_back_fixtures_reach_node_b_and_results_warn() {
         )
         .unwrap();
     assert_eq!(writeback.pulled.len(), 4, "{:?}", writeback.kept);
+    // Same-node sync on NODE_A must not emit deletion deltas for writeback-only artifacts.
+    let plan_a = prepare_workspace_sync_for(&root, NODE_A, None).unwrap();
+    assert!(
+        !plan_a.files.iter().any(|f| f.content.is_none()),
+        "unexpected deletion on pinned node: {:?}",
+        plan_a.files
+    );
     let excluded = classify_upload_exclusions(&root, &writeback.pulled);
     let mut named: Vec<_> = excluded
         .iter()
@@ -127,10 +138,16 @@ fn issue_1813_written_back_fixtures_reach_node_b_and_results_warn() {
     }
     assert_eq!(
         plan.omitted,
-        vec![UploadExclusion {
-            path: "results/out.bin".into(),
-            reason: UploadExclusionReason::OutputOrDataDirectory,
-        }]
+        vec![
+            UploadExclusion {
+                path: "artifacts/out.bin".into(),
+                reason: UploadExclusionReason::OutputOrDataDirectory,
+            },
+            UploadExclusion {
+                path: "results/out.bin".into(),
+                reason: UploadExclusionReason::OutputOrDataDirectory,
+            },
+        ]
     );
     clear_sync_cache_for(&root, NODE_A);
     clear_sync_cache_for(&root, NODE_B);
@@ -340,61 +357,4 @@ async fn issue_1836_untracked_site_data_json_warns_then_uploads_with_sync_includ
     );
     clear_sync_cache_for(&root, &addr1.to_string());
     clear_sync_cache_for(&root, &addr2.to_string());
-}
-
-#[test]
-fn issue_1836_non_git_sync_include_uploads_and_deletes_on_removal() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = std::fs::canonicalize(temp.path()).unwrap();
-    std::fs::create_dir_all(root.join("src")).unwrap();
-    std::fs::write(root.join("src/main.py"), "print('hi')\n").unwrap();
-    std::fs::create_dir_all(root.join("site/data")).unwrap();
-    std::fs::write(root.join("site/data/benchmarks.json"), b"{\"ok\":true}\n").unwrap();
-    std::fs::create_dir_all(root.join("fixtures")).unwrap();
-    std::fs::write(root.join("fixtures/rows.csv"), b"a,b\n1,2\n").unwrap();
-
-    let plan1 = prepare_workspace_sync_for(&root, NODE_A, None).unwrap();
-    assert!(
-        plan1
-            .omitted
-            .iter()
-            .any(|e| e.path == "site/data/"
-                && e.reason == UploadExclusionReason::OutputOrDataDirectory),
-        "{:?}",
-        plan1.omitted
-    );
-    commit_workspace_sync(&root, &plan1);
-
-    std::fs::write(
-        root.join("prod-code.toml"),
-        "[sync]\ninclude = [\"site/data/**\", \"fixtures/*.csv\"]\n",
-    )
-    .unwrap();
-    let plan2 = prepare_workspace_sync_for(&root, NODE_A, None).unwrap();
-    assert!(plan2.omitted.is_empty(), "{:?}", plan2.omitted);
-    for expected in ["site/data/benchmarks.json", "fixtures/rows.csv"] {
-        assert!(
-            plan2
-                .files
-                .iter()
-                .any(|f| f.relative_path == expected && f.content.is_some()),
-            "missing {expected} in {:?}",
-            plan2.files
-        );
-    }
-    commit_workspace_sync(&root, &plan2);
-
-    std::fs::remove_file(root.join("prod-code.toml")).unwrap();
-    let plan3 = prepare_workspace_sync_for(&root, NODE_A, None).unwrap();
-    for removed in ["site/data/benchmarks.json", "fixtures/rows.csv"] {
-        assert!(
-            plan3
-                .files
-                .iter()
-                .any(|f| f.relative_path == removed && f.content.is_none()),
-            "missing deletion for {removed} in {:?}",
-            plan3.files
-        );
-    }
-    clear_sync_cache_for(&root, NODE_A);
 }

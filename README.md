@@ -466,9 +466,9 @@ while MCP `code_exec` and `code_sync` include `[sync warning: …]` and
 the next upload will skip, it reports an `upload warning` (`structuredContent.upload_excluded` in
 `code_exec`). To upload required
 checkout inputs (such as `site/data/**` or non-Git CSV fixtures) within ignore, containment and
-size limits, add `[sync] include = ["site/data/**"]` to `prod-code.toml`; in a Git checkout,
-unignored `fixtures/`, `testdata/` or `tests/fixtures/` paths also upload any extension within
-the size limit, or pin the workspace to one node (see
+size limits, add `[sync] include = ["site/data/**"]` to `prod-code.toml`; in a Git checkout, you
+can also keep them under an unignored `fixtures/`, `testdata/` or `tests/fixtures/` path (within
+the size limit) or pin the workspace to one node (see
 [Pinning a Workspace to One Node](#pinning-a-workspace-to-one-node)).
 
 **Several nodes.** Gateways gossip every 5 s; a client needs one seed address. A checkout is

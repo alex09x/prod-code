@@ -10,7 +10,9 @@
 
 use crate::sync::cache::{load_sync_cache_for, save_sync_cache_for};
 use crate::sync::entry::{fits_sync, is_executable, sync_file_entry, unchanged};
-use crate::sync::filter_path::{SyncPathFilter, is_filesystem_root, is_synced_git_path_with};
+use crate::sync::filter_path::{
+    SyncPathFilter, is_filesystem_root, is_synced_git_path, is_synced_git_path_with,
+};
 use crate::sync::git::{
     changed_paths, git_head, git_listed_files, git_listed_paths, git_output,
     tracked_contained_dir_symlink_files,
@@ -56,6 +58,7 @@ pub fn prepare_workspace_sync_for(
     if state.filter_version != RELEVANCE_VERSION && subpath.is_none() {
         state.base_commit_sha = None;
         state.files.clear();
+        state.include_paths.clear();
         state.filter_version = RELEVANCE_VERSION;
     }
     let initial = state.base_commit_sha.is_none() && subpath.is_none();
@@ -85,12 +88,13 @@ pub fn prepare_workspace_sync_for(
     let filter = SyncPathFilter::new(&canonical_root, subpath)?;
     let mut files = Vec::new();
     let newly_ineligible: Vec<String> = state
-        .files
-        .keys()
+        .include_paths
+        .iter()
         .filter(|p| filter.includes(p) && !is_synced_git_path_with(p, &sync_include))
         .cloned()
         .collect();
     for rel in newly_ineligible {
+        state.include_paths.remove(&rel);
         state.files.remove(&rel);
         changes.remove(&rel);
         files.push(FileDelta {
@@ -245,6 +249,15 @@ pub fn prepare_workspace_sync_for(
             Err(err) => return Err(err),
         }
     }
+
+    for p in state.files.keys() {
+        if !is_synced_git_path(p) && is_synced_git_path_with(p, &sync_include) {
+            state.include_paths.insert(p.clone());
+        }
+    }
+    state
+        .include_paths
+        .retain(|p| state.files.contains_key(p) && !is_synced_git_path(p));
 
     let omitted = collect_git_sync_omissions(
         &canonical_root,

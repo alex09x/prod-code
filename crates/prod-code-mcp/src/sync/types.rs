@@ -66,6 +66,10 @@ pub struct SyncCache {
     /// by name on the next sync.
     #[serde(default)]
     pub resend: BTreeSet<String>,
+    /// Paths enrolled in `files` specifically via `[sync] include` (#1836), kept distinct from
+    /// writeback-only watermark entries so removing an include rule deletes only included inputs.
+    #[serde(default)]
+    pub include_paths: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

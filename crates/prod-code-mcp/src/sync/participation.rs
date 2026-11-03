@@ -324,7 +324,7 @@ pub fn upload_exclusion_warning(excluded: &[UploadExclusion]) -> Option<String> 
     let listed = format_exclusion_list(excluded);
     Some(format!(
         "upload warning: {} written-back file(s) stay in this checkout and are not uploaded to other nodes: {listed}. \
-         For inputs another node needs, add `[sync] include = [\"...\"]` in prod-code.toml, keep them under an unignored fixtures/, testdata/ or tests/fixtures/ path in a Git checkout (within the size limit), or pin the workspace to one node (--pin-node)",
+         For inputs another node needs, add `[sync] include = [\"...\"]` in prod-code.toml, keep them under an unignored fixtures/, testdata/ or tests/fixtures/ path in a Git checkout (within the size limit), or pin a Git checkout to one node (--pin-node)",
         excluded.len()
     ))
 }
