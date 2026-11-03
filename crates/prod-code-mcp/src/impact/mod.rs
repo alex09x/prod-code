@@ -28,6 +28,7 @@ mod output;
 pub mod pool;
 pub mod render;
 pub mod rust_attr;
+mod signature_norm;
 pub mod signatures;
 pub mod symbols;
 pub mod test_cmd;

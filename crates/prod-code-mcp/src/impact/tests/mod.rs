@@ -8,6 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+mod callable_classification;
 #[cfg(unix)]
 mod ctest_filter;
 mod hunks_and_symbols;

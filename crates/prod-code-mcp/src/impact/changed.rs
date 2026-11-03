@@ -161,7 +161,7 @@ pub(super) async fn scan_changed_files(
             }
         };
         let mut functions = Vec::new();
-        if let Err(error) = collect_functions(&symbols, Some(&text), &mut functions) {
+        if let Err(error) = collect_functions(&symbols, Some(&text), file_lang, &mut functions) {
             note(
                 &mut incomplete,
                 Gap::Symbols {

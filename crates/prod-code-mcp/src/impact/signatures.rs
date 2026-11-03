@@ -17,39 +17,7 @@ mod tests;
 use super::diff::Hunk;
 use super::types::Symbol;
 
-pub(crate) fn normalize_signature(lines: &[&str], language: &str) -> String {
-    let mut parts = Vec::new();
-    for line in lines {
-        let mut trimmed = line.trim();
-        if language == "python" {
-            if let Some(pos) = trimmed.find('#') {
-                trimmed = trimmed[..pos].trim();
-            }
-        } else if let Some(pos) = trimmed.find("//") {
-            trimmed = trimmed[..pos].trim();
-        }
-        if !trimmed.is_empty() {
-            parts.push(trimmed);
-        }
-    }
-    let joined = parts.join(" ");
-    let mut out = String::new();
-    let mut prev_ws = false;
-    for c in joined.chars() {
-        if c.is_whitespace() {
-            if !prev_ws {
-                out.push(' ');
-                prev_ws = true;
-            }
-        } else {
-            out.push(c);
-            prev_ws = false;
-        }
-    }
-    let trimmed =
-        out.trim_end_matches(|c: char| c == '{' || c == ':' || c == ';' || c.is_whitespace());
-    trimmed.replace("( ", "(").replace(" )", ")").to_string()
-}
+pub(crate) use super::signature_norm::normalize_signature;
 
 fn is_rust_char_literal(rest_after_quote: &str) -> bool {
     let mut chars = rest_after_quote.chars();

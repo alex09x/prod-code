@@ -194,3 +194,41 @@ fn coverage_b2_map_new_lines_to_base() {
         assert_eq!(base_line_for_new_line(&hunks, line), expected);
     }
 }
+
+#[test]
+fn by_value_binding_mutability_is_ignored_in_rust_signatures() {
+    // 1. Removing mut from by-value parameter normalizes to identical signature (#1806):
+    let old_sig = normalize_signature(&["fn process(mut items: Vec<Item>)"], "rust");
+    let new_sig = normalize_signature(&["fn process(items: Vec<Item>)"], "rust");
+    assert_eq!(old_sig, "fn process(items: Vec<Item>)");
+    assert_eq!(new_sig, "fn process(items: Vec<Item>)");
+    assert_eq!(
+        old_sig, new_sig,
+        "by-value mut removal must not change normalized signature"
+    );
+
+    // 2. By-value mut self normalizes identically:
+    let mut_self = normalize_signature(&["fn consume(mut self) -> Result<()>"], "rust");
+    let val_self = normalize_signature(&["fn consume(self) -> Result<()>"], "rust");
+    assert_eq!(mut_self, val_self);
+
+    // 3. Meaningful &mut reference changes are PRESERVED:
+    let shared_ref = normalize_signature(&["fn inspect(&self, items: &Vec<Item>)"], "rust");
+    let mut_ref = normalize_signature(&["fn inspect(&mut self, items: &mut Vec<Item>)"], "rust");
+    assert_ne!(
+        shared_ref, mut_ref,
+        "reference &mut changes must be preserved"
+    );
+
+    // 4. By-value mut on a mutable reference binding (mut x: &mut T vs x: &mut T):
+    let mut_binding_mut_ref =
+        normalize_signature(&["fn update(mut items: &mut Vec<Item>)"], "rust");
+    let val_binding_mut_ref = normalize_signature(&["fn update(items: &mut Vec<Item>)"], "rust");
+    assert_eq!(mut_binding_mut_ref, val_binding_mut_ref);
+    assert_eq!(val_binding_mut_ref, "fn update(items: &mut Vec<Item>)");
+
+    // 5. Arity and type changes are PRESERVED:
+    let one_arg = normalize_signature(&["fn add(x: i32) -> i32"], "rust");
+    let two_arg = normalize_signature(&["fn add(x: i32, y: i32) -> i32"], "rust");
+    assert_ne!(one_arg, two_arg);
+}
