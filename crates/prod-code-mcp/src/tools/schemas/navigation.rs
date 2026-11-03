@@ -76,7 +76,7 @@ pub fn navigation_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_definition".to_string(),
-            description: "Find where a symbol (function, struct, type, variable, module) is defined. Give `symbol` (its name, e.g. `WorkspaceSymbol` or `Metrics::record`) or a file position (path + 1-based line/column) of a use of it. Returns the definition's code (a function with its body, a type with its fields, with doc comments), numbered (at most 300 lines), by default so there is no need to read the file or grep for it. Pass `body: false` to return only the location."
+            description: "Find where a symbol (function, struct, type, variable, module) is defined. Give `symbol` (its name, e.g. `WorkspaceSymbol` or `Metrics::record`) or a file position (path + 1-based line/column) of a use of it. Returns the definition's code (a function with its body, a type with its fields, with doc comments), numbered (at most 300 lines), by default so there is no need to read the file or grep for it. Pass `body: false` to return only the location. If the optional HTML server is missing, an explicit HTML path and function name can return a labelled syntax-only local declaration; ambiguous matches are refused."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",

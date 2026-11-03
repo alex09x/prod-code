@@ -122,7 +122,8 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                 };
                 // Shown to the script as `prod-code/handshake`, so a test can see what a session
                 // asked for (`purpose`, `preferred_engine`); an answer with `engine_age_ms` says
-                // how long ago the engine was loaded (#381), any other answer leaves it unsaid.
+                // how long ago the engine was loaded (#381). `refuse_handshake` models a startup
+                // refusal before any request is dispatched; other answers leave both unsaid.
                 let said = answer(
                     "prod-code/handshake",
                     &serde_json::json!({
@@ -130,6 +131,14 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                         "preferred_engine": req.preferred_engine.clone(),
                     }),
                 );
+                if let Some(reason) = said.get("refuse_handshake").and_then(|v| v.as_str()) {
+                    framed
+                        .send(WireMessage::Disconnect {
+                            reason: reason.to_string(),
+                        })
+                        .await?;
+                    return Ok(());
+                }
                 framed
                     .send(WireMessage::HandshakeResponse(HandshakeResponse {
                         protocol_version,
