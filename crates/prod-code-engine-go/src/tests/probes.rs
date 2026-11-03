@@ -95,7 +95,7 @@ async fn matching_health_successes_and_errors_are_private_dispatch_evidence() {
 async fn delayed_valid_probe_responses_reset_failures_without_ordinary_traffic() {
     let (dir, engine) = fake_engine_with_probe(
         Some(("FAKE_HEALTH", "delay")),
-        Duration::from_millis(40),
+        Duration::from_millis(500),
         Duration::from_millis(100),
     )
     .await;
