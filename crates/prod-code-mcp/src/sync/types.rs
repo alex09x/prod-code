@@ -66,6 +66,10 @@ pub struct SyncCache {
     /// by name on the next sync.
     #[serde(default)]
     pub resend: BTreeSet<String>,
+    /// Paths enrolled in `files` specifically via `[sync] include` (#1836), kept distinct from
+    /// writeback-only watermark entries so removing an include rule deletes only included inputs.
+    #[serde(default)]
+    pub include_paths: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -77,6 +81,7 @@ pub struct WorkspaceIdentity {
 #[derive(Debug)]
 pub struct SyncPlan {
     pub files: Vec<FileDelta>,
+    pub omitted: Vec<crate::sync::UploadExclusion>,
     pub(crate) state: SyncCache,
     pub(crate) node: String,
     pub initial: bool,
@@ -116,6 +121,7 @@ pub struct SyncOutcome {
     pub server_workspace_root: String,
     pub changed_paths: Vec<String>,
     pub stale_paths: Vec<String>,
+    pub omitted: Vec<crate::sync::UploadExclusion>,
     pub node: String,
 }
 

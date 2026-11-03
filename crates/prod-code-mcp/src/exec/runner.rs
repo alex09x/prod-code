@@ -125,8 +125,12 @@ async fn run_remote_rooted_inner(
         mut framed,
         server_root,
         executor,
+        sync_omitted,
     } = prepare_rooted(remote, root, &identity, &mut on_output).await?;
     on_root(&server_root);
+    if !lock_writeback && let Some(warning) = crate::sync::sync_omission_warning(&sync_omitted) {
+        on_output(true, format!("[prod-code exec] {warning}\n").as_bytes());
+    }
     let mut monitor = ExecMonitor::new(timeout_secs);
     monitor
         .send(
@@ -175,9 +179,14 @@ async fn run_remote_rooted_inner(
                         reason: "exec finished".to_string(),
                     })
                     .await;
+                // Only the written-back list is classified; nothing else is walked.
+                let upload_excluded =
+                    crate::sync::classify_upload_exclusions(root, &writeback.pulled);
                 return Ok(RemoteOutcome {
                     executor,
                     exit,
+                    sync_omitted,
+                    upload_excluded,
                     pulled_files: writeback.pulled,
                     relaid_files: writeback.relaid,
                     kept_files: writeback.kept,
@@ -235,8 +244,12 @@ pub async fn run_polyglot_remote(
     let Prepared {
         mut framed,
         executor,
+        sync_omitted,
         ..
     } = prepare_rooted(remote, root, &identity, &mut progress).await?;
+    if let Some(warning) = crate::sync::sync_omission_warning(&sync_omitted) {
+        progress(true, format!("[prod-code exec] {warning}\n").as_bytes());
+    }
     let mut monitor = ExecMonitor::new(req.timeout_secs);
     monitor
         .send(&mut framed, WireMessage::RemoteExecRequest(req))

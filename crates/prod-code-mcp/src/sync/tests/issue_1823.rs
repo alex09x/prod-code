@@ -134,6 +134,7 @@ fn issue_1823_legacy_watermark_resends_only_executable_files() {
     assert!(!json.contains("executable"), "{json}");
     let legacy_manifest = SyncPlan {
         files: vec![],
+        omitted: vec![],
         state: legacy,
         node: String::new(),
         initial: false,

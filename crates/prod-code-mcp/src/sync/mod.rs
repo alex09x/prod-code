@@ -13,6 +13,9 @@ pub mod engine;
 pub mod entry;
 pub mod filter_path;
 pub mod git;
+pub(crate) mod git_symlink;
+pub mod include;
+pub mod participation;
 pub mod plan;
 pub mod pull;
 pub(crate) mod pull_write;
@@ -34,7 +37,14 @@ pub use engine::{
     engine_for_file, engine_project, expected_engine, is_in_dependency_dir, macos_only_cgo,
     manifest_engine_at, other_checkout,
 };
-pub use filter_path::{is_filesystem_root, is_fixture_path, is_synced_git_path};
+pub use filter_path::{
+    is_filesystem_root, is_fixture_path, is_synced_git_path, is_synced_git_path_with,
+};
+pub use include::SyncInclude;
+pub use participation::{
+    UploadExclusion, UploadExclusionReason, classify_upload_exclusions, sync_omission_warning,
+    upload_exclusion_warning,
+};
 pub use plan::{commit_workspace_sync, prepare_workspace_sync, prepare_workspace_sync_for};
 pub mod artifact;
 pub mod artifact_list;

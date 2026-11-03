@@ -16,7 +16,18 @@ pub struct Config {
     #[serde(default)]
     pub watch: WatchConfig,
     #[serde(default)]
+    pub sync: SyncConfig,
+    #[serde(default)]
     pub mcp: McpConfig,
+}
+
+/// Workspace mirror upload options (`[sync]` in `prod-code.toml`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SyncConfig {
+    /// Checkout-relative file paths, directories or globs explicitly opted into mirror upload
+    /// within ignore, containment and per-file size limits (#1836).
+    #[serde(default)]
+    pub include: Vec<String>,
 }
 
 /// Filesystem watching and change tracking options.

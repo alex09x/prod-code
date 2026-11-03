@@ -16,7 +16,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 use tokio_util::codec::Framed;
 
 use super::types::Executor;
-use crate::sync::{WorkspaceIdentity, push::push_workspace_sync_with_progress};
+use crate::sync::{UploadExclusion, WorkspaceIdentity, push::push_workspace_sync_with_progress};
 
 const REPORT_EVERY: Duration = Duration::from_secs(10);
 const SYNC_LIMIT: Duration = Duration::from_secs(15 * 60);
@@ -42,6 +42,8 @@ pub(super) struct Prepared {
     pub server_root: String,
     /// The node the command will run on, as confirmed on this connection (#1793).
     pub executor: Executor,
+    /// Unignored local checkout files omitted from the mirror during pre-flight sync (#1836).
+    pub sync_omitted: Vec<UploadExclusion>,
 }
 
 pub(super) async fn prepare_rooted(
@@ -76,6 +78,7 @@ pub(super) async fn prepare_reporting_after(
     let confirmed = crate::cluster::confirm_gate(&mut framed, remote, root, &policy).await?;
     let executor = Executor::new(remote, confirmed);
     let server_root;
+    let sync_omitted;
     {
         let (phases, mut changes) = tokio::sync::mpsc::unbounded_channel();
         let mut observer = move |phase| {
@@ -92,7 +95,9 @@ pub(super) async fn prepare_reporting_after(
         loop {
             tokio::select! {
                 result = &mut sync => {
-                    server_root = result.context("pre-flight workspace sync failed")?.server_workspace_root;
+                    let outcome = result.context("pre-flight workspace sync failed")?;
+                    server_root = outcome.server_workspace_root;
+                    sync_omitted = outcome.omitted;
                     break;
                 }
                 // A quick pre-flight stays silent; one that drags on says each step it reaches.
@@ -113,6 +118,7 @@ pub(super) async fn prepare_reporting_after(
         framed,
         server_root,
         executor,
+        sync_omitted,
     })
 }
 

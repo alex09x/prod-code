@@ -299,6 +299,7 @@ pub async fn run_exec(
     )
     .await?;
     let warning = outcome.platform_warning(&root);
+    let upload_warning = outcome.upload_warning();
     let exit = outcome.exit;
     if let Some(err) = &exit.error {
         anyhow::bail!("remote exec failed: {err}");
@@ -319,6 +320,9 @@ pub async fn run_exec(
         );
     }
     if let Some(warning) = warning {
+        eprintln!("[prod-code exec] {warning}");
+    }
+    if let Some(warning) = upload_warning {
         eprintln!("[prod-code exec] {warning}");
     }
     // The node that ran it, as the gateway confirmed on this command's connection (#1793).

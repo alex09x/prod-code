@@ -25,6 +25,8 @@ mod progress_tests;
 mod runner_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod upload_tests;
 
 pub use destination::{last_exec_node, pull_node, pull_node_with, remember_exec_node};
 pub use layout::layout_only;
