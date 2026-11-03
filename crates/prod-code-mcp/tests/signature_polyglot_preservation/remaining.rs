@@ -244,3 +244,73 @@ async fn selected_header_checks_removed_definition_parameter_with_local_name() {
         }
     }
 }
+
+#[tokio::test]
+async fn issue_1845_swift_change_signature_apply_reports_changed_lines_and_diff() {
+    let source = r#"struct TerminalRenderer {
+    struct Metrics {
+        static func styledFace(
+            _ traits: UInt32,
+            family: String,
+            style: String,
+            regular: String,
+            synthesise: Bool = true
+        ) -> String {
+            return family
+        }
+    }
+}
+"#;
+    let ws = Workspace::new(&[(
+        "swift/Sources/TakoCoreUI/TerminalRendererMetrics.swift",
+        source,
+    )]);
+    let root = ws.root().to_path_buf();
+    let file = root.join("swift/Sources/TakoCoreUI/TerminalRendererMetrics.swift");
+    let gw = gateway(vec![]).await;
+
+    let params = vec![
+        Param::Keep("traits".into()),
+        Param::Keep("family".into()),
+        Param::Keep("style".into()),
+        Param::Keep("regular".into()),
+        Param::Keep("synthesise".into()),
+        Param::Add {
+            name: "fallbackRegular".into(),
+            ty: "CTFont?".into(),
+            value: "nil".into(),
+        },
+    ];
+    let change = change_with(
+        gw.addr(),
+        &root,
+        &file,
+        3,
+        21,
+        &params,
+        &Modifiers::default(),
+        true,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert!(change.applied);
+    let report = change.render(6000);
+    assert!(
+        report.contains("8 changed line(s) in 1 file(s)"),
+        "expected nonzero changed line count, got:\n{report}"
+    );
+    assert!(
+        report.contains("--- a/swift/Sources/TakoCoreUI/TerminalRendererMetrics.swift\n+++ b/swift/Sources/TakoCoreUI/TerminalRendererMetrics.swift"),
+        "expected unified diff header in report, got:\n{report}"
+    );
+    assert!(
+        report.contains("+        static func styledFace(_ traits: UInt32, family: String, style: String, regular: String, synthesise: Bool = true, fallbackRegular: CTFont? = nil) -> String {"),
+        "expected added declaration line in diff, got:\n{report}"
+    );
+    assert!(report.contains("[applied to 1 file(s)]"));
+
+    let disk = std::fs::read_to_string(&file).unwrap();
+    assert!(disk.contains("fallbackRegular: CTFont? = nil) -> String"));
+}

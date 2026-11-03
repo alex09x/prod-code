@@ -9,7 +9,7 @@
  */
 
 use anyhow::{Context, Result};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
@@ -161,8 +161,7 @@ pub async fn change_with(
             &mut semantic_references,
             &mut unmatched,
         ) {
-            let rel_path = display(root, src_path);
-            rewritten_files.push((rel_path, new_content));
+            rewritten_files.push((src_path.to_string_lossy().into_owned(), new_content));
         }
     }
 
@@ -218,11 +217,12 @@ pub async fn change_with(
             overlay_diags.len(),
             overlay_diags.join("\n  ")
         );
-        for (rel, content) in &rewritten_files {
-            let full_path = root.join(rel);
-            std::fs::write(&full_path, content)
-                .with_context(|| format!("cannot write {}", full_path.display()))?;
-        }
+        let rewritten_map: BTreeMap<PathBuf, String> = rewritten_files
+            .iter()
+            .map(|(p, t)| (PathBuf::from(p), t.clone()))
+            .collect();
+        let edit = crate::signature::whole_file_edit(&rewritten_map);
+        crate::refactor::apply_workspace_edit(root, &edit)?;
     }
 
     Ok(SignatureChange {
