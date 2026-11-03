@@ -12,12 +12,14 @@
 //!
 //! The analyzer says where the symbol is declared and where it is used. This module decides
 //! what the text should become — the item cut from one file and pasted into another, the `use`
-//! statements rewritten, the qualified paths requalified — and the whole change is type-checked
+//! statements rewritten, the qualified paths requalified, and for direct child-module struct moves
+//! any accessed private fields preserved at `pub(super)` — and the whole change is type-checked
 //! in one overlay before a byte is written, the same shape as [`crate::signature`] and
 //! [`crate::schema`].
 
 mod budget;
 mod child;
+mod child_fields;
 mod execute;
 mod imports;
 mod item;

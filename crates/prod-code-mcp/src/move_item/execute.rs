@@ -137,7 +137,24 @@ pub async fn move_item(
     rust_syntax::ensure_whole_lines(&source_text, decl_start, &name, edition)?;
     let start = rust_syntax::item_start(&source_text, decl_start, edition);
     let mut created = None;
-    let mut extracted_inline_mod = false;
+    let inline_extraction = if enclosing_impl.is_none() && target_text.trim().is_empty() {
+        extract_inline_module(&source_text, start, decl_end, &name, file, target)
+    } else {
+        None
+    };
+    let extracted_inline_mod = inline_extraction.is_some();
+    // Ask before the text moves: afterwards the declaration is not where the analyzer left it.
+    let refs = if extracted_inline_mod {
+        Vec::new()
+    } else {
+        budget
+            .run(
+                "finding references",
+                crate::signature::references(remote, root, file, line, col),
+            )
+            .await
+            .with_context(|| format!("cannot find the uses of `{name}`; nothing was planned"))?
+    };
     let (source_new, mut target_new, item, mut carried) =
         if let Some((_, impl_at, impl_open, impl_close)) = enclosing_impl {
             move_inherent_method(
@@ -149,12 +166,8 @@ pub async fn move_item(
                 decl_start,
                 decl_end,
             )
-        } else if target_text.trim().is_empty()
-            && let Some((source_new, target_new)) =
-                extract_inline_module(&source_text, start, decl_end, &name, file, target)
-        {
+        } else if let Some((source_new, target_new)) = inline_extraction {
             new_module_parent = None;
-            extracted_inline_mod = true;
             let mut segs = from_module.segments.clone();
             segs.push(name.clone());
             to_module.segments = segs;
@@ -172,7 +185,24 @@ pub async fn move_item(
                     decl_end,
                     from_owners[0].test_crate,
                 );
-                move_to_child(&source_text, &item, &target_text, inherit_parent, edition)?
+                let (target_with_imports, item, carried) =
+                    move_to_child(&source_text, &item, &target_text, inherit_parent, edition)?;
+                let item = super::child_fields::widen_accessed_fields(
+                    &budget,
+                    remote,
+                    root,
+                    file,
+                    &source_text,
+                    (start, decl_start, decl_end),
+                    &name,
+                    target,
+                    &plan,
+                    &refs,
+                    &item,
+                    edition,
+                )
+                .await?;
+                (target_with_imports, item, carried)
             } else if to_owners.iter().any(|owner| {
                 owner
                     .declaration
@@ -205,19 +235,6 @@ pub async fn move_item(
             carried.push(note);
         }
     }
-
-    // Ask before the text moves: afterwards the declaration is not where the analyzer left it.
-    let refs = if extracted_inline_mod {
-        Vec::new()
-    } else {
-        budget
-            .run(
-                "finding references",
-                crate::signature::references(remote, root, file, line, col),
-            )
-            .await
-            .with_context(|| format!("cannot find the uses of `{name}`; nothing was planned"))?
-    };
 
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
     rewritten.insert(file.to_path_buf(), source_new);
