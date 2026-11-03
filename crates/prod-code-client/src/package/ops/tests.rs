@@ -123,30 +123,73 @@ fn download_and_install_places_executable_and_replaces_old_binary() {
     use std::os::unix::fs::PermissionsExt;
     let src = tempfile::tempdir().unwrap();
     let asset = src.path().join("asset");
-    std::fs::write(&asset, "#!/bin/sh\necho installed-fake\n").unwrap();
+    #[cfg(target_os = "macos")]
+    let first_bytes = {
+        let local_signed = std::env::var_os("HOME")
+            .map(|h| std::path::PathBuf::from(h).join(".local/bin/prod-code"));
+        let candidate = local_signed
+            .as_deref()
+            .filter(|p| {
+                p.is_file()
+                    && Command::new("codesign")
+                        .args(["--verify", "--strict"])
+                        .arg(p)
+                        .status()
+                        .is_ok_and(|s| s.success())
+            })
+            .unwrap_or_else(|| Path::new("/usr/bin/true"));
+        std::fs::read(candidate).unwrap()
+    };
+    #[cfg(not(target_os = "macos"))]
+    let first_bytes = b"#!/bin/sh\necho installed-fake\n".to_vec();
+    std::fs::write(&asset, &first_bytes).unwrap();
     let url = format!("file://{}", asset.display());
 
     let dest = tempfile::tempdir().unwrap();
     let install_dir = dest.path().join("nested/bin");
     let bin = download_and_install(&url, &install_dir).unwrap();
     assert_eq!(bin, install_dir.join("prod-code"));
-    assert_eq!(
-        std::fs::read_to_string(&bin).unwrap(),
-        "#!/bin/sh\necho installed-fake\n"
-    );
+    assert_eq!(std::fs::read(&bin).unwrap(), first_bytes);
     assert_eq!(
         std::fs::metadata(&bin).unwrap().permissions().mode() & 0o777,
         0o755
     );
 
     // A second install replaces the first and leaves no temp file behind.
-    std::fs::write(&asset, "#!/bin/sh\necho second\n").unwrap();
+    #[cfg(target_os = "macos")]
+    let second_bytes = std::fs::read("/usr/bin/false").unwrap();
+    #[cfg(not(target_os = "macos"))]
+    let second_bytes = b"#!/bin/sh\necho second\n".to_vec();
+    std::fs::write(&asset, &second_bytes).unwrap();
     download_and_install(&url, &install_dir).unwrap();
-    assert_eq!(
-        std::fs::read_to_string(&bin).unwrap(),
-        "#!/bin/sh\necho second\n"
-    );
+    assert_eq!(std::fs::read(&bin).unwrap(), second_bytes);
     let names: Vec<_> = std::fs::read_dir(&install_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, vec!["prod-code".to_string()]);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn download_and_install_rejects_unsigned_macos_binary_and_preserves_existing() {
+    let src = tempfile::tempdir().unwrap();
+    let asset = src.path().join("asset");
+    std::fs::write(&asset, b"unsigned-corrupt-binary").unwrap();
+    let url = format!("file://{}", asset.display());
+
+    let dest = tempfile::tempdir().unwrap();
+    let existing = dest.path().join("prod-code");
+    std::fs::write(&existing, b"existing-binary").unwrap();
+
+    let err = download_and_install(&url, dest.path()).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("downloaded macOS binary failed code signature verification"),
+        "{err}"
+    );
+    assert_eq!(std::fs::read(&existing).unwrap(), b"existing-binary");
+    let names: Vec<_> = std::fs::read_dir(dest.path())
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
@@ -170,6 +213,9 @@ fn download_failure_is_reported_and_leaves_nothing_behind() {
 fn install_fails_with_context_when_target_is_a_non_empty_directory() {
     let src = tempfile::tempdir().unwrap();
     let asset = src.path().join("asset");
+    #[cfg(target_os = "macos")]
+    std::fs::copy("/usr/bin/true", &asset).unwrap();
+    #[cfg(not(target_os = "macos"))]
     std::fs::write(&asset, "x").unwrap();
     let dest = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dest.path().join("prod-code/keep")).unwrap();

@@ -169,6 +169,25 @@ fn update_check_skip_force_and_install_use_only_the_supplied_executable() {
         &mut no_download,
     )
     .unwrap();
+    #[cfg(target_os = "macos")]
+    let replacement = {
+        let local_signed = std::env::var_os("HOME")
+            .map(|h| std::path::PathBuf::from(h).join(".local/bin/prod-code"));
+        let candidate = local_signed
+            .as_deref()
+            .filter(|p| {
+                p.is_file()
+                    && Command::new("codesign")
+                        .args(["--verify", "--strict"])
+                        .arg(p)
+                        .status()
+                        .is_ok_and(|s| s.success())
+            })
+            .unwrap_or_else(|| Path::new("/usr/bin/true"));
+        std::fs::read(candidate).unwrap()
+    };
+    #[cfg(not(target_os = "macos"))]
+    let replacement = b"replacement".to_vec();
     run_update_with(
         false,
         false,
@@ -180,17 +199,45 @@ fn update_check_skip_force_and_install_use_only_the_supplied_executable() {
             let args: Vec<_> = cmd.get_args().collect();
             assert_eq!(&args[..3], &["-fL", "--progress-bar", "-o"]);
             assert_eq!(args[4], "https://example.invalid/binary");
-            std::fs::write(args[3], b"replacement")?;
+            std::fs::write(args[3], &replacement)?;
             Ok(ExitStatus::from_raw(0))
         },
     )
     .unwrap();
-    assert_eq!(std::fs::read(&exe).unwrap(), b"replacement");
+    assert_eq!(std::fs::read(&exe).unwrap(), replacement);
     use std::os::unix::fs::PermissionsExt;
     assert_eq!(
         std::fs::metadata(&exe).unwrap().permissions().mode() & 0o777,
         0o755
     );
+    assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn unsigned_or_corrupted_macos_update_is_rejected_and_preserves_the_executable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let exe = tmp.path().join("prod-code");
+    std::fs::write(&exe, b"original-signed-binary").unwrap();
+    let error = run_update_with(
+        false,
+        false,
+        None,
+        &exe,
+        &mut |_| Ok(reply(0, &release("v99.0.0"))),
+        &mut |cmd| {
+            std::fs::write(cmd.get_args().nth(3).unwrap(), b"unsigned-corrupt-binary")?;
+            Ok(ExitStatus::from_raw(0))
+        },
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("downloaded macOS binary failed code signature verification"),
+        "{error}"
+    );
+    assert_eq!(std::fs::read(&exe).unwrap(), b"original-signed-binary");
     assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1);
 }
 

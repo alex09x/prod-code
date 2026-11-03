@@ -268,21 +268,7 @@ fn run_update_with(
         std::fs::set_permissions(&temp_download, perms)?;
     }
 
-    // On macOS, codesign the binary with official identity or fallback to ad-hoc
-    #[cfg(target_os = "macos")]
-    {
-        let identity = std::env::var("PROD_CODE_SIGN_IDENTITY").unwrap_or_else(|_| {
-            "Apple Development: Alexander Panasenko (alex@prod.codes)".to_string()
-        });
-        let res = Command::new("codesign")
-            .args(["-s", &identity, "-f", temp_download.to_str().unwrap()])
-            .output();
-        if res.is_err() || !res.unwrap().status.success() {
-            let _ = Command::new("codesign")
-                .args(["-s", "-", "-f", temp_download.to_str().unwrap()])
-                .output();
-        }
-    }
+    verify_downloaded_binary(&temp_download)?;
 
     // Atomic replace via rename
     std::fs::rename(&temp_download, current_exe).with_context(|| {
@@ -298,6 +284,37 @@ fn run_update_with(
     );
     println!("Running MCP server sessions will hot-reload automatically.");
     Ok(())
+}
+
+/// Verifies the downloaded release binary before replacing the existing executable.
+/// On macOS, release assets are already signed with Developer ID Application and notarized;
+/// re-signing locally would mutate the Mach-O binary and invalidate notarization, so we
+/// strictly verify the existing signature without modifying a single byte.
+pub(crate) fn verify_downloaded_binary(path: &Path) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("codesign")
+            .args(["--verify", "--strict"])
+            .arg(path)
+            .output();
+        match output {
+            Ok(out) if out.status.success() => Ok(()),
+            Ok(out) => {
+                let _ = std::fs::remove_file(path);
+                let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                bail!("downloaded macOS binary failed code signature verification: {stderr}");
+            }
+            Err(err) => {
+                let _ = std::fs::remove_file(path);
+                Err(err).context("failed to run codesign --verify --strict on downloaded binary")
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        Ok(())
+    }
 }
 
 #[cfg(all(test, unix))]

@@ -53,8 +53,10 @@ main() {
     echo "Installing prod-code $TAG..."
     ASSET_URL="https://github.com/${REPO}/releases/download/${TAG}/prod-code-${TARGET}"
 
-    # Determine installation directory
-    if [ -w "/usr/local/bin" ]; then
+    #Determine installation directory
+    if [ -n "$PROD_CODE_INSTALL_DIR" ]; then
+        INSTALL_DIR="$PROD_CODE_INSTALL_DIR"
+    elif [ -w "/usr/local/bin" ]; then
         INSTALL_DIR="/usr/local/bin"
     elif [ -d "$HOME/.local/bin" ] || [ -w "$HOME" ]; then
         INSTALL_DIR="$HOME/.local/bin"
@@ -67,6 +69,7 @@ main() {
     mkdir -p "$INSTALL_DIR"
     TMP_FILE="$(mktemp "${TMPDIR:-/tmp}/prod-code.XXXXXX")"
 
+    ASSET_URL="${PROD_CODE_ASSET_URL:-$ASSET_URL}"
     echo "Downloading $ASSET_URL..."
     if ! curl -fL --progress-bar -o "$TMP_FILE" "$ASSET_URL"; then
         echo "Error: Failed to download release asset." >&2
@@ -76,9 +79,13 @@ main() {
 
     chmod +x "$TMP_FILE"
 
-    # Ad-hoc codesign on macOS
-    if [ "$OS" = "Darwin" ] && command -v codesign >/dev/null 2>&1; then
-        codesign -s - -f "$TMP_FILE" >/dev/null 2>&1 || true
+    # Verify the embedded macOS code signature without modifying the signed binary bytes
+    if [ "$OS" = "Darwin" ]; then
+        if ! command -v codesign >/dev/null 2>&1 || ! codesign --verify --strict "$TMP_FILE" >/dev/null 2>&1; then
+            echo "Error: Downloaded macOS binary failed code signature verification." >&2
+            rm -f "$TMP_FILE"
+            exit 1
+        fi
     fi
 
     DEST="$INSTALL_DIR/prod-code"
