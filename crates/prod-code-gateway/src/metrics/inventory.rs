@@ -83,31 +83,46 @@ fn normalize_advertised_engine(engine: &str) -> Option<String> {
         .map(str::to_ascii_lowercase)
 }
 
-fn collect_engine_inventory(
+fn collect_engine_inventory<F>(
     advertised_engines: &[String],
     engine_tools: EngineProbeTable,
-    mut probe: impl FnMut(&str, &[&str]) -> Option<String>,
-) -> Vec<EngineToolchainInfo> {
+    probe: F,
+) -> Vec<EngineToolchainInfo>
+where
+    F: Fn(&str, &[&str]) -> Option<String> + Sync,
+{
     let advertised: HashSet<String> = advertised_engines
         .iter()
         .filter_map(|engine| normalize_advertised_engine(engine))
         .collect();
+    let probed: Vec<(String, bool, Vec<ToolchainVersion>)> = std::thread::scope(|s| {
+        let handles: Vec<_> = engine_tools
+            .iter()
+            .map(|&(engine, tools)| {
+                let probe = &probe;
+                let engine = engine.to_ascii_lowercase();
+                let is_advertised = advertised.contains(&engine);
+                s.spawn(move || {
+                    let mut toolchains = Vec::new();
+                    for &(tool, args) in tools {
+                        if let Some(version) = probe(tool, args) {
+                            toolchains.push(ToolchainVersion {
+                                tool: tool.to_string(),
+                                version,
+                            });
+                        }
+                    }
+                    (engine, is_advertised, toolchains)
+                })
+            })
+            .collect();
+        handles.into_iter().filter_map(|h| h.join().ok()).collect()
+    });
+
     let mut seen = HashSet::new();
     let mut engines = Vec::new();
 
-    for &(engine, tools) in engine_tools {
-        let engine = engine.to_ascii_lowercase();
-        let is_advertised = advertised.contains(&engine);
-        let mut toolchains = Vec::new();
-        for &(tool, args) in tools {
-            if let Some(version) = probe(tool, args) {
-                toolchains.push(ToolchainVersion {
-                    tool: tool.to_string(),
-                    version,
-                });
-            }
-        }
-
+    for (engine, is_advertised, toolchains) in probed {
         let available = is_advertised;
         if available || !toolchains.is_empty() {
             seen.insert(engine.clone());
