@@ -919,10 +919,13 @@ async fn tools_call_times_out_with_typed_error_under_budget() {
     write(&ws, "src/lib.rs", "pub fn a() {}\n");
     commit(&ws);
 
-    // Gateway that sleeps past the requested timeout
-    let remote = scripted_gateway(Arc::new(|_, _| {
-        std::thread::sleep(std::time::Duration::from_secs(3));
-        serde_json::Value::Null
+    // Leave the definition unanswered without blocking the runtime's deadline timer.
+    let remote = scripted_gateway(Arc::new(|method, _| {
+        if method == "textDocument/definition" {
+            serde_json::json!({ "prod-code/no-response": true })
+        } else {
+            serde_json::Value::Null
+        }
     }))
     .await;
 
@@ -956,7 +959,10 @@ async fn tools_call_times_out_with_typed_error_under_budget() {
         .pointer("/result/content/0/text")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    assert!(text.contains("timed out after"), "{text}");
+    assert!(
+        text.contains("code_definition did not finish within 1000 ms"),
+        "{text}"
+    );
 }
 
 /// Issue #1065: caller-supplied `timeout_secs` governs tool execution and is not clamped to 150s.
@@ -1009,6 +1015,7 @@ fn resolve_tool_call_timeout_honors_caller_override_or_defaults_to_mcp_ceiling()
 async fn code_definition_reports_locations_or_says_there_are_none() {
     let ws = workspace();
     let lib = write(&ws, "src/lib.rs", "pub fn a() {}\n");
+    write(&ws, "src/empty.rs", "// no declarations\n");
     commit(&ws);
     let path = lib.clone();
     let remote = scripted_gateway(Arc::new(move |method, _| match method {
@@ -1044,7 +1051,17 @@ async fn code_definition_reports_locations_or_says_there_are_none() {
     )
     .await
     .expect("the query runs");
-    assert_eq!(text_of(&none), "No definition found.");
+    assert!(text_of(&none).contains("syntax-only"), "{}", text_of(&none));
+    assert!(text_of(&none).contains("pub fn a() {}"));
+    let absent = execute_tool(
+        empty_remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({ "path": "src/empty.rs", "line": 1, "character": 1 }),
+    )
+    .await
+    .expect("the empty-file query runs");
+    assert_eq!(text_of(&absent), "No definition found.");
 }
 
 #[tokio::test]

@@ -222,7 +222,7 @@ async fn review9_swift_nonunit_grouped_types_keep_value_returns() {
         ("(() -> Void)", "{}"),
     ] {
         let before = format!(
-            "class C {{\n    var value: {result} = {value}\n    static func same(c: C) -> {result} {{ c.value }}\n}}\nC.same(c: C())\n"
+            "class C {{\n    var value: {result} = {value}\n    static func same(c: C) -> {result} {{ c.value }}\n}}\n_ = C.same(c: C())\n"
         );
         check(&before, true, "").await;
     }
