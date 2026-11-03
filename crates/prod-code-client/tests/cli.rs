@@ -487,15 +487,19 @@ async fn handle_client(
                     .send(WireMessage::ShadowRunResponse(ShadowRunResponse {
                         server_workspace_root: req.client_workspace_root,
                         mode: "overlay".to_string(),
-                        results: vec![ShadowHypothesisResult {
-                            name: "hypo1".to_string(),
-                            exit_code: Some(0),
-                            duration_ms: 15,
-                            timed_out: false,
-                            error: None,
-                            output_tail: Some(b"all 5 tests passed\n".to_vec()),
-                            output_len: 19,
-                        }],
+                        results: req
+                            .hypotheses
+                            .into_iter()
+                            .map(|hypothesis| ShadowHypothesisResult {
+                                name: hypothesis.name,
+                                exit_code: Some(0),
+                                duration_ms: 15,
+                                timed_out: false,
+                                error: None,
+                                output_tail: Some(b"all 5 tests passed\n".to_vec()),
+                                output_len: 19,
+                            })
+                            .collect(),
                         error: None,
                     }))
                     .await?;
@@ -1043,7 +1047,15 @@ async fn cli_definition_null_returns_typed_error_not_null() {
     let ws = make_workspace();
     let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
 
-    let out = run_cli(&ws, gw.addr, &["def", "src/lib.rs", "1", "12"]).await;
+    let fallback = run_cli(&ws, gw.addr, &["def", "src/lib.rs", "1", "12"]).await;
+    assert!(fallback.status.success(), "{}", stderr_of(&fallback));
+    assert!(
+        stdout_of(&fallback).contains("Order"),
+        "{}",
+        stdout_of(&fallback)
+    );
+    std::fs::write(ws.root().join("src/empty.rs"), "// No declaration here.\n").unwrap();
+    let out = run_cli(&ws, gw.addr, &["def", "src/empty.rs", "1", "1"]).await;
     assert!(!out.status.success());
     let stdout = stdout_of(&out);
     let stderr = stderr_of(&out);
@@ -1757,6 +1769,8 @@ async fn cli_nested_swift_exec_retains_discovered_macos_gateway_with_external_to
     std::fs::write(nested_swift.join("main.swift"), "print(\"hello swift\")\n").unwrap();
 
     let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+    *gw.reported_platform.lock().unwrap() = Some("macos aarch64".to_string());
+    *gw.detected_engines.lock().unwrap() = Some(vec!["swift".to_string()]);
     let home = tempfile::tempdir().expect("home");
     let placement_dir = home.path().join(".local/share/prod_code");
     std::fs::create_dir_all(&placement_dir).unwrap();
@@ -1775,6 +1789,8 @@ async fn cli_nested_swift_exec_retains_discovered_macos_gateway_with_external_to
 
     let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
         .args([
+            "--remote",
+            &gw.addr.to_string(),
             "exec",
             "--env",
             "PYTHONUNBUFFERED=1",
@@ -1865,6 +1881,8 @@ async fn cli_nested_swift_file_position_command_selects_nested_engine() {
         }
     })
     .await;
+    *gw.reported_platform.lock().unwrap() = Some("macos aarch64".to_string());
+    *gw.detected_engines.lock().unwrap() = Some(vec!["swift".to_string()]);
     let home = tempfile::tempdir().expect("home");
     let placement_dir = home.path().join(".local/share/prod_code");
     std::fs::create_dir_all(&placement_dir).unwrap();
@@ -1884,7 +1902,14 @@ async fn cli_nested_swift_file_position_command_selects_nested_engine() {
     // From the Rust checkout root, run `callers nested_swift/main.swift 1 6`.
     // The positional file argument must be recognized as a project hint, routing to gw.addr (swift).
     let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
-        .args(["callers", "nested_swift/main.swift", "1", "6"])
+        .args([
+            "--remote",
+            &gw.addr.to_string(),
+            "callers",
+            "nested_swift/main.swift",
+            "1",
+            "6",
+        ])
         .env_remove("PROD_CODE_REMOTE")
         .env("HOME", home.path())
         .current_dir(ws.root())
@@ -1914,7 +1939,9 @@ async fn cli_nested_swift_migrate_type_with_path_selects_nested_engine() {
     std::fs::write(&main_swift, "struct Foo {\n    var x: Int\n}\n").unwrap();
 
     let gw = MockGateway::start(|method, _| {
-        if method == "migrate_type" {
+        if method == "textDocument/diagnostic" {
+            answers::no_diagnostics()
+        } else if method == "migrate_type" {
             serde_json::json!({
                 "outcome": {
                     "rewritten_files": 0,
@@ -1928,6 +1955,8 @@ async fn cli_nested_swift_migrate_type_with_path_selects_nested_engine() {
         }
     })
     .await;
+    *gw.reported_platform.lock().unwrap() = Some("macos aarch64".to_string());
+    *gw.detected_engines.lock().unwrap() = Some(vec!["swift".to_string()]);
     let home = tempfile::tempdir().expect("home");
     let placement_dir = home.path().join(".local/share/prod_code");
     std::fs::create_dir_all(&placement_dir).unwrap();
@@ -1948,6 +1977,8 @@ async fn cli_nested_swift_migrate_type_with_path_selects_nested_engine() {
     // The --path argument must be recognized as a project hint, routing to gw.addr (swift).
     let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
         .args([
+            "--remote",
+            &gw.addr.to_string(),
             "migrate-type",
             "Foo::x",
             "--to",
@@ -1969,6 +2000,11 @@ async fn cli_nested_swift_migrate_type_with_path_selects_nested_engine() {
         "migrate-type with --path on nested swift file must route via swift placement:\nstdout: {}\nstderr: {}",
         stdout_of(&out),
         stderr_of(&out)
+    );
+    assert!(
+        std::fs::read_to_string(&main_swift)
+            .unwrap()
+            .contains("var x: String")
     );
 }
 
@@ -3829,6 +3865,15 @@ where
             // The engine check of a single named node (#1067) is its own status connection:
             // it is answered and not counted, so the script's connections stay the session's.
             let first = match framed.next().await {
+                Some(Ok(WireMessage::ClusterRequest)) => {
+                    let _ = framed
+                        .send(WireMessage::ClusterResponse(ClusterResponse {
+                            this_node: addr.to_string(),
+                            nodes: Vec::new(),
+                        }))
+                        .await;
+                    continue;
+                }
                 Some(Ok(WireMessage::StatusRequest)) => {
                     let _ = framed
                         .send(WireMessage::StatusResponse(StatusResponse {
@@ -4184,6 +4229,7 @@ async fn lsp_fails_loudly_when_the_gateway_goes_away() {
     .await;
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
         .args(["lsp", "--remote", &addr.to_string()])
+        .env("PROD_CODE_RECONNECT", "false")
         .env("HOME", home.path())
         .env("XDG_CACHE_HOME", home.path().join(".cache"))
         .current_dir(ws.root())
@@ -4451,6 +4497,20 @@ where
                 );
                 while let Some(Ok(message)) = framed.next().await {
                     let (event, reply) = match message {
+                        WireMessage::ClusterRequest => (
+                            "cluster".to_string(),
+                            Some(WireMessage::ClusterResponse(ClusterResponse {
+                                this_node: addr.to_string(),
+                                nodes: Vec::new(),
+                            })),
+                        ),
+                        WireMessage::StatusRequest => (
+                            "status".to_string(),
+                            Some(WireMessage::StatusResponse(StatusResponse {
+                                detected_engines: vec!["rust".to_string()],
+                                ..Default::default()
+                            })),
+                        ),
                         WireMessage::SyncProbeRequest(request) => (
                             format!("probe {}", request.base_workspace_name.unwrap_or_default()),
                             Some(WireMessage::SyncProbeResponse(SyncProbeResponse {
@@ -4559,8 +4619,23 @@ where
     (addr, seen)
 }
 
+fn remember_lsp_fixture(home: &std::path::Path, root: &std::path::Path, addr: SocketAddr) {
+    let identity = prod_code_mcp::sync::workspace_identity(root);
+    let name = identity.base.unwrap_or(identity.name);
+    let directory = home.join(".local/share/prod_code");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("placement.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "workspaces": { name: addr.to_string() }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
 /// An authenticated redirect reconnects even when transient reconnects are disabled,
-/// and only the TLS-authenticated target receives the post-handshake workspace probe.
+/// and only the TLS-authenticated target receives sync on a separate post-handshake connection.
 #[tokio::test]
 async fn lsp_mid_session_redirect_reconnects_to_authenticated_target_without_flag() {
     use tokio::io::AsyncWriteExt;
@@ -4614,8 +4689,10 @@ async fn lsp_mid_session_redirect_reconnects_to_authenticated_target_without_fla
     )
     .await;
 
+    remember_lsp_fixture(home.path(), &ws.root(), initial_addr);
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
-        .args(["lsp", "--remote", &initial_addr.to_string()])
+        .args(["lsp", "--remote", &format!("{initial_addr},{target_addr}")])
+        .env("PROD_CODE_RECONNECT", "false")
         .env("HOME", home.path())
         .env("XDG_CACHE_HOME", home.path().join(".cache"))
         .env("PROD_CODE_TLS_MODE", "auto")
@@ -4699,17 +4776,33 @@ async fn lsp_mid_session_redirect_reconnects_to_authenticated_target_without_fla
         .await
         .expect("trigger redirect");
 
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    let restored = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             let seen = target_events.lock().expect("target log").clone();
-            if seen.iter().any(|(_, event)| event.starts_with("probe ")) {
+            if seen.iter().enumerate().any(|(index, (connection, event))| {
+                (event.starts_with("sync ") || event.starts_with("probe "))
+                    && seen[..index].iter().any(|(earlier, event)| {
+                        earlier != connection && event.starts_with("handshake ")
+                    })
+            }) {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     })
-    .await
-    .expect("authenticated target receives the post-handshake workspace probe");
+    .await;
+    if restored.is_err() {
+        child.start_kill().expect("stop failed fixture child");
+        let output = child
+            .wait_with_output()
+            .await
+            .expect("reap failed fixture child");
+        panic!(
+            "authenticated redirect did not restore: events={:?}; stderr={}",
+            target_events.lock().unwrap(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     stdin
         .write_all(
@@ -4738,11 +4831,17 @@ async fn lsp_mid_session_redirect_reconnects_to_authenticated_target_without_fla
         .iter()
         .position(|(_, event)| event.starts_with("handshake "))
         .expect("target must receive handshake");
-    let probe_index = seen
+    let sync_index = seen
         .iter()
-        .position(|(_, event)| event.starts_with("probe "))
-        .expect("target must receive a workspace probe");
-    assert!(handshake_index < probe_index, "{seen:?}");
+        .enumerate()
+        .find_map(|(index, (connection, event))| {
+            (index > handshake_index
+                && (event.starts_with("sync ") || event.starts_with("probe "))
+                && *connection != seen[handshake_index].0)
+                .then_some(index)
+        })
+        .expect("target must receive sync on a separate connection after handshake");
+    assert!(handshake_index < sync_index, "{seen:?}");
 
     drop(stdin);
     let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
@@ -4789,8 +4888,10 @@ async fn lsp_mid_session_redirect_rejects_unauthenticated_target() {
     )
     .await;
 
+    remember_lsp_fixture(home.path(), &ws.root(), addr1);
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
-        .args(["lsp", "--remote", &addr1.to_string()])
+        .args(["lsp", "--remote", &format!("{addr1},{addr2}")])
+        .env("PROD_CODE_RECONNECT", "false")
         .env("HOME", home.path())
         .env("XDG_CACHE_HOME", home.path().join(".cache"))
         .env("PROD_CODE_TLS_MODE", "auto")
@@ -4884,12 +4985,25 @@ async fn lsp_mid_session_redirect_rejects_unauthenticated_target() {
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    drop(stdout);
-    drop(stdin);
-    let output = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait_with_output())
+    if tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
         .await
-        .expect("client refuses the unauthenticated redirect")
-        .expect("client status");
+        .is_err()
+    {
+        child.start_kill().expect("stop failed fixture child");
+        let output = child
+            .wait_with_output()
+            .await
+            .expect("reap failed fixture child");
+        panic!(
+            "unauthenticated redirect did not exit: initial={:?}; target={:?}; stderr={}",
+            _seen1.lock().unwrap(),
+            seen2.lock().unwrap(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let output = child.wait_with_output().await.expect("client status");
+    drop(stdin);
+    drop(stdout);
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -4962,7 +5076,7 @@ async fn lsp_watchdog_pings_idle_session_periodically() {
 }
 
 #[tokio::test]
-async fn lsp_in_flight_requests_are_replayed_and_resolved_after_reconnect() {
+async fn lsp_stale_in_flight_requests_allow_a_fresh_editor_retry_after_reconnect() {
     use tokio::io::AsyncWriteExt;
     let ws = make_workspace();
     let home = tempfile::tempdir().expect("home");
@@ -5059,10 +5173,29 @@ async fn lsp_in_flight_requests_are_replayed_and_resolved_after_reconnect() {
         .await
         .expect("hover");
 
-    // Editor should receive the hover response with id 42 after automatic reconnect and replay!
+    // The interrupted request is stale; the editor receives its error after state restoration.
     let hover_resp = read_lsp_message(&mut stdout).await;
     assert_eq!(hover_resp["id"], 42);
-    assert_eq!(hover_resp["result"]["contents"], "replayed hover success");
+    assert_eq!(hover_resp["error"]["code"], -32801, "{hover_resp}");
+    assert!(hover_resp.get("result").is_none(), "{hover_resp}");
+    assert!(
+        !seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(connection, event)| *connection == 2 && event == "lsp textDocument/hover")
+    );
+    // The editor retries using a new request ID against restored documents.
+    stdin.write_all(send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 43, "method": "textDocument/hover",
+        "params": { "textDocument": { "uri": test_uri }, "position": { "line": 0, "character": 7 } }
+    })).as_bytes()).await.expect("fresh hover retry");
+    let fresh_hover = read_lsp_message(&mut stdout).await;
+    assert_eq!(fresh_hover["id"], 43, "{fresh_hover}");
+    assert_eq!(
+        fresh_hover["result"]["contents"], "replayed hover success",
+        "{fresh_hover}"
+    );
 
     let events = seen.lock().expect("seen").clone();
     let conn2_events: Vec<String> = events
