@@ -95,6 +95,7 @@ async fn symbol_and_outline_queries() {
                 answers::document_symbol("label", 12, 5, 7, 8),
             ]),
             "textDocument/diagnostic" => answers::no_diagnostics(),
+            "prod-code/shadow-run" => json!({ "exit_code": 0 }),
             _ => Value::Null,
         })
         .await

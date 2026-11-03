@@ -35,6 +35,7 @@ async fn navigation_workspace_selector_rejects_unrelated_and_invalid_roots() {
         ),
         ("code_symbols", serde_json::json!({ "query": "target_fn" })),
         ("code_outline", serde_json::json!({ "path": "src/lib.rs" })),
+        ("code_source", serde_json::json!({ "path": "src/lib.rs" })),
         ("code_grep", serde_json::json!({ "pattern": "fn" })),
         (
             "code_references",
@@ -123,8 +124,8 @@ async fn navigation_workspace_selector_rejects_unrelated_and_invalid_roots() {
     assert!(!format!("{err:#}").contains("Git worktree"), "{err:#}");
 
     // Unsupported tools continue to reject explicit workspace selection.
-    // The mutation catalog accepts it since #1811; a gate, a slice and a source read do not.
-    for unsupported in ["code_lint", "code_check", "code_slice", "code_source"] {
+    // The mutation catalog accepts it since #1811 and source reads since #1830.
+    for unsupported in ["code_lint", "code_check", "code_slice"] {
         let err = execute_tool(
             nowhere(),
             &trees.ws.root(),

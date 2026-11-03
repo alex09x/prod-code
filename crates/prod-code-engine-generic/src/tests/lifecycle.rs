@@ -114,14 +114,16 @@ sys.exit(7)
     .await
     .expect("initialize before the fake server exits");
 
-    tokio::time::timeout(Duration::from_secs(4), async {
-        while engine.is_alive() {
+    let details = tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            if let Some(details) = engine.exit_details().await {
+                break details;
+            }
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("the fake server exits");
-    let details = engine.exit_details().await.expect("exit details");
+    .expect("the fake server exits and its status becomes observable");
     assert!(details.contains("exit code 7"), "{details}");
     assert!(
         details.contains("partial diagnostic before timeout"),
