@@ -74,17 +74,9 @@ async fn a_semicolon_in_a_comment_does_not_end_a_grouped_use() {
             "pub mod m;\npub use m::{ // public API; keep sorted\n    scan,\n};\n",
         ),
         ("src/m.rs", "pub fn scan() {}\n"),
-        (
-            "src/fields.rs",
-            "use crate::m; // one; two\npub struct Holder {\n    pub scan: u8,\n}\n",
-        ),
     ]);
     let root = ws.root();
-    let (lib, m, fields) = (
-        root.join("src/lib.rs"),
-        root.join("src/m.rs"),
-        root.join("src/fields.rs"),
-    );
+    let (lib, m) = (root.join("src/lib.rs"), root.join("src/m.rs"));
     let (cl, cm) = (lib.clone(), m.clone());
     let gateway = ScriptedGateway::start(move |method, _params| match method {
         "workspace/symbol" => serde_json::json!([
@@ -100,6 +92,12 @@ async fn a_semicolon_in_a_comment_does_not_end_a_grouped_use() {
     assert_eq!((hit.path, hit.line, hit.col), (m.clone(), 1, 8));
 
     // A field below a one-line `use` with a commented `;` is a declaration of its own.
+    let fields = root.join("src/fields.rs");
+    std::fs::write(
+        &fields,
+        "use crate::m; // one; two\npub struct Holder {\n    pub scan: u8,\n}\n",
+    )
+    .expect("write fields.rs");
     let (cm, cf) = (m.clone(), fields.clone());
     let gateway = ScriptedGateway::start(move |method, _params| match method {
         "workspace/symbol" => serde_json::json!([
@@ -112,5 +110,41 @@ async fn a_semicolon_in_a_comment_does_not_end_a_grouped_use() {
     let err = prod_code_mcp::tools::resolve_symbol(gateway.addr(), &root, "scan", None)
         .await
         .expect_err("the field is a second declaration");
+    assert!(format!("{err:#}").contains("ambiguous"), "{err:#}");
+}
+
+#[tokio::test]
+async fn forced_timeout_resolves_reexport_definition_and_detects_ambiguity_once_field_exists() {
+    let ws = Workspace::new(&[
+        (
+            "src/lib.rs",
+            "pub mod m;\npub use m::{ // public API; keep sorted\n    scan,\n};\n",
+        ),
+        ("src/m.rs", "pub fn scan() {}\n"),
+    ]);
+    let root = ws.root();
+    let m = root.join("src/m.rs");
+
+    // Phase 1: when primary workspace/symbol times out, the fallback scanner resolves the function.
+    let gateway = ScriptedGateway::start(move |method, _params| match method {
+        "workspace/symbol" => serde_json::json!({ "prod-code/no-response": true }),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+    let hit = prod_code_mcp::tools::resolve_symbol(gateway.addr(), &root, "scan", None)
+        .await
+        .expect("fallback resolves the function during timeout");
+    assert_eq!((hit.path, hit.line, hit.col), (m, 1, 8));
+
+    // Phase 2: once fields.rs exists on disk, timeout fallback detects the real ambiguity.
+    let fields = root.join("src/fields.rs");
+    std::fs::write(
+        &fields,
+        "use crate::m; // one; two\npub struct Holder {\n    pub scan: u8,\n}\n",
+    )
+    .expect("write fields.rs");
+    let err = prod_code_mcp::tools::resolve_symbol(gateway.addr(), &root, "scan", None)
+        .await
+        .expect_err("the field is a second declaration even under timeout");
     assert!(format!("{err:#}").contains("ambiguous"), "{err:#}");
 }
