@@ -25,9 +25,12 @@ use crate::types::{PendingRequest, lock_unpoisoned};
 async fn exit_details_waits_for_final_stderr_drain() {
     let dir = tempfile::tempdir().expect("tempdir");
     let script = dir.path().join("exiting-server.py");
+    let start_exit = dir.path().join("start-exit");
+    let finish_exit = dir.path().join("finish-exit");
     std::fs::write(
         &script,
-        r#"import json, sys
+        r#"import json, os, sys, time
+from pathlib import Path
 length = 0
 while True:
     line = sys.stdin.buffer.readline()
@@ -41,9 +44,14 @@ request = json.loads(sys.stdin.buffer.read(length))
 response = json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": {"capabilities": {}}}).encode()
 sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(response) + response)
 sys.stdout.buffer.flush()
+while not Path(sys.argv[1]).exists():
+    time.sleep(0.001)
+os.close(sys.stdout.fileno())
 sys.stderr.write("final diagnostic from startup\n")
 sys.stderr.flush()
-sys.exit(7)
+while not Path(sys.argv[2]).exists():
+    time.sleep(0.001)
+os._exit(7)
 "#,
     )
     .expect("fake server");
@@ -52,26 +60,49 @@ sys.exit(7)
         dir.path(),
         GenericLspConfig {
             command: "python3".to_string(),
-            args: vec![script.to_string_lossy().into_owned()],
+            args: vec![
+                script.to_string_lossy().into_owned(),
+                start_exit.to_string_lossy().into_owned(),
+                finish_exit.to_string_lossy().into_owned(),
+            ],
             ..Default::default()
         },
     )
     .await
     .expect("initialize before the fake server exits");
 
+    // Pause EOF retirement at its capability reset until the child can exit naturally.
+    let capabilities_guard = engine.capabilities.read().await;
+    std::fs::write(&start_exit, b"").expect("let the server close stdout");
     tokio::time::timeout(Duration::from_secs(2), async {
         while engine.is_alive() {
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("the fake server exits");
-    let details = engine.exit_details().await.expect("exit details");
+    .expect("the fake server closes stdout");
+    assert!(
+        engine.exit_details().await.is_none(),
+        "stdout EOF must not be confused with process completion"
+    );
+    std::fs::write(&finish_exit, b"").expect("let the server exit");
+    let details = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(details) = engine.exit_details().await {
+                break details;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the fake server exit status becomes observable");
+    drop(capabilities_guard);
     assert!(details.contains("exit code 7"), "{details}");
     assert!(
         details.contains("final diagnostic from startup"),
         "{details}"
     );
+    assert!(!details.contains("incomplete drain"), "{details}");
 }
 
 #[tokio::test]
