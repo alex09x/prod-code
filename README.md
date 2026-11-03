@@ -265,6 +265,10 @@ resolve against that worktree. Omitting `workspace` uses the MCP session's confi
 workspace. For these calls, use filesystem paths without `..` components; file URIs are
 not accepted.
 
+`code_source` and `prod-code source <path> --line N --context K` read checkout files
+directly with the existing byte limit and line window; their language server is not
+required. External library and SDK paths retain gateway routing and access checks.
+
 **Find code**
 
 | tool | what it does |

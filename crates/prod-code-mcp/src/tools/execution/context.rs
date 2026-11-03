@@ -237,11 +237,24 @@ fn git_path(root: &Path, args: &[&str]) -> Result<PathBuf> {
     Ok(PathBuf::from(value))
 }
 
-/// The path a tool is routed by. A text search reads the synced copy, which every node holding
-/// the workspace has: a Markdown file needs no node that serves Markdown, nor a Swift one a Mac
-/// (#1558).
-pub(crate) fn routed_path<'a>(tool_name: &str, path: Option<&'a str>) -> Option<&'a str> {
-    (tool_name != "code_grep").then_some(path).flatten()
+/// Text search and checkout source reads need no target-language analyzer (#1558, #1818).
+/// External SDK/cache sources retain their node affinity. The handler reports local path
+/// errors itself, so those do not turn into unrelated language-server requirements.
+pub(crate) fn routed_path<'a>(
+    tool_name: &str,
+    path: Option<&'a str>,
+    root: &Path,
+) -> Option<&'a str> {
+    if tool_name == "code_grep"
+        || (tool_name == "code_source"
+            && path.is_some_and(|path| {
+                !matches!(crate::remote_fs::checkout_source_path(root, path), Ok(None))
+            }))
+    {
+        None
+    } else {
+        path
+    }
 }
 
 #[cfg(test)]

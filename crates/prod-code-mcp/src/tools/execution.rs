@@ -302,7 +302,7 @@ fn execute_selected<'a>(
         let remote = crate::cluster::route_for_path(
             remote,
             workspace_root,
-            routed_path(tool_name, initial_path.as_deref()),
+            routed_path(tool_name, initial_path.as_deref(), workspace_root),
         );
         let remote = match reference_budget {
             Some(budget) => match tokio::time::timeout_at(budget.deadline, remote).await {
@@ -336,7 +336,7 @@ fn execute_selected<'a>(
         let remote = crate::cluster::route_for_path(
             remote,
             workspace_root,
-            routed_path(tool_name, final_path.as_deref()),
+            routed_path(tool_name, final_path.as_deref(), workspace_root),
         );
         let remote = match reference_budget {
             Some(budget) => match tokio::time::timeout_at(budget.deadline, remote).await {
