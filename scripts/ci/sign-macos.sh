@@ -93,4 +93,4 @@ r = json.loads((Path(os.environ['SIGNING_WORK']) / 'notary-log.json').read_text(
 assert r.get('status') == 'Accepted', 'Notarization log is not Accepted'
 print('Notarization log issues:', len(r.get('issues') or []))
 PY
-tar -cf "$RUNNER_TEMP/signed-assets.tar" -C "$assets" .
+COPYFILE_DISABLE=1 tar -cf "$RUNNER_TEMP/signed-assets.tar" -C "$assets" .

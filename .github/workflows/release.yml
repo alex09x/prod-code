@@ -71,7 +71,7 @@ jobs:
           - runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             artifact: native-linux-aarch64
-          - runner: macos-14
+          - runner: macos-15
             target: aarch64-apple-darwin
             artifact: native-macos-unsigned
     steps:
@@ -108,7 +108,7 @@ jobs:
 
   sign:
     needs: [plan, build]
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 40
     environment: release-signing
     steps:

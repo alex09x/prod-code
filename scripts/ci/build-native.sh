@@ -16,7 +16,9 @@ actual=$(rustc -vV | awk '/^host:/ { print $2 }')
 test "$actual" = "$RELEASE_TARGET"
 export CARGO_INCREMENTAL=0
 export CARGO_ENCODED_RUSTFLAGS=''
-cargo build --release --locked -p prod-code-client -p prod-code-gateway --bins -j 2
+jobs=2
+if test "$(uname -s)" = Darwin; then jobs=1; fi
+cargo build --release --locked -p prod-code-client -p prod-code-gateway --bins -j "$jobs"
 out="$RUNNER_TEMP/native-assets"
 mkdir -p "$out"
 for binary in prod-code prod-code-server; do
@@ -29,4 +31,4 @@ if test "$(uname -s)" = Linux; then
         "$out/prod-code-$RELEASE_TARGET" "$out/prod-code-server-$RELEASE_TARGET"
 fi
 file "$out"/*
-tar -cf "$RUNNER_TEMP/native-assets.tar" -C "$out" .
+COPYFILE_DISABLE=1 tar -cf "$RUNNER_TEMP/native-assets.tar" -C "$out" .

@@ -88,6 +88,20 @@ def emit(name, value):
         print(f"{name}={encoded}")
 
 
+def run_tests(root, row):
+    base = ["cargo", "test", "--locked", "-p", row["package"]]
+    failed = []
+    for target in row["targets"]:
+        selector = (
+            ["--lib"]
+            if row["kind"] == "lib"
+            else (["--doc"] if row["kind"] == "doc" else [f"--{row['kind']}", target])
+        )
+        if subprocess.run(base + selector, cwd=root, check=False).returncode:
+            failed.append(target)
+    return failed
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=["tests", "release", "run-tests"])
@@ -111,16 +125,10 @@ def main():
             emit(name, value)
     else:
         row = json.loads(os.environ["TEST_SHARD"])
-        base = ["cargo", "test", "--locked", "-p", row["package"]]
-        for target in row["targets"]:
-            selector = (
-                ["--lib"]
-                if row["kind"] == "lib"
-                else (
-                    ["--doc"] if row["kind"] == "doc" else [f"--{row['kind']}", target]
-                )
-            )
-            subprocess.run(base + selector, cwd=args.root, check=True)
+        failed = run_tests(args.root, row)
+        if failed:
+            print("Failed targets:", ", ".join(failed))
+            raise SystemExit(1)
 
 
 if __name__ == "__main__":

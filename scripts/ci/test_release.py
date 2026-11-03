@@ -15,8 +15,9 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from plan import release_input, test_matrix
+from plan import release_input, run_tests, test_matrix
 from publish import EXPECTED, collect
 
 
@@ -63,6 +64,17 @@ class ReleaseBoundaries(unittest.TestCase):
         for tag in ["--help", "v1.2.3;echo nope", "main", "v1.2.3\n"]:
             with self.subTest(tag=tag), self.assertRaises(ValueError):
                 release_input(self.root, tag)
+
+    def test_a_failed_target_does_not_hide_later_tests_in_its_shard(self):
+        row = {"package": "demo", "kind": "test", "targets": ["first", "second"]}
+        results = [
+            subprocess.CompletedProcess([], 101),
+            subprocess.CompletedProcess([], 0),
+        ]
+        with patch("plan.subprocess.run", side_effect=results) as run:
+            self.assertEqual(run_tests(self.root, row), ["first"])
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args_list[1].args[0][-2:], ["--test", "second"])
 
     def fixture_archive(self, extra=None, tamper=False, status="Accepted"):
         incoming = self.root / "incoming"

@@ -13,6 +13,16 @@ fit standard runner disks. Each target runs once; existing ignored/live tests
 remain ignored and are visible in Cargo's summaries. This does not claim GUI,
 LAN or opt-in real-language-server acceptance.
 
+Runtime shards provision the pinned language-server tools used by the existing
+tests (gopls, TypeScript server, basedpyright and Ruff), plus the selected Rust
+toolchain's analyzer and standard-library sources. A missing required tool is
+an error, not a skipped passing test. Each shard continues after a failed target
+and reports all its failed targets at the end.
+The overlay lifecycle tests also require unprivileged user namespaces. Their
+Ubuntu24.04 restriction is disabled only in disposable, unprivileged CI VMs;
+the provisioning script refuses local or self-hosted execution. No signing
+secret is present in those jobs, and no setting is changed on a production node.
+
 Clippy warnings are reported without `-D warnings`: the repository has existing
 warnings and this migration does not conceal them or call strict lint clean.
 The final `ci` job requires every planned job to succeed. Source changes still

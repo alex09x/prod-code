@@ -19,6 +19,7 @@ env:
   CARGO_PROFILE_TEST_DEBUG: '0'
   CARGO_BUILD_JOBS: '2'
   RUSTUP_TOOLCHAIN: '1.99.1'
+  GOTOOLCHAIN: go1.27.1
 
 jobs:
   plan:
@@ -31,10 +32,19 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+      - name: Fetch complete workspace dependencies before sharing the cache
+        run: cargo fetch --locked
       - id: plan
         run: python3 scripts/ci/plan.py tests
 
   lint:
+    needs: plan
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -48,6 +58,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
           key: cargo-registry-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+      - name: Validate workflow definitions
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck= -pyflakes= .github/workflows/ci.yml .github/workflows/release.yml
       - run: cargo fmt --all -- --check
       - name: Clippy (existing warnings remain visible)
         run: cargo clippy --workspace --all-targets --locked
@@ -74,6 +86,18 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
           key: cargo-registry-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+      - name: Install the real Rust analyzer test prerequisites
+        if: matrix.kind != 'doc' && matrix.package != 'prod-code-protocol'
+        run: rustup component add rust-src rust-analyzer
+      - name: Cache the pinned Go language server
+        if: matrix.kind != 'doc' && matrix.package != 'prod-code-protocol'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/bin/gopls
+          key: gopls-${{ runner.os }}-${{ runner.arch }}-0.23.0-go1.27.1
+      - name: Provision real-server test prerequisites
+        if: matrix.kind != 'doc' && matrix.package != 'prod-code-protocol'
+        run: bash scripts/ci/provision-test-tools.sh
       - name: Run existing tests in this shard
         env:
           TEST_SHARD: ${{ toJSON(matrix) }}
