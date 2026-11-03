@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **Owned DTO Extraction** (`crates/prod-code-mcp`, #1812): Extract-function distinguishes locally owned, uniquely declared non-generic structs from borrows of the mutable receiver. Field accesses no longer count as captures of same-named enclosing locals; actual borrow conflicts remain refused.
 - **Ripgrep Filename Discovery Guard** (`scripts/hooks`, #1803): `rg --files` is treated as filename enumeration, including clustered glob flags. Search-mode overrides and option values that contain `--files` retain normal source-content interception. The argument parser is included in the versioned hook bundle.
 
 ## v0.3.49 — 2026-11-02
