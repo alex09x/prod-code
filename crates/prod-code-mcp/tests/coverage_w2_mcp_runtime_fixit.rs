@@ -402,7 +402,17 @@ async fn the_fix_runs_in_the_project_the_hint_is_in() {
     let fixed = fix(addr, &ws, Some(&hint), VerifyKind::Lint).await.unwrap();
     assert_eq!(fixed.before.language, "python");
     let seen = seen.lock().unwrap();
-    assert_eq!(seen[1].command, RUFF_FIX);
+    assert_eq!(
+        seen[1].command,
+        [
+            "ruff",
+            "check",
+            "app.py",
+            "--fix",
+            "--output-format",
+            "concise"
+        ]
+    );
     assert_eq!(seen[1].subdir.as_deref(), Some("svc"));
 }
 
