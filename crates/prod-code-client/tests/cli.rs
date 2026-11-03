@@ -2244,7 +2244,7 @@ async fn cli_runs_shadow_hypotheses() {
     let ws = make_workspace();
     let spec_path = ws.write(
         "spec.json",
-        r#"{"hypotheses":[{"name":"h1","edits":[{"path":"src/lib.rs","new_text":"pub fn b() {}\n"}]}]}"#,
+        r#"{"hypotheses":[{"name":"h1","edits":[{"path":"src/lib.rs","new_text":"pub fn b() {}\n"}]},{"name":"h2","edits":[{"path":"src/lib.rs","new_text":"pub fn c() {}\n"}]}]}"#,
     );
     let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
 
@@ -2261,7 +2261,9 @@ async fn cli_runs_shadow_hypotheses() {
     )
     .await;
     assert!(out.status.success());
-    assert!(stdout_of(&out).contains("hypo1"));
+    let text = stdout_of(&out);
+    assert!(text.contains("h1") && text.contains("h2"), "{text}");
+    assert!(!text.contains("hypo1"), "{text}");
 }
 
 #[tokio::test]
