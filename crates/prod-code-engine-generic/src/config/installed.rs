@@ -18,11 +18,21 @@ impl GenericLspConfig {
     /// `typescript`), as a short label for the gateway status, or `None` when none of the
     /// candidates is installed.
     pub fn installed_server(engine: &str) -> Option<String> {
+        // Only the command matters here, so TypeScript's is chosen without building its
+        // tsserver initialization options (#1794).
+        let command = match engine {
+            "typescript" => Self::typescript_command(),
+            _ => Self::preset(engine)?.command,
+        };
+        installed_label(&command)
+    }
+
+    /// The preset configuration for every engine except TypeScript.
+    fn preset(engine: &str) -> Option<Self> {
         let config = match engine {
             "cpp" => Self::for_cpp(),
             "swift" => Self::for_swift(),
             "python" => Self::for_python(),
-            "typescript" => Self::for_typescript(),
             "java" => Self::for_java(),
             "kotlin" => Self::for_kotlin(),
             "csharp" => Self::for_csharp(),
@@ -68,25 +78,30 @@ impl GenericLspConfig {
             "assembly" => Self::for_assembly(),
             _ => return None,
         };
-        let command = Path::new(&config.command);
-        let installed = if command.is_absolute() {
-            command.is_file()
-        } else if config.command == "xcrun" {
-            launcher_finds(Path::new("xcrun"), "sourcekit-lsp")
-        } else {
-            which_bin(&config.command).is_ok()
-        };
-        if !installed {
-            return None;
-        }
-        let label = match command.file_name().and_then(|n| n.to_str()) {
-            Some("tsc") | Some("tsgo") => "tsc --lsp".to_string(),
-            Some("xcrun") => "sourcekit-lsp".to_string(),
-            Some(name) => name.to_string(),
-            None => config.command.clone(),
-        };
-        Some(label)
+        Some(config)
     }
+}
+
+/// The status label for a server `command`, or `None` when it is not installed.
+fn installed_label(command: &str) -> Option<String> {
+    let path = Path::new(command);
+    let installed = if path.is_absolute() {
+        path.is_file()
+    } else if command == "xcrun" {
+        launcher_finds(Path::new("xcrun"), "sourcekit-lsp")
+    } else {
+        which_bin(command).is_ok()
+    };
+    if !installed {
+        return None;
+    }
+    let label = match path.file_name().and_then(|n| n.to_str()) {
+        Some("tsc") | Some("tsgo") => "tsc --lsp".to_string(),
+        Some("xcrun") => "sourcekit-lsp".to_string(),
+        Some(name) => name.to_string(),
+        None => command.to_string(),
+    };
+    Some(label)
 }
 
 /// How long a launcher gets to say where a tool is.

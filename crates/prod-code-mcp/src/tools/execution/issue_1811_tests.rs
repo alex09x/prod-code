@@ -156,6 +156,18 @@ async fn issue_1811_unrelated_outside_and_escaping_selections_write_nothing() {
     let main_file = c.main.path("src/lib.rs");
     let mut cases = vec![
         (
+            "code_schema_rename",
+            json!({ "workspace": c.sibling, "repos": [".."], "field": "old",
+                "to": "new", "apply": true }),
+            "cannot combine `workspace` with non-empty `repos`",
+        ),
+        (
+            "code_schema_rename",
+            json!({ "workspace": c.sibling, "repos": [c.main.root(), unrelated.root()],
+                "field": "old", "to": "new", "apply": true }),
+            "cannot combine `workspace` with non-empty `repos`",
+        ),
+        (
             "code_extract_function",
             extract_args(json!({ "workspace": unrelated.root() })),
             "same Git repository",
@@ -246,6 +258,12 @@ fn issue_1811_reads_keep_selection_and_mutations_consume_it() {
     let root = resolve_workspace_root(&c.main.root(), "code_extract_function", &mut args).unwrap();
     assert_eq!(root, c.sibling);
     assert!(args.get("workspace").is_none(), "the selector is consumed");
+    for repos in [json!(null), json!([])] {
+        let mut args = json!({ "workspace": c.sibling, "repos": repos });
+        let root = resolve_workspace_root(&c.main.root(), "code_schema_rename", &mut args)
+            .expect("an empty repo list stays within the selected checkout");
+        assert_eq!(root, c.sibling);
+    }
     assert_eq!(args["path"], "src/lib.rs");
     let mut args = extract_args(json!({}));
     let root = resolve_workspace_root(&c.main.root(), "code_extract_function", &mut args).unwrap();

@@ -164,7 +164,11 @@ prod-code update --check   # check for newer releases on GitHub
 prod-code update           # download, verify SHA-256 integrity, and replace binary in-place
 ```
 
-When `prod-code` is updated, running agent sessions automatically pick up new MCP tools without requiring an IDE or agent restart (dynamic re-exec on binary change via MCP `notifications/tools/list_changed`).
+When `prod-code` is updated, its MCP process re-executes between requests and announces
+`notifications/tools/list_changed`. The agent host must refresh its exposed tool catalog;
+some long-running sessions retain the old list. An updated executable or installed skill
+does not prove that a running host can call a newly added tool. See
+[catalog discovery and refresh](docs/mcp-catalog-refresh.md) for verification and recovery.
 
 ### Registering with AI Coding Agents
 
