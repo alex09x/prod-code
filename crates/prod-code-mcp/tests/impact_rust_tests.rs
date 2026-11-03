@@ -614,6 +614,31 @@ async fn native_rust_analyzer_selects_and_executes_real_tests_through_helpers() 
         ),
     );
 
+    // Syntax outlines do not resolve the cold standard-library graph. Establish semantic
+    // readiness before asserting completeness within impact's unchanged interactive budget.
+    let source = root.join("src/lib.rs");
+    let mut ready = prod_code_mcp::session::LspSession::open(gateway.addr, &root, Some(&source))
+        .await
+        .expect("native fixture session initializes");
+    let prepared = ready
+        .query(
+            &source,
+            "textDocument/prepareCallHierarchy",
+            serde_json::json!({
+                "textDocument": { "uri": prod_code_protocol::path::file_uri(&source) },
+                "position": { "line": 0, "character": 7 }
+            }),
+        )
+        .await
+        .expect("native analyzer resolves the real callee before the bounded impact request");
+    assert!(
+        prepared
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item["name"] == "callee")),
+        "{prepared}"
+    );
+    ready.close().await;
+    let impact_started = Instant::now();
     let report = tokio::time::timeout(
         Duration::from_secs(180),
         impact::analyze(gateway.addr, &root, None, 6),
@@ -621,7 +646,8 @@ async fn native_rust_analyzer_selects_and_executes_real_tests_through_helpers() 
     .await
     .expect("native impact protocol requests finish within three minutes")
     .expect("native impact analysis succeeds");
-    assert!(report.incomplete.is_empty(), "{:?}", report.incomplete);
+    eprintln!("ready analyzer impact: {:?}", impact_started.elapsed());
+    assert!(report.incomplete.is_empty(), "{report:?}");
     let mut changed: Vec<&str> = report
         .changed
         .iter()
