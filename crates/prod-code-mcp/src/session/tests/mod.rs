@@ -10,5 +10,6 @@
 
 mod integration;
 mod invalidation;
+mod issue_1814;
 mod lifecycle;
 mod unit;

@@ -8,12 +8,15 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+mod call;
 pub mod dispatch;
 pub mod failover;
 pub mod failover_pin;
+mod frames;
 pub mod rebalance;
 #[cfg(test)]
 mod rebalance_pin_tests;
+mod rebalance_task;
 mod reload;
 mod stdin;
 #[cfg(unix)]
@@ -22,6 +25,10 @@ pub mod transport;
 
 #[cfg(test)]
 mod dispatch_tests;
+#[cfg(test)]
+mod issue_1814_tests;
+#[cfg(test)]
+mod reload_budget_tests;
 #[cfg(test)]
 mod reload_pending_tests;
 #[cfg(all(test, unix))]

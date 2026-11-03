@@ -16,7 +16,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::hot_reload;
 use crate::protocol::{SERVER_NAME, SERVER_VERSION};
-use crate::server::dispatch::handle_mcp_request;
+use crate::server::dispatch::handle_mcp_request_at;
+use crate::server::rebalance_task::Rebalancer;
 use crate::server::reload::{ActiveCalls, Reload, ToolCalls, deliver_response, drain_for_reload};
 
 /// Run full stdio MCP server loop.
@@ -99,6 +100,8 @@ where
     let mut rebalance_interval =
         tokio::time::interval_at(tokio::time::Instant::now() + period, period);
     rebalance_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // The tick's status probes run beside the loop, never in it (#1814).
+    let mut rebalancer = Rebalancer::default();
 
     loop {
         if reload.requested.load(std::sync::atomic::Ordering::Acquire)
@@ -106,17 +109,22 @@ where
         {
             let deadline = *reload_deadline
                 .get_or_insert_with(|| tokio::time::Instant::now() + reload.timeout);
-            drain_for_reload(
-                &mut in_flight,
-                &mut active_aborts,
-                &mut remote,
-                &mut writer,
-                deadline.saturating_duration_since(tokio::time::Instant::now()),
-            )
-            .await?;
+            // Keep reading during the drain: unread calls would otherwise receive a fresh
+            // navigation budget only after the old calls finish (#1814).
+            if tokio::time::Instant::now() >= deadline {
+                drain_for_reload(
+                    &mut in_flight,
+                    &mut active_aborts,
+                    &mut remote,
+                    &mut writer,
+                    std::time::Duration::ZERO,
+                )
+                .await?;
+            }
             // Bytes already read from stdin cannot be recovered by exec. Finish the input
             // frame before swapping, without granting newly dispatched calls another budget.
-            if pending.is_empty()
+            if in_flight.is_empty()
+                && pending.is_empty()
                 && reader.buffer().is_empty()
                 && (!read_pending || reload.cancel_safe_input)
             {
@@ -147,13 +155,15 @@ where
                 deliver_response(joined, &mut active_aborts, &mut remote, &mut writer).await?;
                 0
             }
+            _ = tokio::time::sleep_until(reload_deadline.unwrap_or_else(tokio::time::Instant::now)),
+                if reload_deadline.is_some() && !in_flight.is_empty() => 0,
             _ = reload.notify.notified(), if !eof => 0,
             _ = rebalance_interval.tick(), if !eof => {
-                crate::server::rebalance::handle_cluster_rebalance_tick(
-                    &mut remote,
-                    &workspace_root,
-                )
-                .await;
+                rebalancer.start(remote, &workspace_root);
+                0
+            }
+            checked = rebalancer.finished(), if rebalancer.is_running() => {
+                Rebalancer::apply(&mut remote, checked, &workspace_root);
                 0
             }
         };
@@ -162,36 +172,21 @@ where
         }
 
         while let Some(line) = hot_reload::take_line(&mut pending) {
+            // A request's budgets count from here, through every retry (#1814).
+            let received = tokio::time::Instant::now();
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
             }
             if trimmed.len() > MAX_JSONRPC_FRAME_BYTES {
-                let err_resp = serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": serde_json::Value::Null,
-                    "error": { "code": -32600, "message": "Request exceeds maximum JSON-RPC frame size" }
-                });
-                if let Ok(mut out) = serde_json::to_string(&err_resp) {
-                    out.push('\n');
-                    let _ = writer.write_all(out.as_bytes()).await;
-                    let _ = writer.flush().await;
-                }
+                let message = "Request exceeds maximum JSON-RPC frame size";
+                write_frame_error(&mut writer, -32600, message).await;
                 continue;
             }
             let req_json = match serde_json::from_str::<serde_json::Value>(trimmed) {
                 Ok(v) => v,
                 Err(e) => {
-                    let err_resp = serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "id": serde_json::Value::Null,
-                        "error": { "code": -32700, "message": format!("Parse error: {e}") }
-                    });
-                    if let Ok(mut out) = serde_json::to_string(&err_resp) {
-                        out.push('\n');
-                        let _ = writer.write_all(out.as_bytes()).await;
-                        let _ = writer.flush().await;
-                    }
+                    write_frame_error(&mut writer, -32700, &format!("Parse error: {e}")).await;
                     continue;
                 }
             };
@@ -211,6 +206,11 @@ where
                 continue;
             }
             let req_id = req_json.get("id").cloned();
+            if reload_deadline.is_some()
+                && super::reload::refuse_new_work(&req_json, &mut writer).await?
+            {
+                continue;
+            }
             if method == "tools/call" {
                 let id_key = req_id
                     .as_ref()
@@ -220,10 +220,11 @@ where
                 let mut task_remote = start_remote;
                 let ws_root = workspace_root.clone();
                 let abort_handle = in_flight.spawn(async move {
-                    let fut = std::panic::AssertUnwindSafe(handle_mcp_request(
+                    let fut = std::panic::AssertUnwindSafe(handle_mcp_request_at(
                         &mut task_remote,
                         &ws_root,
                         req_json,
+                        received,
                     ));
                     let outcome = fut.catch_unwind().await;
                     let changed_remote = (task_remote != start_remote).then_some(task_remote);
@@ -237,10 +238,11 @@ where
                     active_aborts.insert(k, abort_handle);
                 }
             } else {
-                let fut = std::panic::AssertUnwindSafe(handle_mcp_request(
+                let fut = std::panic::AssertUnwindSafe(handle_mcp_request_at(
                     &mut remote,
                     &workspace_root,
                     req_json,
+                    received,
                 ));
                 if let Some(out) = format_handled_response(req_id, fut.catch_unwind().await)
                     && (writer.write_all(out.as_bytes()).await.is_err()
@@ -253,6 +255,29 @@ where
     }
 
     Ok(())
+}
+
+/// Answers a frame that is not a request with a JSON-RPC error without an id; a write failure is
+/// left to the next response to notice.
+async fn write_frame_error<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut W,
+    code: i64,
+    message: &str,
+) {
+    if let Some(out) = error_line(None, code, message) {
+        let _ = writer.write_all(out.as_bytes()).await;
+        let _ = writer.flush().await;
+    }
+}
+
+/// One JSON-RPC error response line for `id` (`null` when there is none).
+fn error_line(id: Option<serde_json::Value>, code: i64, message: &str) -> Option<String> {
+    let err_resp = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": { "code": code, "message": message }
+    });
+    serde_json::to_string(&err_resp).ok().map(|out| out + "\n")
 }
 
 pub(super) fn format_handled_response(
@@ -268,15 +293,7 @@ pub(super) fn format_handled_response(
         Ok(Ok(None)) => None,
         Ok(Err(e)) => {
             tracing::error!(error = %e, "MCP request handler internal error");
-            let err_resp = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": req_id.unwrap_or(serde_json::Value::Null),
-                "error": { "code": -32603, "message": format!("Internal error: {e}") }
-            });
-            serde_json::to_string(&err_resp).ok().map(|mut s| {
-                s.push('\n');
-                s
-            })
+            error_line(req_id, -32603, &format!("Internal error: {e}"))
         }
         Err(panic_payload) => {
             let msg = panic_payload
@@ -285,116 +302,12 @@ pub(super) fn format_handled_response(
                 .or_else(|| panic_payload.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".to_string());
             tracing::error!(panic = %msg, "MCP request handler panicked");
-            let err_resp = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "error": { "code": -32603, "message": format!("Internal error (panic): {msg}") }
-            });
-            serde_json::to_string(&err_resp).ok().map(|mut s| {
-                s.push('\n');
-                s
-            })
+            error_line(req_id, -32603, &format!("Internal error (panic): {msg}"))
         }
     }
 }
 
 pub const MAX_JSONRPC_FRAME_BYTES: usize = 512 * 1024;
 
-/// Serializes an MCP response value into a single JSON line bounded by `max_frame_bytes` to
-/// avoid crashing client line buffers with "inbound JSON-RPC frame exceeded maximum line length".
-pub(crate) fn bound_serialized_response(
-    mut resp: serde_json::Value,
-    max_frame_bytes: usize,
-) -> String {
-    let Ok(initial) = serde_json::to_string(&resp) else {
-        return serde_json::json!({
-            "jsonrpc": "2.0",
-            "error": { "code": -32603, "message": "Failed to serialize response" }
-        })
-        .to_string();
-    };
-    if initial.len() <= max_frame_bytes {
-        return initial;
-    }
-    // Only apply tool-content truncation to tool-call results (which have `result.content` text blocks).
-    // Non-tool responses (such as `tools/list`, `initialize`, etc.) must not have their response
-    // structure replaced with a tool-call-shaped content array.
-    let text_blocks: Vec<(usize, String)> = resp
-        .get("result")
-        .and_then(|r| r.get("content"))
-        .and_then(|c| c.as_array())
-        .map(|arr| {
-            arr.iter()
-                .enumerate()
-                .filter_map(|(i, b)| {
-                    if b.get("type").and_then(|t| t.as_str()) == Some("text") {
-                        b.get("text")
-                            .and_then(|t| t.as_str())
-                            .map(|s| (i, s.to_string()))
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    if text_blocks.is_empty() {
-        for id in [
-            resp.get("id").cloned().unwrap_or(serde_json::Value::Null),
-            serde_json::Value::Null,
-        ] {
-            let err_resp = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "error": { "code": -32000, "message": "Response exceeds maximum JSON-RPC frame size" }
-            });
-            if let Ok(s) = serde_json::to_string(&err_resp)
-                && s.len() <= max_frame_bytes
-            {
-                return s;
-            }
-        }
-        return r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"Response exceeds maximum JSON-RPC frame size"}}"#.to_string();
-    }
-
-    let marker = "\n[... output truncated to avoid exceeding MCP frame line limits]\n";
-    for (idx, text) in text_blocks {
-        let mut target_len = max_frame_bytes / 2;
-        while target_len > 100 {
-            let mut candidate_text =
-                crate::verify::truncate_to_boundary(&text, target_len).to_string();
-            candidate_text.push_str(marker);
-            if let Some(block) = resp
-                .get_mut("result")
-                .and_then(|r| r.get_mut("content"))
-                .and_then(|c| c.as_array_mut())
-                .and_then(|arr| arr.get_mut(idx))
-            {
-                block["text"] = serde_json::Value::String(candidate_text);
-            }
-            if let Ok(serialized) = serde_json::to_string(&resp)
-                && serialized.len() <= max_frame_bytes
-            {
-                return serialized;
-            }
-            target_len = target_len.saturating_sub(4096);
-        }
-    }
-    for id in [
-        resp.get("id").cloned().unwrap_or(serde_json::Value::Null),
-        serde_json::Value::Null,
-    ] {
-        let fallback = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": { "content": [{ "type": "text", "text": marker.trim_start() }], "isError": false }
-        });
-        if let Ok(s) = serde_json::to_string(&fallback)
-            && s.len() <= max_frame_bytes
-        {
-            return s;
-        }
-    }
-    r#"{"jsonrpc":"2.0","id":null,"result":{"content":[{"type":"text","text":"[... output truncated to avoid exceeding MCP frame line limits]\n"}],"isError":false}}"#.to_string()
-}
+// Keep this import path stable for existing users and function-local test imports.
+pub(crate) use super::frames::bound_serialized_response;

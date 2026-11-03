@@ -37,8 +37,8 @@ pub(super) struct Reload {
     pub reexec: Box<dyn FnMut(&Path) -> std::io::Error + Send>,
 }
 
-/// Deliver completed calls before swapping executables. Stop reading stdin while draining:
-/// requests still in the pipe belong to the new process, and cannot extend this deadline.
+/// Finish or abort old calls before swapping executables. The transport keeps servicing
+/// input while waiting, then invokes this with zero timeout when its drain deadline expires.
 pub(super) async fn drain_for_reload<W: AsyncWrite + Unpin>(
     calls: &mut ToolCalls,
     active: &mut ActiveCalls,
@@ -84,6 +84,36 @@ pub(super) async fn drain_for_reload<W: AsyncWrite + Unpin>(
     }
     writer.flush().await?;
     Ok(())
+}
+
+/// While draining, answer new work immediately instead of granting it a fresh budget after
+/// re-exec. Do not expose the old catalog after an executable replacement was detected.
+pub(super) async fn refuse_new_work<W: AsyncWrite + Unpin>(
+    request: &serde_json::Value,
+    writer: &mut W,
+) -> Result<bool> {
+    if !matches!(
+        request.get("method").and_then(|m| m.as_str()),
+        Some("tools/call" | "tools/list")
+    ) {
+        return Ok(false);
+    }
+    if let Some(id) = request.get("id") {
+        let response = serde_json::json!({
+            "jsonrpc":"2.0", "id":id,
+            "error":{"code":-32001,
+                "message":"Server is reloading; retry after the tool list changes",
+                "data":{"retryable":true,"started":false}}
+        });
+        let mut out = super::transport::bound_serialized_response(
+            response,
+            super::transport::MAX_JSONRPC_FRAME_BYTES,
+        );
+        out.push('\n');
+        writer.write_all(out.as_bytes()).await?;
+        writer.flush().await?;
+    }
+    Ok(true)
 }
 
 pub(super) async fn deliver_response<W: AsyncWrite + Unpin>(

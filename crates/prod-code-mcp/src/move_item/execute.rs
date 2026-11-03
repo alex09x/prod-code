@@ -389,8 +389,6 @@ pub async fn move_item(
         applied: false,
         created,
     };
-    if apply {
-        result.write(force)?;
-    }
+    super::glob_help::finish(&source_text, &mut result, apply, force)?;
     Ok(result)
 }
