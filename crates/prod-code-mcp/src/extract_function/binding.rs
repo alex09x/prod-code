@@ -271,10 +271,13 @@ pub fn uncaptured_enclosing_locals(
     let internal_locals = super::patterns::local_bindings(body);
 
     let mut uncaptured = Vec::new();
-    for token in super::tokens::tokens(body) {
+    let toks = super::tokens::tokens(body);
+    for (i, &token) in toks.iter().enumerate() {
         if token.0 == super::tokens::Token::Word {
             let word = &body[token.1..token.2];
+            // `order.qty` reads a field, not the enclosing `qty` (#1812).
             if enclosing_scope.contains(word)
+                && is_read(&toks, body, i, word)
                 && !declared_params.contains(word)
                 && !internal_locals
                     .iter()

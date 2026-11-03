@@ -10,6 +10,7 @@
 
 pub mod compiler_env;
 pub(crate) mod exec_stream;
+mod git_guidance;
 pub mod json_stream;
 pub mod process_group;
 pub mod ram_cache;
