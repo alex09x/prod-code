@@ -11,9 +11,8 @@
 use prod_code_protocol::readiness::{INDEX_WAIT, ReadySignal, pyright_found_sources};
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::path::PathBuf;
 
-use crate::config::discovery::{native_typescript_lsp, npm_global_root, which_bin};
+use crate::config::discovery::which_bin;
 use crate::config::types::{
     DEFAULT_HEALTH_PROBE_INTERVAL, DEFAULT_MAX_RETAINED_DOCUMENTS, DEFAULT_REQUEST_TIMEOUT,
     GenericLspConfig,
@@ -195,126 +194,6 @@ impl GenericLspConfig {
         }
     }
 
-    /// Create a standard configuration for TypeScript / JavaScript language servers.
-    pub fn for_typescript() -> Self {
-        Self::typescript_with(
-            native_typescript_lsp(),
-            npm_global_root(),
-            has_bin,
-            process_env,
-        )
-    }
-
-    /// [`Self::for_typescript`] with the native server, the global npm root, the `$PATH`
-    /// lookup and the environment injected.
-    pub(crate) fn typescript_with(
-        native: Option<PathBuf>,
-        npm_root: Option<PathBuf>,
-        has: impl Fn(&str) -> bool,
-        env_var: impl Fn(&str) -> Option<OsString>,
-    ) -> Self {
-        // TypeScript 7 (native) ships its own LSP: `tsc --lsp --stdio` from the platform
-        // package. It needs no tsserver and no Node at all, so it wins when present.
-        let (cmd, args) = if let Some(native) = native.as_ref() {
-            (
-                native.to_string_lossy().into_owned(),
-                vec!["--lsp".to_string(), "--stdio".to_string()],
-            )
-        } else if has("vtsls") {
-            ("vtsls".to_string(), vec!["--stdio".to_string()])
-        } else {
-            (
-                "typescript-language-server".to_string(),
-                vec!["--stdio".to_string()],
-            )
-        };
-        // The native server holds a question until its project is loaded; vtsls reports
-        // progress notifications ($/progress); typescript-language-server is unknown.
-        let ready = if native.is_some() {
-            ReadySignal::HoldsQuestions
-        } else if cmd.contains("vtsls") {
-            ReadySignal::Progress
-        } else {
-            ReadySignal::Unknown
-        };
-
-        let mut env = HashMap::new();
-        if let Some(val) = env_var("PROD_CODE_TS_TYPES_CACHE") {
-            let val_str = val.to_string_lossy().into_owned();
-            env.insert("PROD_CODE_TS_TYPES_CACHE".to_string(), val_str.clone());
-            if let Some(node_path) = env_var("NODE_PATH") {
-                let mut combined = node_path.to_string_lossy().into_owned();
-                combined.push(':');
-                combined.push_str(&val_str);
-                env.insert("NODE_PATH".to_string(), combined);
-            } else {
-                env.insert("NODE_PATH".to_string(), val_str);
-            }
-        }
-
-        let initialization_options = if cmd.contains("vtsls") {
-            let tsserver_path = npm_root
-                .as_ref()
-                .map(|root| root.join("typescript").join("lib"))
-                .filter(|lib| lib.join("tsserver.js").exists())
-                .map(|lib| lib.to_string_lossy().into_owned());
-
-            let mut vtsls_opts = serde_json::json!({
-                "vtsls": {
-                    "autoUseWorkspaceTsdk": true,
-                    "experimental": {
-                        "completion": {
-                            "enableServerSideFuzzyMatch": true
-                        }
-                    }
-                },
-                "typescript": {
-                    "preferences": {
-                        "includeInlayParameterNameHints": "none"
-                    },
-                    "tsserver": {
-                        "maxTsServerMemory": 4096
-                    }
-                }
-            });
-            if let Some(p) = tsserver_path {
-                if let Some(ts) = vtsls_opts
-                    .get_mut("typescript")
-                    .and_then(|t| t.get_mut("tsserver"))
-                    .and_then(|ts| ts.as_object_mut())
-                {
-                    ts.insert("path".to_string(), serde_json::Value::String(p));
-                }
-            }
-            Some(vtsls_opts)
-        } else {
-            npm_root
-                .as_ref()
-                .map(|root| root.join("typescript").join("lib"))
-                .filter(|lib| lib.join("tsserver.js").exists())
-                .map(|lib| {
-                    serde_json::json!({
-                        "tsserver": { "path": lib.to_string_lossy() },
-                        "preferences": { "includeInlayParameterNameHints": "none" }
-                    })
-                })
-        };
-
-        Self {
-            command: cmd,
-            args,
-            env,
-            working_dir: None,
-            initialization_options,
-            request_timeout: DEFAULT_REQUEST_TIMEOUT,
-            ready,
-            index_wait: INDEX_WAIT,
-            retain_open_documents: false,
-            max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
-            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
-        }
-    }
-
     /// Create a standard configuration for Java language servers (jdtls).
     pub fn for_java() -> Self {
         Self::java_with(has_bin)
@@ -401,11 +280,11 @@ impl GenericLspConfig {
     }
 }
 
-fn has_bin(name: &str) -> bool {
+pub(super) fn has_bin(name: &str) -> bool {
     which_bin(name).is_ok()
 }
 
-fn process_env(name: &str) -> Option<OsString> {
+pub(super) fn process_env(name: &str) -> Option<OsString> {
     std::env::var_os(name)
 }
 

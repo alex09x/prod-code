@@ -166,6 +166,14 @@ pub async fn run_exec_with_ram(
         }
         _ => workspace.clone(),
     };
+    if let Some(message) = super::git_guidance::metadata_guidance(&req, &run_dir, &workspace) {
+        framed
+            .send(WireMessage::ExecChunk(ExecChunk {
+                stderr: true,
+                data: Some(message.as_bytes().to_vec()),
+            }))
+            .await?;
+    }
     // A std child, reaped here with `wait4` so its resource use comes back with the exit
     // status (#180); tokio only gets the pipes. The gateway binary starts it through its exec
     // shim, so that the peak memory reported is the command's and not the gateway's (#255).

@@ -13,3 +13,4 @@ mod data;
 mod languages;
 mod languages_extra;
 mod markup;
+mod typescript;

@@ -38,6 +38,39 @@ This populates `dist/packages/` with:
 - `install.sh`
 - `SHA256SUMS`
 
+### Linux glibc baseline (release gate)
+
+Linux release binaries must load on the oldest glibc we support: **glibc 2.35**. A
+binary linked on a newer glibc can carry version needs such as `GLIBC_2.39`, even as a
+`WEAK` record. A WEAK need lets the program start, but the dynamic loader still prints
+`version 'GLIBC_2.39' not found` on glibc 2.35 before every command. The fix is to build
+on the baseline, never to filter that warning.
+
+- Build every Linux release artifact, client (`prod-code`) and server
+  (`prod-code-server`), x86_64 and aarch64, on a Linux baseline builder whose
+  `getconf GNU_LIBC_VERSION` prints glibc 2.35 or older (for example an Ubuntu 22.04
+  builder or container), or link it against a glibc 2.35 sysroot
+  (`cargo zigbuild --release --target <arch>-unknown-linux-gnu.2.35`).
+- Every one of them must pass the gate before it is published, raw binaries included:
+
+  ```bash
+  python3 scripts/packaging/glibc_compat.py --baseline 2.35 \
+      dist/bin/prod-code-x86_64-unknown-linux-gnu \
+      dist/bin/prod-code-server-x86_64-unknown-linux-gnu  # ...and the aarch64 pair
+  ```
+
+  `build-all-packages.sh` runs it before building any Linux package, on the client
+  binaries, `SERVER_BIN_X86_64` / `SERVER_BIN_AARCH64` when set, and any
+  `dist/bin/prod-code*-unknown-linux-gnu` or `target/<triple>/release/prod-code-server`
+  it finds. It needs `readelf` (GNU binutils; set `READELF` for another path). Without
+  it the gate fails instead of guessing, so check Linux artifacts on the Linux builder.
+  macOS `.pkg`/`.dmg` packaging is not gated: those binaries are not ELF.
+- The gate reads the ELF version needs (`readelf --version-info`), WEAK records
+  included. It fails (exit 1) when a numeric `GLIBC_x.y` need is newer than the
+  baseline or when a `GLIBC_*` need is not a plain version (such as
+  `GLIBC_ABI_DT_RELR`), and it fails (exit 2) when an artifact is not ELF, readelf is
+  missing, fails, warns, or prints output the gate cannot account for.
+
 ---
 
 ## 3. Where to Publish

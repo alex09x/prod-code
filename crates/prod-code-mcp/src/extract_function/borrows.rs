@@ -15,6 +15,10 @@ use super::tokens::{
 };
 use crate::signature::call_sites::normalize_type_spelling;
 
+#[cfg(test)]
+#[path = "borrows_tests.rs"]
+mod tests;
+
 /// Proves that `b.rhs` is a side-effect-free borrow projection of `parent` (`&mut ParentStruct`)
 /// producing `param_ty` (`&TargetTy`) without invoking user-defined methods or `Deref` coercions.
 fn prove_pure_borrow_rhs(
@@ -143,6 +147,29 @@ fn is_likely_borrow_of_parent(b: &ActiveBinding, parent: &str) -> bool {
             .any(|m| rhs.contains(m)))
 }
 
+/// Whether `b` holds a value of a unique, non-generic struct of this file, built by a struct
+/// literal or declared with that type. Such a type has no lifetime parameter, so the value owns
+/// its data and cannot keep a parent borrowed after its `let` (#1812).
+fn is_provably_owned(
+    b: &ActiveBinding,
+    structs: &BTreeMap<String, BTreeMap<String, String>>,
+) -> bool {
+    if b.is_ref_pat {
+        return false;
+    }
+    if let Some(ty) = b.explicit_ty.as_deref() {
+        return structs.contains_key(normalize_type_spelling(ty).as_str());
+    }
+    let rhs = b.rhs.trim();
+    rhs.find('{').is_some_and(|open| {
+        let name = rhs[..open].trim();
+        !name.is_empty()
+            && name.chars().all(is_ident)
+            && structs.contains_key(name)
+            && crate::parameter_object::matching_bracket(rhs, open) == Some(rhs.len() - 1)
+    })
+}
+
 struct ExtractContext<'a> {
     scope: &'a str,
     after: &'a str,
@@ -154,6 +181,8 @@ struct ExtractContext<'a> {
     receiver: Option<String>,
     declared: Vec<crate::signature::Declared>,
     mut_parents: Vec<(String, String)>,
+    structs: BTreeMap<String, BTreeMap<String, String>>,
+    shadowed: BTreeSet<String>,
 }
 
 fn parse_extract_context<'a>(
@@ -184,7 +213,11 @@ fn parse_extract_context<'a>(
     if receiver.as_deref().is_some_and(|rv| rv.contains("&mut")) {
         mut_parents.insert(0, ("self".to_string(), "&mut Self".to_string()));
     }
-    (!bindings.is_empty() && !mut_parents.is_empty()).then_some(ExtractContext {
+    if bindings.is_empty() || mut_parents.is_empty() {
+        return None;
+    }
+    let (structs, shadowed) = parse_unique_structs(text);
+    Some(ExtractContext {
         scope,
         after: &text[end.min(body_close)..body_close],
         bindings,
@@ -195,6 +228,8 @@ fn parse_extract_context<'a>(
         receiver,
         declared,
         mut_parents,
+        structs,
+        shadowed,
     })
 }
 
@@ -214,7 +249,7 @@ pub fn reacquire_conflicting_borrows(
     let Some(ctx) = parse_extract_context(text, start, end, extracted, (fn_start, fn_end)) else {
         return extracted.to_string();
     };
-    let (structs, shadowed) = parse_unique_structs(text);
+    let (structs, shadowed) = (&ctx.structs, &ctx.shadowed);
     let (mut reacquired, mut kept_params) = (Vec::new(), Vec::new());
     if let Some(rv) = ctx.receiver.as_deref() {
         kept_params.push(rv.trim().to_string());
@@ -226,7 +261,7 @@ pub fn reacquire_conflicting_borrows(
         if !is_mut_parent
             && let Some(b) = ctx.bindings.get(&d.name)
             && ctx.mut_parents.iter().any(|(p, p_ty)| {
-                prove_pure_borrow_rhs(b, p, p_ty, param_ty, &structs, &shadowed) && {
+                prove_pure_borrow_rhs(b, p, p_ty, param_ty, structs, shadowed) && {
                     let allowed = ctx
                         .bindings
                         .values()
@@ -235,7 +270,7 @@ pub fn reacquire_conflicting_borrows(
                                 && ((ob.rhs.trim().starts_with('&')
                                     && is_field_path_of(ob.rhs.trim().trim_start_matches('&'), p))
                                     || prove_pure_borrow_rhs(
-                                        ob, p, p_ty, param_ty, &structs, &shadowed,
+                                        ob, p, p_ty, param_ty, structs, shadowed,
                                     ))
                         })
                         .map(|ob| (ob.stmt_start, ob.stmt_end))
@@ -319,6 +354,7 @@ pub fn conflicting_borrow_captures(
             if &d.name != parent
                 && param_ty.contains('&')
                 && let Some(b) = ctx.bindings.get(&d.name)
+                && !is_provably_owned(b, &ctx.structs)
                 && (is_likely_borrow_of_parent(b, parent) || mentions(&b.rhs, parent))
             {
                 conflicts.push(format!(
@@ -328,7 +364,11 @@ pub fn conflicting_borrow_captures(
             }
         }
         for (var, b) in &ctx.bindings {
-            if var != parent && is_likely_borrow_of_parent(b, parent) && mentions(ctx.after, var) {
+            if var != parent
+                && !is_provably_owned(b, &ctx.structs)
+                && is_likely_borrow_of_parent(b, parent)
+                && mentions(ctx.after, var)
+            {
                 conflicts.push(format!(
                     "cannot borrow `*{parent}` as mutable in extracted call while immutable borrow `{var}` is live across the call [E0502]"
                 ));
