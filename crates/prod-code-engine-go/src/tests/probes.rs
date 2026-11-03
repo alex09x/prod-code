@@ -314,3 +314,54 @@ async fn a_blocked_scheduled_probe_write_retires_its_exact_owned_child() {
         "a queued notification cannot reuse the retired probe stream"
     );
 }
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn probe_fixture_bootstrap_preserves_request_and_default_initialization_deadlines() {
+    let deadline = Duration::from_millis(40);
+    let (dir, engine) = fake_engine_with_probe(
+        Some(("FAKE_INITIALIZE_RESPONSE", "delayed")),
+        deadline,
+        Duration::from_millis(100),
+    )
+    .await;
+    assert_eq!(engine.request_timeout, deadline);
+    wait_for_gopls_probe_count(&dir.path().join("seen"), 1).await;
+    assert!(engine.is_alive());
+    drop(engine);
+
+    // The normal constructor must still enforce the caller's short initialization deadline.
+    let mut config = crate::config::GoConfig {
+        gopls_path: Some(dir.path().join("fake-gopls")),
+        shared_cache_dir: Some(dir.path().join("default-cache")),
+        ..Default::default()
+    };
+    config
+        .extra_env
+        .insert("FAKE_INITIALIZE_RESPONSE".into(), "delayed".into());
+    config.extra_env.insert(
+        "FAKE_SEEN_FILE".into(),
+        dir.path()
+            .join("default-seen")
+            .to_string_lossy()
+            .into_owned(),
+    );
+    config.extra_env.insert(
+        "FAKE_PID_FILE".into(),
+        dir.path()
+            .join("default-pid")
+            .to_string_lossy()
+            .into_owned(),
+    );
+    let error = match crate::GoEngine::load_with_request_timeout(dir.path(), config, deadline).await
+    {
+        Err(error) => error,
+        Ok(engine) => {
+            drop(engine);
+            panic!("the default constructor must not widen initialization to the fixture budget");
+        }
+    };
+    assert!(
+        format!("{error:#}").contains("Timeout waiting for gopls response to method 'initialize'"),
+        "{error:#}"
+    );
+}
