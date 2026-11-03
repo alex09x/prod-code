@@ -6,6 +6,7 @@
 
 ### Fixed
 - **Applied Swift Signature Diff Reporting** (`crates/prod-code-mcp`, #1845): Polyglot signature changes use confined journaled application with absolute rewrite paths, preserving the original text so an applied change reports its real diff and changed-line count.
+- **HTML Definition Startup Routing** (`crates/prod-code-client`, `crates/prod-code-mcp`, #1846): Named local HTML lookups defer the optional capability check until the executor can provide its syntax-only fallback, including when configured endpoints have no HTML backend. Endpoint pins and source confinement remain enforced.
 - **HTML Function Source Fallback** (`crates/prod-code-mcp`, #1846): A missing optional HTML language server no longer blocks an explicit HTML-file and function-name lookup when a unique local JavaScript declaration can be read safely. Results identify syntax-only provenance; comments/strings, ambiguity, source confinement and output limits remain enforced.
 
 ## v0.3.50 — 2026-11-03
