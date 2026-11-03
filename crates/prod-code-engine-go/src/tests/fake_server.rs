@@ -189,9 +189,16 @@ pub(crate) async fn fake_engine_with_probe(
             );
         }
     }
-    let engine = GoEngine::load_with_request_timeout(dir.path(), config, timeout)
-        .await
-        .expect("the fake gopls starts");
+    // Python process startup has its own margin. Reader, ordinary request and probe
+    // deadlines retain the caller's original short budget after initialization.
+    let engine = GoEngine::load_with_timeouts(
+        dir.path(),
+        config,
+        timeout,
+        timeout.max(Duration::from_secs(1)),
+    )
+    .await
+    .expect("the fake gopls starts");
     (dir, Arc::new(engine))
 }
 
