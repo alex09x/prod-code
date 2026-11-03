@@ -166,3 +166,13 @@ pub(crate) async fn scope_sync_stage<F: std::future::Future>(
 pub(crate) fn set_active_sync_stage(stage: Option<&'static str>) {
     let _ = ACTIVE_SYNC_STAGE.try_with(|tracker| tracker.set(stage));
 }
+
+/// Stage of a call that waits for the checkout's pooled session, owned by another query (#1814).
+pub(crate) const QUEUED_FOR_SESSION: &str = "waiting for another query in this workspace";
+/// Stage of a call that waits for a workspace write (an apply, a command) to release the checkout.
+pub(crate) const QUEUED_FOR_WRITER: &str = "waiting for a workspace write in this checkout";
+
+/// Whether `stage` is a wait in this client's queue: the analyzer was not asked yet.
+pub(crate) fn is_queue_stage(stage: &str) -> bool {
+    stage == QUEUED_FOR_SESSION || stage == QUEUED_FOR_WRITER
+}

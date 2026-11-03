@@ -13,6 +13,8 @@ use std::path::Path;
 
 /// Evaluates cluster rebalancing for the current workspace and pre-warms the target node
 /// if a more efficient node is recommended. Rejects filesystem roots and unbounded non-git directories.
+/// The stdio loop runs the same steps in the background (`rebalance_task`, #1814).
+#[cfg(test)]
 pub(crate) async fn handle_cluster_rebalance_tick(remote: &mut SocketAddr, workspace_root: &Path) {
     let policy = crate::cluster::node_policy();
     rebalance_tick_policy(
@@ -28,6 +30,7 @@ pub(crate) async fn handle_cluster_rebalance_tick(remote: &mut SocketAddr, works
 
 /// [`rebalance_tick_with`] under `policy`: a pinned workspace is never moved in the background,
 /// and the cluster is not asked where it should go (#1793).
+#[cfg(test)]
 pub(crate) async fn rebalance_tick_policy<E, F>(
     remote: &mut SocketAddr,
     workspace_root: &Path,
@@ -46,22 +49,35 @@ pub(crate) async fn rebalance_tick_policy<E, F>(
 
 /// [`handle_cluster_rebalance_tick`] with the cluster's verdict given: `evaluate(current node,
 /// workspace name, engine, required OS)`.
+#[cfg(test)]
 async fn rebalance_tick_with<E, F>(remote: &mut SocketAddr, workspace_root: &Path, evaluate: E)
 where
     E: FnOnce(SocketAddr, String, Option<&'static str>, Option<&'static str>) -> F,
     F: std::future::Future<Output = Option<(SocketAddr, String)>>,
 {
+    let Some(checkout) = rebalance_checkout(workspace_root) else {
+        return;
+    };
+    let from = *remote;
+    let verdict = rebalance_verdict(from, checkout, evaluate).await;
+    apply_rebalance(remote, from, verdict, workspace_root);
+}
+
+/// What a rebalance asks the cluster about this checkout: its workspace name, engine and
+/// required OS. `None` for a checkout the tick must not scan. Reads the disk and runs git.
+pub(super) fn rebalance_checkout(
+    workspace_root: &Path,
+) -> Option<(String, Option<&'static str>, Option<&'static str>)> {
     let canonical_root =
         std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
     if crate::sync::is_filesystem_root(&canonical_root) {
-        return;
+        return None;
     }
     let has_git = crate::sync::git::git_head(&canonical_root).is_ok();
     let (_, engine) = crate::sync::engine_project(workspace_root, workspace_root);
     if !has_git && engine.is_none() {
-        return;
+        return None;
     }
-
     let identity = crate::sync::workspace_identity(workspace_root);
     let ws_name = identity.base.as_ref().unwrap_or(&identity.name).clone();
     let os = if engine == Some("go") {
@@ -69,17 +85,57 @@ where
     } else {
         None
     };
+    Some((ws_name, engine, os))
+}
+
+/// The node the workspace on `from` should move to, and why; `None` when it stays. Only asks:
+/// it changes nothing, so its answer can be applied later, or dropped (#1814).
+pub(super) async fn rebalance_verdict<E, F>(
+    from: SocketAddr,
+    (ws_name, engine, os): (String, Option<&'static str>, Option<&'static str>),
+    evaluate: E,
+) -> Option<(SocketAddr, String)>
+where
+    E: FnOnce(SocketAddr, String, Option<&'static str>, Option<&'static str>) -> F,
+    F: std::future::Future<Output = Option<(SocketAddr, String)>>,
+{
     // Keep the active MCP session pinned to its current node while that node is reachable,
     // compatible, and free of hard memory/disk pressure (#1082): migrating mid-session on
     // soft CPU load (such as the load caused by our own `code_exec` build) strands built
     // artifacts in `target/` on the previous node.
-    if crate::cluster::selection::node_fits(*remote, engine, os).await
-        && let Ok(status) = crate::cluster::node_status(*remote).await
+    if crate::cluster::selection::node_fits(from, engine, os).await
+        && let Ok(status) = crate::cluster::node_status(from).await
         && status.host.pressure().is_none()
     {
-        return;
+        return None;
     }
-    if let Some((new_addr, reason)) = evaluate(*remote, ws_name.clone(), engine, os).await {
+    evaluate(from, ws_name, engine, os).await
+}
+
+/// Moves the session to the node of `verdict`, asked about the workspace on `from`, only when
+/// the session is still on `from`: a call that failed over meanwhile already chose for it.
+/// Returns whether it moved.
+pub(super) fn apply_rebalance(
+    remote: &mut SocketAddr,
+    from: SocketAddr,
+    verdict: Option<(SocketAddr, String)>,
+    workspace_root: &Path,
+) -> bool {
+    let Some((new_addr, reason)) = verdict else {
+        return false;
+    };
+    if *remote != from {
+        tracing::info!(
+            asked_about = %from,
+            now_on = %remote,
+            proposed = %new_addr,
+            "cluster rebalance dropped: the session moved while the cluster was asked"
+        );
+        return false;
+    }
+    let identity = crate::sync::workspace_identity(workspace_root);
+    let ws_name = identity.base.as_ref().unwrap_or(&identity.name).clone();
+    {
         tracing::info!(
             old = %remote,
             new = %new_addr,
@@ -107,6 +163,7 @@ where
             }
         });
     }
+    true
 }
 
 #[cfg(test)]

@@ -155,7 +155,7 @@ pub fn navigation_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_source".to_string(),
-            description: "Read a source file from the local workspace or from the gateway host. Accepts a workspace-relative path or an absolute path/file URI inside the local checkout; external absolute paths such as standard library sources (Rust std, Go GOROOT, Swift frameworks, system C++ headers), dependency registries and caches (Cargo registry/git, Go pkg/mod, node_modules, npm/bun/pnpm/yarn, Python uv/poetry/pipx/virtualenv wheels), and SDK headers are read from the gateway. Optionally a window of lines around one line."
+            description: "Read bounded source text from the local workspace or gateway. Absolute paths and file URIs in a sibling Git worktree select that checkout after verifying its repository identity; workspace can explicitly select the same repository's worktree for relative paths. External standard-library, dependency-cache and SDK paths retain gateway reads. Optionally return a window around one line."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
