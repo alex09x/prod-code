@@ -79,10 +79,12 @@ main() {
 
     chmod +x "$TMP_FILE"
 
-    # Verify the embedded macOS code signature without modifying the signed binary bytes
+    # Verify the embedded macOS Developer ID Application signature and Apple anchor
+    # without modifying the signed binary bytes.
     if [ "$OS" = "Darwin" ]; then
-        if ! command -v codesign >/dev/null 2>&1 || ! codesign --verify --strict "$TMP_FILE" >/dev/null 2>&1; then
-            echo "Error: Downloaded macOS binary failed code signature verification." >&2
+        MACOS_REQUIREMENT='=anchor apple generic and certificate leaf[subject.OU] = "284V2M3LN9" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists'
+        if ! command -v codesign >/dev/null 2>&1 || ! codesign --verify --deep --strict -R "$MACOS_REQUIREMENT" "$TMP_FILE" >/dev/null 2>&1; then
+            echo "Error: Downloaded macOS binary failed Developer ID code signature verification." >&2
             rm -f "$TMP_FILE"
             exit 1
         fi

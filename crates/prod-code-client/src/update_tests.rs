@@ -25,6 +25,63 @@ fn release(tag: &str) -> String {
     json!({"tag_name":tag,"assets":[{"name":format!("prod-code-{}", current_target().unwrap()),"url":"https://example.invalid/binary"}]}).to_string()
 }
 
+#[cfg(target_os = "macos")]
+pub(crate) fn test_developer_id_binary_bytes() -> Vec<u8> {
+    let local_signed =
+        std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/bin/prod-code"));
+    for candidate in [
+        local_signed.as_deref(),
+        Some(Path::new("/usr/local/bin/prod-code")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if candidate.is_file()
+            && Command::new("codesign")
+                .args([
+                    "--verify",
+                    "--deep",
+                    "--strict",
+                    "-R",
+                    MACOS_CODESIGN_REQUIREMENT,
+                ])
+                .arg(candidate)
+                .status()
+                .is_ok_and(|s| s.success())
+        {
+            return std::fs::read(candidate).unwrap();
+        }
+    }
+    panic!(
+        "expected a Developer ID Application signed prod-code binary at ~/.local/bin/prod-code or /usr/local/bin/prod-code"
+    );
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn test_negative_macos_binary_payloads(scratch_dir: &Path) -> [Vec<u8>; 3] {
+    let dev_id = test_developer_id_binary_bytes();
+    let adhoc_copy = scratch_dir.join("disposable-adhoc");
+    std::fs::write(&adhoc_copy, &dev_id).unwrap();
+    let adhoc_status = Command::new("codesign")
+        .args(["-s", "-", "-f"])
+        .arg(&adhoc_copy)
+        .status()
+        .unwrap();
+    assert!(adhoc_status.success());
+    let adhoc_bytes = std::fs::read(&adhoc_copy).unwrap();
+    let _ = std::fs::remove_file(&adhoc_copy);
+
+    let mut tampered_bytes = dev_id;
+    let mid = tampered_bytes.len() / 2;
+    tampered_bytes[mid] ^= 0xFF;
+
+    [
+        b"unsigned-corrupt-binary".to_vec(),
+        tampered_bytes,
+        adhoc_bytes,
+    ]
+}
+
 #[test]
 fn fetch_normalizes_gh_and_uses_rest_when_gh_is_unusable() {
     let mut commands = vec![];
@@ -170,22 +227,7 @@ fn update_check_skip_force_and_install_use_only_the_supplied_executable() {
     )
     .unwrap();
     #[cfg(target_os = "macos")]
-    let replacement = {
-        let local_signed = std::env::var_os("HOME")
-            .map(|h| std::path::PathBuf::from(h).join(".local/bin/prod-code"));
-        let candidate = local_signed
-            .as_deref()
-            .filter(|p| {
-                p.is_file()
-                    && Command::new("codesign")
-                        .args(["--verify", "--strict"])
-                        .arg(p)
-                        .status()
-                        .is_ok_and(|s| s.success())
-            })
-            .unwrap_or_else(|| Path::new("/usr/bin/true"));
-        std::fs::read(candidate).unwrap()
-    };
+    let replacement = test_developer_id_binary_bytes();
     #[cfg(not(target_os = "macos"))]
     let replacement = b"replacement".to_vec();
     run_update_with(
@@ -215,30 +257,33 @@ fn update_check_skip_force_and_install_use_only_the_supplied_executable() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn unsigned_or_corrupted_macos_update_is_rejected_and_preserves_the_executable() {
+fn unsigned_corrupted_or_adhoc_macos_update_is_rejected_and_preserves_the_executable() {
     let tmp = tempfile::tempdir().unwrap();
     let exe = tmp.path().join("prod-code");
     std::fs::write(&exe, b"original-signed-binary").unwrap();
-    let error = run_update_with(
-        false,
-        false,
-        None,
-        &exe,
-        &mut |_| Ok(reply(0, &release("v99.0.0"))),
-        &mut |cmd| {
-            std::fs::write(cmd.get_args().nth(3).unwrap(), b"unsigned-corrupt-binary")?;
-            Ok(ExitStatus::from_raw(0))
-        },
-    )
-    .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("downloaded macOS binary failed code signature verification"),
-        "{error}"
-    );
-    assert_eq!(std::fs::read(&exe).unwrap(), b"original-signed-binary");
-    assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1);
+
+    for payload in test_negative_macos_binary_payloads(tmp.path()) {
+        let error = run_update_with(
+            false,
+            false,
+            None,
+            &exe,
+            &mut |_| Ok(reply(0, &release("v99.0.0"))),
+            &mut |cmd| {
+                std::fs::write(cmd.get_args().nth(3).unwrap(), &payload)?;
+                Ok(ExitStatus::from_raw(0))
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("downloaded macOS binary failed code signature verification"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&exe).unwrap(), b"original-signed-binary");
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1);
+    }
 }
 
 #[test]
@@ -273,4 +318,64 @@ fn failed_download_is_removed_and_preserves_the_executable() {
         assert_eq!(std::fs::read(&exe).unwrap(), b"original");
         assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1);
     }
+}
+
+#[test]
+fn target_version_package_managed_and_asset_parser_helpers() {
+    let target = current_target().unwrap();
+    assert!(matches!(
+        target,
+        "aarch64-apple-darwin"
+            | "x86_64-apple-darwin"
+            | "x86_64-unknown-linux-gnu"
+            | "aarch64-unknown-linux-gnu"
+    ));
+
+    for (cur, next) in [
+        ("0.3.18", "0.3.19"),
+        ("v0.3.18", "v0.3.19"),
+        ("0.3.18", "v0.4.0"),
+        ("0.3.18", "v1.0.0"),
+    ] {
+        assert!(is_newer_version(cur, next));
+    }
+    for (cur, next) in [
+        ("0.3.19", "0.3.19"),
+        ("v0.3.19", "v0.3.19"),
+        ("0.3.19", "0.3.18"),
+        ("1.0.0", "0.9.9"),
+    ] {
+        assert!(!is_newer_version(cur, next));
+    }
+
+    assert!(is_package_managed(Path::new("/opt/homebrew/bin/prod-code")).is_some());
+    assert!(
+        is_package_managed(Path::new(
+            "/usr/local/Cellar/prod-code/0.3.19/bin/prod-code"
+        ))
+        .is_some()
+    );
+    assert!(is_package_managed(Path::new("/Users/alex/.cargo/bin/prod-code")).is_none());
+    assert!(is_package_managed(Path::new("/home/user/.local/bin/prod-code")).is_none());
+
+    let json_val = json!({
+        "tag_name": "v0.3.19",
+        "assets": [
+            {
+                "name": "prod-code-aarch64-apple-darwin",
+                "browser_download_url": "https://github.com/alex09x/prod-code/releases/download/v0.3.19/prod-code-aarch64-apple-darwin"
+            },
+            {
+                "name": "prod-code-x86_64-unknown-linux-gnu",
+                "browser_download_url": "https://github.com/alex09x/prod-code/releases/download/v0.3.19/prod-code-x86_64-unknown-linux-gnu"
+            }
+        ]
+    });
+    let (tag, url) = parse_release_asset(&json_val, "aarch64-apple-darwin").unwrap();
+    assert_eq!(tag, "v0.3.19");
+    assert_eq!(
+        url,
+        "https://github.com/alex09x/prod-code/releases/download/v0.3.19/prod-code-aarch64-apple-darwin"
+    );
+    assert!(parse_release_asset(&json_val, "nonexistent-target").is_err());
 }

@@ -124,22 +124,7 @@ fn download_and_install_places_executable_and_replaces_old_binary() {
     let src = tempfile::tempdir().unwrap();
     let asset = src.path().join("asset");
     #[cfg(target_os = "macos")]
-    let first_bytes = {
-        let local_signed = std::env::var_os("HOME")
-            .map(|h| std::path::PathBuf::from(h).join(".local/bin/prod-code"));
-        let candidate = local_signed
-            .as_deref()
-            .filter(|p| {
-                p.is_file()
-                    && Command::new("codesign")
-                        .args(["--verify", "--strict"])
-                        .arg(p)
-                        .status()
-                        .is_ok_and(|s| s.success())
-            })
-            .unwrap_or_else(|| Path::new("/usr/bin/true"));
-        std::fs::read(candidate).unwrap()
-    };
+    let first_bytes = crate::update::behavior_tests::test_developer_id_binary_bytes();
     #[cfg(not(target_os = "macos"))]
     let first_bytes = b"#!/bin/sh\necho installed-fake\n".to_vec();
     std::fs::write(&asset, &first_bytes).unwrap();
@@ -156,8 +141,9 @@ fn download_and_install_places_executable_and_replaces_old_binary() {
     );
 
     // A second install replaces the first and leaves no temp file behind.
+    std::fs::write(&bin, b"stale-old-binary").unwrap();
     #[cfg(target_os = "macos")]
-    let second_bytes = std::fs::read("/usr/bin/false").unwrap();
+    let second_bytes = crate::update::behavior_tests::test_developer_id_binary_bytes();
     #[cfg(not(target_os = "macos"))]
     let second_bytes = b"#!/bin/sh\necho second\n".to_vec();
     std::fs::write(&asset, &second_bytes).unwrap();
@@ -172,28 +158,30 @@ fn download_and_install_places_executable_and_replaces_old_binary() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn download_and_install_rejects_unsigned_macos_binary_and_preserves_existing() {
+fn download_and_install_rejects_unsigned_tampered_or_adhoc_macos_binary_and_preserves_existing() {
     let src = tempfile::tempdir().unwrap();
     let asset = src.path().join("asset");
-    std::fs::write(&asset, b"unsigned-corrupt-binary").unwrap();
     let url = format!("file://{}", asset.display());
 
     let dest = tempfile::tempdir().unwrap();
     let existing = dest.path().join("prod-code");
     std::fs::write(&existing, b"existing-binary").unwrap();
 
-    let err = download_and_install(&url, dest.path()).unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("downloaded macOS binary failed code signature verification"),
-        "{err}"
-    );
-    assert_eq!(std::fs::read(&existing).unwrap(), b"existing-binary");
-    let names: Vec<_> = std::fs::read_dir(dest.path())
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    assert_eq!(names, vec!["prod-code".to_string()]);
+    for payload in crate::update::behavior_tests::test_negative_macos_binary_payloads(src.path()) {
+        std::fs::write(&asset, &payload).unwrap();
+        let err = download_and_install(&url, dest.path()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("downloaded macOS binary failed code signature verification"),
+            "{err}"
+        );
+        assert_eq!(std::fs::read(&existing).unwrap(), b"existing-binary");
+        let names: Vec<_> = std::fs::read_dir(dest.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["prod-code".to_string()]);
+    }
 }
 
 #[test]
@@ -214,7 +202,11 @@ fn install_fails_with_context_when_target_is_a_non_empty_directory() {
     let src = tempfile::tempdir().unwrap();
     let asset = src.path().join("asset");
     #[cfg(target_os = "macos")]
-    std::fs::copy("/usr/bin/true", &asset).unwrap();
+    std::fs::write(
+        &asset,
+        crate::update::behavior_tests::test_developer_id_binary_bytes(),
+    )
+    .unwrap();
     #[cfg(not(target_os = "macos"))]
     std::fs::write(&asset, "x").unwrap();
     let dest = tempfile::tempdir().unwrap();

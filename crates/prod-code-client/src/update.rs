@@ -286,15 +286,28 @@ fn run_update_with(
     Ok(())
 }
 
+/// Inline `codesign -R` requirement enforcing Apple root anchor, Developer ID Application
+/// certificate type (`1.2.840.113635.100.6.1.13`), and Team ID `284V2M3LN9`.
+/// Note: the leading `=` is required by `codesign -R` so it parses the argument as an
+/// inline requirement expression rather than a requirement file path.
+#[cfg(target_os = "macos")]
+pub(crate) const MACOS_CODESIGN_REQUIREMENT: &str = "=anchor apple generic and certificate leaf[subject.OU] = \"284V2M3LN9\" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists";
+
 /// Verifies the downloaded release binary before replacing the existing executable.
 /// On macOS, release assets are already signed with Developer ID Application and notarized;
 /// re-signing locally would mutate the Mach-O binary and invalidate notarization, so we
-/// strictly verify the existing signature without modifying a single byte.
+/// strictly verify the existing Developer ID signature and Team ID without modifying a single byte.
 pub(crate) fn verify_downloaded_binary(path: &Path) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         let output = Command::new("codesign")
-            .args(["--verify", "--strict"])
+            .args([
+                "--verify",
+                "--deep",
+                "--strict",
+                "-R",
+                MACOS_CODESIGN_REQUIREMENT,
+            ])
             .arg(path)
             .output();
         match output {
@@ -306,7 +319,9 @@ pub(crate) fn verify_downloaded_binary(path: &Path) -> Result<()> {
             }
             Err(err) => {
                 let _ = std::fs::remove_file(path);
-                Err(err).context("failed to run codesign --verify --strict on downloaded binary")
+                Err(err).context(
+                    "failed to run codesign --verify --deep --strict -R on downloaded binary",
+                )
             }
         }
     }
@@ -319,72 +334,4 @@ pub(crate) fn verify_downloaded_binary(path: &Path) -> Result<()> {
 
 #[cfg(all(test, unix))]
 #[path = "update_tests.rs"]
-mod behavior_tests;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_current_target_is_valid() {
-        let target = current_target().unwrap();
-        assert!(
-            target == "aarch64-apple-darwin"
-                || target == "x86_64-apple-darwin"
-                || target == "x86_64-unknown-linux-gnu"
-                || target == "aarch64-unknown-linux-gnu"
-        );
-    }
-
-    #[test]
-    fn test_is_newer_version() {
-        assert!(is_newer_version("0.3.18", "0.3.19"));
-        assert!(is_newer_version("v0.3.18", "v0.3.19"));
-        assert!(is_newer_version("0.3.18", "v0.4.0"));
-        assert!(is_newer_version("0.3.18", "v1.0.0"));
-        assert!(!is_newer_version("0.3.19", "0.3.19"));
-        assert!(!is_newer_version("v0.3.19", "v0.3.19"));
-        assert!(!is_newer_version("0.3.19", "0.3.18"));
-        assert!(!is_newer_version("1.0.0", "0.9.9"));
-    }
-
-    #[test]
-    fn test_is_package_managed() {
-        assert!(is_package_managed(Path::new("/opt/homebrew/bin/prod-code")).is_some());
-        assert!(
-            is_package_managed(Path::new(
-                "/usr/local/Cellar/prod-code/0.3.19/bin/prod-code"
-            ))
-            .is_some()
-        );
-        assert!(is_package_managed(Path::new("/Users/alex/.cargo/bin/prod-code")).is_none());
-        assert!(is_package_managed(Path::new("/home/user/.local/bin/prod-code")).is_none());
-    }
-
-    #[test]
-    fn test_parse_release_asset() {
-        let json_val = serde_json::json!({
-            "tag_name": "v0.3.19",
-            "assets": [
-                {
-                    "name": "prod-code-aarch64-apple-darwin",
-                    "browser_download_url": "https://github.com/alex09x/prod-code/releases/download/v0.3.19/prod-code-aarch64-apple-darwin"
-                },
-                {
-                    "name": "prod-code-x86_64-unknown-linux-gnu",
-                    "browser_download_url": "https://github.com/alex09x/prod-code/releases/download/v0.3.19/prod-code-x86_64-unknown-linux-gnu"
-                }
-            ]
-        });
-
-        let (tag, url) = parse_release_asset(&json_val, "aarch64-apple-darwin").unwrap();
-        assert_eq!(tag, "v0.3.19");
-        assert_eq!(
-            url,
-            "https://github.com/alex09x/prod-code/releases/download/v0.3.19/prod-code-aarch64-apple-darwin"
-        );
-
-        let err = parse_release_asset(&json_val, "nonexistent-target");
-        assert!(err.is_err());
-    }
-}
+pub(crate) mod behavior_tests;

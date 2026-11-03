@@ -119,11 +119,11 @@ fn install_flow_decides_between_skip_install_and_refusal() {
     let target = current_target().unwrap();
     let assets = tempfile::tempdir().unwrap();
     #[cfg(target_os = "macos")]
-    let v1_bytes = std::fs::read("/usr/bin/true").unwrap();
+    let v1_bytes = crate::update::behavior_tests::test_developer_id_binary_bytes();
     #[cfg(not(target_os = "macos"))]
     let v1_bytes = b"#!/bin/sh\necho fake-v1.0.0\n".to_vec();
     #[cfg(target_os = "macos")]
-    let v2_bytes = std::fs::read("/usr/bin/false").unwrap();
+    let v2_bytes = crate::update::behavior_tests::test_developer_id_binary_bytes();
     #[cfg(not(target_os = "macos"))]
     let v2_bytes = b"#!/bin/sh\necho fake-v2.0.0\n".to_vec();
     for (tag, payload) in [("v1.0.0", &v1_bytes), ("v2.0.0", &v2_bytes)] {
