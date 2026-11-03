@@ -59,6 +59,15 @@ impl GoEngine {
         config: GoConfig,
         request_timeout: Duration,
     ) -> Result<Self> {
+        Self::load_with_timeouts(workspace_root, config, request_timeout, request_timeout).await
+    }
+
+    pub(crate) async fn load_with_timeouts(
+        workspace_root: &Path,
+        config: GoConfig,
+        request_timeout: Duration,
+        initialization_timeout: Duration,
+    ) -> Result<Self> {
         if config.health_probe_interval == Some(Duration::ZERO) {
             anyhow::bail!("gopls health probe interval must be greater than zero");
         }
@@ -193,7 +202,10 @@ impl GoEngine {
         };
 
         // Initialize gopls with workspace root
-        engine.initialize().await?;
+        engine.request_timeout = initialization_timeout;
+        let initialized = engine.initialize().await;
+        engine.request_timeout = request_timeout;
+        initialized?;
         if let Some(interval) = health_probe_interval {
             engine.start_health_probe(interval);
         }
