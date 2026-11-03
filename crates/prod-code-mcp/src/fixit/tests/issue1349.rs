@@ -52,7 +52,8 @@ async fn issue1349_nested_command_directory_does_not_edit_outer_shadow() {
             [
                 "cargo",
                 "clippy",
-                "--workspace",
+                "-p",
+                "fixture",
                 "--all-targets",
                 "--message-format=json",
                 "--",
