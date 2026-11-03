@@ -21,6 +21,9 @@ pub enum Param {
         ty: String,
         value: String,
     },
+    /// Keep the parameter declared under this name in its place, and take it by shared
+    /// reference: its type `T` becomes `&T` and every call passes `&argument` (Rust only).
+    Borrow(String),
 }
 
 /// A reference to the symbol: file, line, column, all 1-based.

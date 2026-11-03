@@ -267,12 +267,39 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                     .await?;
             }
             WireMessage::ShadowRunRequest(req) => {
+                // The proposed files go to the script too, so a test can hand them to a real
+                // compiler and answer with its exit code and `output`.
+                let hypotheses: Vec<serde_json::Value> = req
+                    .hypotheses
+                    .iter()
+                    .map(|h| {
+                        let files: Vec<serde_json::Value> = h
+                            .files
+                            .iter()
+                            .map(|f| {
+                                serde_json::json!({
+                                    "relative_path": f.relative_path,
+                                    "text": f.content.as_deref().map(String::from_utf8_lossy),
+                                })
+                            })
+                            .collect();
+                        serde_json::json!({ "name": h.name, "files": files })
+                    })
+                    .collect();
                 let said = answer(
                     "prod-code/shadow-run",
                     &serde_json::json!({
                         "command": req.command,
+                        "subdir": req.subdir,
+                        "hypotheses": hypotheses,
                     }),
                 );
+                let output = said
+                    .get("output")
+                    .and_then(|o| o.as_str())
+                    .unwrap_or_default()
+                    .as_bytes()
+                    .to_vec();
                 let (results, error) = if let Some(err) = said.get("error").and_then(|e| e.as_str())
                 {
                     (Vec::new(), Some(err.to_string()))
@@ -296,8 +323,8 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                             duration_ms: 10,
                             timed_out: false,
                             error: None,
-                            output_tail: Some(Vec::new()),
-                            output_len: 0,
+                            output_len: output.len() as u64,
+                            output_tail: Some(output.clone()),
                         })
                         .collect();
                     (results, None)

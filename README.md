@@ -314,7 +314,7 @@ and SVG vector graphics are validated directly through built-in syntax parsers.
 | `code_validate_edit` · `code_validate_edits` | in-memory analyzer diagnostics and syntax validation for proposed contents across one or many files before writing; detects broken references and schema violations |
 | `code_diagnostics` | diagnostics for a file, in memory, without running a full build |
 | `code_rename` · `code_safe_delete` | semantic rename across the workspace (a field with its accessors, with `accessors`); delete declaration only when zero references exist, or parameter with arguments |
-| `code_change_signature` | Rust signature changes; Go reorder/removal through gopls and typed literal additions to ordinary functions with compiler checks |
+| `code_change_signature` | Rust signature changes, including `&name` to borrow an owned parameter with every resolved call (the preview is the analyzer's check, which has no borrow checker; it is written only with `apply` and `verify: "compile"`, after `cargo check` accepts it); Go reorder/removal through gopls and typed literal additions to ordinary functions with compiler checks |
 | `code_move` | a declaration moved to another module across languages, with imports it takes and leaves behind |
 | `code_move_method` · `code_move_module` | a method moved to the type of one of its parameters; a whole module moved to another parent with all referencing paths |
 | `code_extract_function` | a selection extracted into a named function across languages; duplicate replacement defaults on within the file (`duplicates: true`); cross-file search requires `other_files: true`, and parameterized matching requires `parameterize: true` (both default false) |

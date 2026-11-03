@@ -10,6 +10,7 @@
 
 //! Change a function's parameter list, with every call site (roadmap 7.1.1).
 
+pub mod borrow;
 pub mod call_sites;
 pub mod change;
 pub mod effects;

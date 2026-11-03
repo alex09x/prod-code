@@ -228,7 +228,7 @@ pub fn split_arguments(text: &str, open: usize) -> Option<Vec<String>> {
     })
 }
 
-fn split_argument_ranges(text: &str, open: usize) -> Option<Vec<Range<usize>>> {
+pub(crate) fn split_argument_ranges(text: &str, open: usize) -> Option<Vec<Range<usize>>> {
     let s = text.as_bytes();
     let mut args = Vec::new();
     let (mut depth, mut angle) = (0i32, 0i32);

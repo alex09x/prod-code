@@ -39,13 +39,17 @@ pub(crate) async fn handle_change_signature(
         .context("Missing 'params' argument: the parameter list the function should end up with")?;
     let mut params = Vec::with_capacity(specs.len());
     for spec in specs {
-        let spec = spec
-            .as_str()
-            .context("every entry of `params` is a string: `name`, or `name: Type = expression`")?;
+        let spec = spec.as_str().context(
+            "every entry of `params` is a string: `name`, `&name`, or `name: Type = expression`",
+        )?;
         params.push(crate::signature::parse_param(spec)?);
     }
     let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
-    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    // `force` overrides no refusal of a borrow conversion (#1810), the compile gate's included.
+    // Its `apply` without `verify: "compile"` reaches `signature::borrow`, which refuses it before
+    // any analyzer request: the analyzer has no borrow checker, so only the gate below writes it.
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false)
+        && !crate::signature::borrow::requested(&params);
     let file_path = resolve_file_path(workspace_root, path_str);
     let ext = file_path
         .extension()
@@ -101,17 +105,22 @@ pub(crate) async fn handle_change_signature(
     }
     let gate = if verify {
         let files = change.rewritten.clone();
-        Some(
-            compile_gate(
-                remote,
-                workspace_root,
-                &files,
-                change.diagnostics.is_empty(),
-                apply,
-                force,
-            )
-            .await?,
+        let mut gate = compile_gate(
+            remote,
+            workspace_root,
+            &files,
+            change.diagnostics.is_empty(),
+            apply,
+            force,
         )
+        .await?;
+        if crate::signature::borrow::requested(&params) {
+            gate.text = gate.text.replace(
+                crate::tools::compile_gate::FORCE_HINT,
+                " `force` does not override it for a borrow conversion.\n",
+            );
+        }
+        Some(gate)
     } else {
         None
     };

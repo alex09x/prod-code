@@ -147,7 +147,10 @@ pub fn rewrite_file_calls(
         let kept_indices = request
             .iter()
             .filter_map(|r| match r {
-                Param::Keep(name) => decl.params.iter().position(|d| &d.name == name),
+                // A borrow is refused at `signature_polyglot::change_with`'s entry.
+                Param::Keep(name) | Param::Borrow(name) => {
+                    decl.params.iter().position(|d| &d.name == name)
+                }
                 Param::Add { .. } => None,
             })
             .collect::<Vec<_>>();
@@ -205,7 +208,7 @@ pub fn rewrite_file_calls(
         let mut new_args = Vec::new();
         for r in request {
             match r {
-                Param::Keep(name) => {
+                Param::Keep(name) | Param::Borrow(name) => {
                     let orig_idx = decl.params.iter().position(|d| &d.name == name);
                     let orig_param = decl.params.iter().find(|d| &d.name == name);
 

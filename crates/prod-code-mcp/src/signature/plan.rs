@@ -43,6 +43,11 @@ pub fn plan(declared: &[Declared], request: &[Param]) -> Result<Plan> {
                 list.push(format!("{name}: {ty}"));
                 args.push(None);
             }
+            // Planned by `signature::borrow`, which keeps every other parameter as it is.
+            Param::Borrow(name) => anyhow::bail!(
+                "`&{name}` borrows a parameter in place and is planned on its own: list every \
+                 other declared parameter unchanged, in its declared order"
+            ),
         }
     }
     let dropped = declared

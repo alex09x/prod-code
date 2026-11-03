@@ -36,6 +36,12 @@ pub(crate) fn addition_plan(declared: &[GoParam], request: &[Param]) -> Result<V
                 );
                 old_at += 1;
             }
+            Param::Borrow(name) => anyhow::bail!(
+                "{}",
+                refusal(format!(
+                    "borrowing `{name}` (`&{name}`) is supported for Rust only"
+                ))
+            ),
             Param::Add { name, ty, value } => {
                 anyhow::ensure!(
                     go_identifier(name),
@@ -123,7 +129,8 @@ pub(crate) fn requested_arguments(old: &[String], request: &[Param]) -> Vec<Stri
     let mut out = Vec::with_capacity(request.len());
     for item in request {
         match item {
-            Param::Keep(_) => {
+            // A borrow never reaches here: `addition_plan` refuses it first.
+            Param::Keep(_) | Param::Borrow(_) => {
                 out.push(old[old_at].clone());
                 old_at += 1;
             }

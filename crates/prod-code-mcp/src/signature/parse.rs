@@ -15,11 +15,22 @@ use crate::signature::types::{Declared, Param};
 /// Parses one entry of a requested parameter list.
 ///
 /// `name` keeps the parameter declared under that name, in this position; `name: Type = expr`
-/// adds a parameter and passes `expr` at every call site. A declared parameter that the
-/// request does not list is removed.
+/// adds a parameter and passes `expr` at every call site; `&name` keeps it in place and takes it
+/// by shared reference. A declared parameter that the request does not list is removed.
 pub fn parse_param(spec: &str) -> Result<Param> {
     let spec = spec.trim();
     anyhow::ensure!(!spec.is_empty(), "empty parameter");
+    if let Some(name) = spec.strip_prefix('&').map(str::trim_start) {
+        anyhow::ensure!(
+            !name.starts_with("mut ") && !name.starts_with('&'),
+            "`{spec}`: only a shared borrow of an existing parameter is supported, written `&name`"
+        );
+        anyhow::ensure!(
+            is_ident(name),
+            "`{spec}` is not a borrow of an existing parameter; write `&name` with the declared name"
+        );
+        return Ok(Param::Borrow(name.to_string()));
+    }
     match split_at_top_level(spec, ':') {
         None => {
             if let Some((lhs, val)) = split_at_top_level(spec, '=') {

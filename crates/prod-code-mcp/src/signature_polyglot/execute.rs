@@ -36,6 +36,8 @@ pub async fn change_with(
     force: bool,
 ) -> Result<SignatureChange> {
     let lang = Language::of(file).context("unsupported language for polyglot change_signature")?;
+    // Every `Param::Borrow` arm below is past this refusal.
+    crate::signature::borrow::refuse_outside_rust(request, &format!("{lang:?}"))?;
     let text = std::fs::read_to_string(file)
         .with_context(|| format!("cannot read file {}", file.display()))?;
 
@@ -80,7 +82,7 @@ pub async fn change_with(
     let mut seen = HashSet::new();
     for r in request {
         let name = match r {
-            Param::Keep(n) => n,
+            Param::Keep(n) | Param::Borrow(n) => n,
             Param::Add { name, .. } => name,
         };
         if !seen.insert(name) {
@@ -92,7 +94,7 @@ pub async fn change_with(
     let mut dropped = Vec::new();
     for d in &decl.params {
         if !request.iter().any(|r| match r {
-            Param::Keep(name) => name == &d.name,
+            Param::Keep(name) | Param::Borrow(name) => name == &d.name,
             Param::Add { name, .. } => name == &d.name,
         }) {
             dropped.push(d.name.clone());
@@ -118,7 +120,7 @@ pub async fn change_with(
 
     for r in request {
         match r {
-            Param::Keep(name) => {
+            Param::Keep(name) | Param::Borrow(name) => {
                 let orig = decl.params.iter().find(|d| &d.name == name).unwrap();
                 new_decl_params.push(orig.raw.trim().to_string());
             }
