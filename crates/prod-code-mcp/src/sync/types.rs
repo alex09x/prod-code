@@ -77,6 +77,7 @@ pub struct WorkspaceIdentity {
 #[derive(Debug)]
 pub struct SyncPlan {
     pub files: Vec<FileDelta>,
+    pub omitted: Vec<crate::sync::UploadExclusion>,
     pub(crate) state: SyncCache,
     pub(crate) node: String,
     pub initial: bool,
@@ -116,6 +117,7 @@ pub struct SyncOutcome {
     pub server_workspace_root: String,
     pub changed_paths: Vec<String>,
     pub stale_paths: Vec<String>,
+    pub omitted: Vec<crate::sync::UploadExclusion>,
     pub node: String,
 }
 

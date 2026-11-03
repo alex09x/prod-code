@@ -125,6 +125,7 @@ async fn run_remote_rooted_inner(
         mut framed,
         server_root,
         executor,
+        sync_omitted,
     } = prepare_rooted(remote, root, &identity, &mut on_output).await?;
     on_root(&server_root);
     let mut monitor = ExecMonitor::new(timeout_secs);
@@ -175,9 +176,14 @@ async fn run_remote_rooted_inner(
                         reason: "exec finished".to_string(),
                     })
                     .await;
+                // Only the written-back list is classified; nothing else is walked.
+                let upload_excluded =
+                    crate::sync::classify_upload_exclusions(root, &writeback.pulled);
                 return Ok(RemoteOutcome {
                     executor,
                     exit,
+                    sync_omitted,
+                    upload_excluded,
                     pulled_files: writeback.pulled,
                     relaid_files: writeback.relaid,
                     kept_files: writeback.kept,

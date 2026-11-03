@@ -157,6 +157,10 @@ async fn run_exec_command(
     )
     .await?;
     let warning = outcome.platform_warning(workspace_root);
+    let sync_warning = outcome.sync_warning();
+    let upload_warning = outcome.upload_warning();
+    let sync_omitted = outcome.sync_omitted;
+    let upload_excluded = outcome.upload_excluded;
     let exit = outcome.exit;
     if exit.error.is_none() {
         crate::exec::remember_exec_node(workspace_root, remote);
@@ -203,17 +207,48 @@ async fn run_exec_command(
             outcome.kept_files.join(", ")
         ));
     }
+    if let Some(warning) = sync_warning {
+        text.push_str(&format!("[{warning}]\n"));
+    }
     if let Some(warning) = warning {
         text.push_str(&format!("[{warning}]\n"));
     }
+    if let Some(warning) = upload_warning {
+        text.push_str(&format!("[{warning}]\n"));
+    }
     text.push_str(&tail.text());
-    Ok(
-        if exit.error.is_none() && !exit.timed_out && exit.exit_code.is_some() {
-            McpToolCallResult::text(text)
-        } else {
-            McpToolCallResult::error(text)
-        },
-    )
+    let mut result = if exit.error.is_none() && !exit.timed_out && exit.exit_code.is_some() {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    };
+    const MAX_STRUCTURED_EXCLUSIONS: usize = 64;
+    let mut structured = serde_json::Map::new();
+    if !sync_omitted.is_empty() {
+        let cap = sync_omitted.len().min(MAX_STRUCTURED_EXCLUSIONS);
+        structured.insert(
+            "sync_omitted".into(),
+            serde_json::to_value(&sync_omitted[..cap])?,
+        );
+        if sync_omitted.len() > MAX_STRUCTURED_EXCLUSIONS {
+            structured.insert("sync_omitted_total".into(), sync_omitted.len().into());
+        }
+    }
+    if !upload_excluded.is_empty() {
+        // Machine-readable reasons alongside the compact text warning (#1813).
+        let cap = upload_excluded.len().min(MAX_STRUCTURED_EXCLUSIONS);
+        structured.insert(
+            "upload_excluded".into(),
+            serde_json::to_value(&upload_excluded[..cap])?,
+        );
+        if upload_excluded.len() > MAX_STRUCTURED_EXCLUSIONS {
+            structured.insert("upload_excluded_total".into(), upload_excluded.len().into());
+        }
+    }
+    if !structured.is_empty() {
+        result.structured_content = Some(serde_json::Value::Object(structured));
+    }
+    Ok(result)
 }
 
 const DEFAULT_COVERAGE_TOOLCHAIN: &str = "1.97.1";

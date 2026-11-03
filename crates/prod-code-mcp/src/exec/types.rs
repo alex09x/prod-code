@@ -8,6 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+use crate::sync::UploadExclusion;
 use prod_code_protocol::{ExecExit, RemoteExecResult};
 use serde::{Deserialize, Serialize};
 
@@ -55,6 +56,11 @@ pub struct RemoteOutcome {
     /// Written files with platform evidence in either the pre-write or returned bytes.
     /// Retained after deletion or removal of the last platform marker.
     pub platform_files: Vec<String>,
+    /// Unignored local checkout files omitted during pre-flight sync (#1836).
+    pub sync_omitted: Vec<UploadExclusion>,
+    /// Written-back files the next upload leaves out under the ordinary sync rules, so
+    /// another node's copy never sees them (#1813).
+    pub upload_excluded: Vec<UploadExclusion>,
 }
 
 impl RemoteOutcome {
@@ -65,6 +71,16 @@ impl RemoteOutcome {
             &self.changed_code(),
             &self.platform_files,
         )
+    }
+
+    /// Compact warning naming [`Self::sync_omitted`] and `[sync] include` (#1836).
+    pub fn sync_warning(&self) -> Option<String> {
+        crate::sync::sync_omission_warning(&self.sync_omitted)
+    }
+
+    /// The compact warning naming [`Self::upload_excluded`] and the portable alternatives.
+    pub fn upload_warning(&self) -> Option<String> {
+        crate::sync::upload_exclusion_warning(&self.upload_excluded)
     }
 
     /// The written-back files whose code changed, not only its layout.

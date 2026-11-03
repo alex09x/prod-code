@@ -10,6 +10,8 @@
 
 use crate::sync::cache::{load_sync_cache, save_sync_cache};
 use crate::sync::entry::{fits_sync, sync_file_entry};
+use crate::sync::git_symlink::extend_listed_via_tracked_dir_symlinks;
+use crate::sync::include::SyncInclude;
 use crate::sync::read::{expand_contained_dir_symlink, read_file_or_contained_symlink};
 use crate::sync::relevance::is_relevant_code_or_manifest_file;
 use crate::sync::types::SyncCache;
@@ -55,12 +57,7 @@ pub(crate) fn git_listed_paths(root: &Path, paths: &[String]) -> HashSet<String>
         .map(|path| String::from_utf8_lossy(path).into_owned())
         .collect();
     if listed.len() < paths.len() {
-        let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-        for expanded in tracked_contained_dir_symlink_files(&canonical_root) {
-            if paths.contains(&expanded) {
-                listed.insert(expanded);
-            }
-        }
+        extend_listed_via_tracked_dir_symlinks(root, paths, &mut listed);
     }
     listed
 }
@@ -267,6 +264,7 @@ pub(crate) fn collect_git_dirty_files(root: &Path, use_cache: bool) -> Result<Ve
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let sync_include = SyncInclude::load(root);
     let mut deltas = Vec::new();
     let mut cache = if use_cache {
         load_sync_cache(root)
@@ -316,7 +314,7 @@ pub(crate) fn collect_git_dirty_files(root: &Path, use_cache: bool) -> Result<Ve
 
         for candidate_rel in candidate_paths {
             let rel_path = candidate_rel.as_str();
-            if !is_relevant_code_or_manifest_file(rel_path) {
+            if !is_relevant_code_or_manifest_file(rel_path) && !sync_include.is_included(rel_path) {
                 continue;
             }
 

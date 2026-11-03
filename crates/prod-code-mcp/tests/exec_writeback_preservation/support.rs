@@ -186,5 +186,8 @@ pub async fn run(
         relaid_files: outcome.relaid_files,
         kept_files: outcome.kept_files,
         platform_files: outcome.platform_files,
+        sync_omitted: Vec::new(),
+        // Upload participation is classified for plain exec only (#1813).
+        upload_excluded: Vec::new(),
     }
 }

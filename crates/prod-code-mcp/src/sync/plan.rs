@@ -10,12 +10,15 @@
 
 use crate::sync::cache::{load_sync_cache_for, save_sync_cache_for};
 use crate::sync::entry::{fits_sync, is_executable, sync_file_entry, unchanged};
-use crate::sync::filter_path::{SyncPathFilter, is_filesystem_root, is_synced_git_path};
+use crate::sync::filter_path::{SyncPathFilter, is_filesystem_root, is_synced_git_path_with};
 use crate::sync::git::{
-    changed_paths, git_head, git_listed_paths, git_output, tracked_contained_dir_symlink_files,
+    changed_paths, git_head, git_listed_files, git_listed_paths, git_output,
+    tracked_contained_dir_symlink_files,
 };
+use crate::sync::include::SyncInclude;
+use crate::sync::participation::collect_git_sync_omissions;
 use crate::sync::read::read_file_or_contained_symlink;
-use crate::sync::scan::scan_workspace_files;
+use crate::sync::scan::scan_workspace_files_with_omitted;
 use crate::sync::types::{RELEVANCE_VERSION, SyncCache, SyncPlan};
 use anyhow::{Context, Result};
 use prod_code_protocol::FileDelta;
@@ -78,15 +81,33 @@ pub fn prepare_workspace_sync_for(
     // On a full sync, ensure any clean tracked files not yet populated in the cache
     // (e.g. from an earlier subpath sync or cache reset) are included in changes so
     // state.files and the gateway mirror manifest are complete.
+    let sync_include = SyncInclude::load(&canonical_root);
+    let filter = SyncPathFilter::new(&canonical_root, subpath)?;
+    let mut files = Vec::new();
+    let newly_ineligible: Vec<String> = state
+        .files
+        .keys()
+        .filter(|p| filter.includes(p) && !is_synced_git_path_with(p, &sync_include))
+        .cloned()
+        .collect();
+    for rel in newly_ineligible {
+        state.files.remove(&rel);
+        changes.remove(&rel);
+        files.push(FileDelta {
+            relative_path: rel,
+            content: None,
+            is_executable: false,
+        });
+    }
+    let mut tracked_set = HashSet::new();
     if subpath.is_none()
         && let Ok(output) = git_output(&canonical_root, ["ls-files", "-z"])
     {
-        let mut tracked_set = HashSet::new();
         for path in output.split(|b| *b == 0).filter(|p| !p.is_empty()) {
             let rel = String::from_utf8_lossy(path);
             if !state.files.contains_key(rel.as_ref())
                 && !changes.contains_key(rel.as_ref())
-                && is_synced_git_path(rel.as_ref())
+                && is_synced_git_path_with(rel.as_ref(), &sync_include)
             {
                 changes.insert(rel.to_string(), false);
             }
@@ -95,7 +116,7 @@ pub fn prepare_workspace_sync_for(
         for exp in tracked_contained_dir_symlink_files(&canonical_root) {
             if !state.files.contains_key(&exp)
                 && !changes.contains_key(&exp)
-                && is_synced_git_path(&exp)
+                && is_synced_git_path_with(&exp, &sync_include)
             {
                 changes.insert(exp.clone(), false);
             }
@@ -105,13 +126,30 @@ pub fn prepare_workspace_sync_for(
         state
             .files
             .retain(|path, _| tracked_set.contains(path) || current_dirty.contains(path));
+    } else if let Some(sub) = subpath {
+        let target = if sub.is_absolute() {
+            sub.to_path_buf()
+        } else {
+            canonical_root.join(sub)
+        };
+        if let Some(listed) = git_listed_files(&canonical_root, &target) {
+            for rel in listed {
+                if !state.files.contains_key(&rel)
+                    && !changes.contains_key(&rel)
+                    && is_synced_git_path_with(&rel, &sync_include)
+                {
+                    changes.insert(rel.clone(), false);
+                }
+                tracked_set.insert(rel);
+            }
+        }
     }
-    let filter = SyncPathFilter::new(&canonical_root, subpath)?;
-    let mut files = Vec::new();
 
     for (relative_path, deleted) in changes {
         // Every path here came from git: tracked, or untracked and not ignored.
-        if !filter.includes(&relative_path) || !is_synced_git_path(&relative_path) {
+        if !filter.includes(&relative_path)
+            || !is_synced_git_path_with(&relative_path, &sync_include)
+        {
             continue;
         }
 
@@ -163,7 +201,7 @@ pub fn prepare_workspace_sync_for(
     let listed = git_listed_paths(&canonical_root, &lost);
     for rel in lost {
         let full_path = canonical_root.join(&rel);
-        if !listed.contains(&rel) || !is_synced_git_path(&rel) {
+        if !listed.contains(&rel) || !is_synced_git_path_with(&rel, &sync_include) {
             state.files.remove(&rel);
             files.push(FileDelta {
                 relative_path: rel,
@@ -208,6 +246,14 @@ pub fn prepare_workspace_sync_for(
         }
     }
 
+    let omitted = collect_git_sync_omissions(
+        &canonical_root,
+        tracked_set.iter().chain(current_dirty.iter()),
+        &state.files,
+        &filter,
+        &sync_include,
+    );
+
     // A partial sync cannot advance the workspace-wide base: changes outside the selected path
     // still need to be included by the next full sync.
     if subpath.is_none() {
@@ -216,6 +262,7 @@ pub fn prepare_workspace_sync_for(
     }
     Ok(SyncPlan {
         files,
+        omitted,
         state,
         node: node.to_string(),
         initial,
@@ -278,7 +325,7 @@ fn prepare_non_git_workspace_sync(
         }
     }
 
-    let scanned = scan_workspace_files(root, subpath)?;
+    let (scanned, omitted) = scan_workspace_files_with_omitted(root, subpath)?;
     let mut files = Vec::new();
     let mut present = HashSet::new();
     for mut delta in scanned {
@@ -318,6 +365,7 @@ fn prepare_non_git_workspace_sync(
     state.dirty_paths.clear();
     Ok(SyncPlan {
         files,
+        omitted,
         state,
         node: node.to_string(),
         initial: subpath.is_none(),

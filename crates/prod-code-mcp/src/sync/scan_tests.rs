@@ -79,9 +79,15 @@ fn coverage_scan_single_files_and_filtered_directories() {
         "refusing to scan filesystem root: /"
     );
     assert_eq!(
-        walk_dir(dir.path(), Path::new("/"), &mut vec![])
-            .unwrap_err()
-            .to_string(),
+        walk_dir(
+            dir.path(),
+            Path::new("/"),
+            &SyncInclude::default(),
+            &mut vec![],
+            &mut vec![],
+        )
+        .unwrap_err()
+        .to_string(),
         "refusing to scan filesystem root: /"
     );
 }

@@ -163,7 +163,7 @@ pub(crate) async fn handle_sync(
     } else {
         &outcome.server_workspace_root
     };
-    let info = format!(
+    let mut info = format!(
         "⚡ Fast-Sync Completed\n\
                  • Files planned: {}\n\
                  • Files updated: {}\n\
@@ -172,7 +172,16 @@ pub(crate) async fn handle_sync(
                  • Remote workspace: {remote_root}",
         outcome.planned, outcome.files_updated, outcome.files_deleted
     );
-    Ok(McpToolCallResult::text(info))
+    if let Some(warning) = crate::sync::sync_omission_warning(&outcome.omitted) {
+        info.push_str(&format!("\n• {warning}"));
+    }
+    let mut result = McpToolCallResult::text(info);
+    if !outcome.omitted.is_empty() {
+        let cap = outcome.omitted.len().min(64);
+        result.structured_content =
+            Some(serde_json::json!({ "sync_omitted": &outcome.omitted[..cap] }));
+    }
+    Ok(result)
 }
 
 pub(crate) async fn handle_status(remote: SocketAddr) -> Result<McpToolCallResult> {

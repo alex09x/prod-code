@@ -9,6 +9,7 @@
  */
 
 use crate::sync::git::git_listed_files;
+use crate::sync::include::SyncInclude;
 use crate::sync::relevance::is_relevant_code_or_manifest_file;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -162,4 +163,9 @@ pub fn is_synced_git_path(rel_path: &str) -> bool {
         }
     }
     path.file_name().and_then(|n| n.to_str()) != Some(".DS_Store")
+}
+
+/// [`is_synced_git_path`], plus explicit `[sync] include` paths from `prod-code.toml` (#1836).
+pub fn is_synced_git_path_with(rel_path: &str, include: &SyncInclude) -> bool {
+    is_synced_git_path(rel_path) || include.is_included(rel_path)
 }

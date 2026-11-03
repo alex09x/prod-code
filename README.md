@@ -454,6 +454,20 @@ workspace view. Isolation from primary analyzer caches is therefore not universa
 **Builds and tests run on the node**, in the workspace's own `target/`, which stays warm
 between runs. Files a command changes are written back into your checkout.
 
+**Mirror omissions and `[sync] include`.** Ordinary sync skips output and data trees
+(`results/`, `artifacts/`, `site/data/`, `data/`, `target/`…), git-ignored or `.ignore`-matched
+paths, directories matched by `[watch] ignore` (non-Git workspaces), hidden paths, unlisted
+extensions (non-Git workspaces) and files over the per-file size cap. When unignored local
+files in output/data directories or over the size cap are omitted before `exec` or `sync`,
+`prod-code` prints a `sync warning` (`structuredContent.sync_omitted` in `code_exec` and
+`code_sync`), and when an `exec` writes back files that the next upload will skip, it prints an
+`upload warning` (`structuredContent.upload_excluded` in `code_exec`). To upload required
+checkout inputs (such as `site/data/**` or non-Git CSV fixtures) within ignore, containment and
+size limits, add `[sync] include = ["site/data/**"]` to `prod-code.toml`; in a Git checkout,
+unignored `fixtures/`, `testdata/` or `tests/fixtures/` paths also upload any extension within
+the size limit, or pin the workspace to one node (see
+[Pinning a Workspace to One Node](#pinning-a-workspace-to-one-node)).
+
 **Several nodes.** Gateways gossip every 5 s; a client needs one seed address. A checkout is
 placed on the node that already holds it, otherwise on the quietest one that serves its
 language. `--engines rust,go` restricts a node to what it should serve, so a macOS node can be

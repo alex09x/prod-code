@@ -87,8 +87,11 @@ fn a_formatter_s_rewrite_is_layout_and_an_edit_is_not() {
         relaid_files: vec!["a.rs".into()],
         kept_files: Vec::new(),
         platform_files: Vec::new(),
+        sync_omitted: Vec::new(),
+        upload_excluded: Vec::new(),
     };
     assert_eq!(outcome.changed_code(), vec!["b.rs".to_string()]);
+    assert_eq!(outcome.upload_warning(), None);
 }
 
 #[test]
