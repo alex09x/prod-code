@@ -38,6 +38,7 @@ pub async fn change_with(
     force: bool,
 ) -> Result<SignatureChange> {
     let _ = force;
+    crate::signature::borrow::refuse_outside_rust(request, "Go")?;
     anyhow::ensure!(
         file.extension().is_some_and(|e| e == "go"),
         "{} is not a Go file",

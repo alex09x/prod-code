@@ -22,6 +22,11 @@ pub(crate) fn permutation(declared: &[GoParam], request: &[Param]) -> Result<Vec
     for want in request {
         let name = match want {
             Param::Keep(name) => name,
+            Param::Borrow(name) => {
+                return Err(refusal(format!(
+                    "borrowing `{name}` (`&{name}`) is supported for Rust only"
+                )));
+            }
             Param::Add { name, .. } => {
                 return Err(refusal(format!(
                     "adding the parameter `{name}` is not supported: gopls {GOPLS_VERSION} \

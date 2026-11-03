@@ -40,8 +40,9 @@ pub fn edits(
         let body = &content[local.body_open..local.body_close];
         for (index, param) in local.params.iter().enumerate() {
             let selected_name = &selected.params[index].name;
+            // A borrow is refused at `signature_polyglot::change_with`'s entry.
             let retained = request.iter().any(|p| match p {
-                Param::Keep(name) => name == selected_name,
+                Param::Keep(name) | Param::Borrow(name) => name == selected_name,
                 Param::Add { name, .. } => name == &param.name,
             });
             anyhow::ensure!(
@@ -54,7 +55,7 @@ pub fn edits(
     let mut params = Vec::new();
     for param in request {
         params.push(match param {
-            Param::Keep(name) => {
+            Param::Keep(name) | Param::Borrow(name) => {
                 let index = selected
                     .params
                     .iter()

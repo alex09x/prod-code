@@ -68,6 +68,11 @@ pub(crate) fn refuse_incomplete(apply: bool, unmatched: &[String]) -> Result<()>
     Ok(())
 }
 
+/// The gate's note when the compiler refuses a write, and the hint that `force` writes it anyway;
+/// a tool whose refusal `force` does not lift replaces the hint.
+pub(crate) const REJECTED: &str = "\nnothing was written: the compiler rejects it.";
+pub(crate) const FORCE_HINT: &str = " Pass `force: true` to write it anyway.\n";
+
 /// What asking the compiler added to a write tool's run.
 pub(crate) struct CompileGate {
     pub(crate) text: String,
@@ -109,9 +114,8 @@ pub(crate) async fn compile_gate(
             )?;
             applied = true;
         } else {
-            text.push_str(
-                "\nnothing was written: the compiler rejects it. Pass `force: true` to write it anyway.\n",
-            );
+            text.push_str(REJECTED);
+            text.push_str(FORCE_HINT);
         }
     }
     Ok(CompileGate {

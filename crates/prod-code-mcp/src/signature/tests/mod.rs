@@ -10,6 +10,9 @@
 
 mod arguments;
 mod attribution;
+mod borrow;
+mod borrow_flow;
+mod borrow_verify;
 mod effects;
 mod parsing_and_rules;
 mod positions;
