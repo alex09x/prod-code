@@ -182,7 +182,7 @@ pub fn cargo_package_name(manifest: &Path) -> Option<String> {
             && let Some(rest) = line.strip_prefix("name")
             && let Some(value) = rest.trim_start().strip_prefix('=')
         {
-            return Some(value.trim().trim_matches('"').to_string());
+            return Some(value.trim().trim_matches(['"', '\'']).to_string());
         }
     }
     None

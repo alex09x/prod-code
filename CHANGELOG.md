@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Single-Quoted Cargo Package Names and Polyglot Expression Fallback** (`crates/prod-code-mcp`, #1855): `cargo_package_name` strips TOML single quotes so scoped Cargo verification commands pass an unquoted `-p <package>` name, and polyglot expression helper codegen falls back to the `OutputKind::Expression` payload when `selection_body` is empty.
+
 ## v0.3.51 — 2026-11-03
 
 ### Fixed

@@ -4924,7 +4924,8 @@ const MM_TAX: &str = "pub struct Tax {\n    pub rate: u32,\n}\n\nimpl Tax {\n   
 /// the receiver becomes `order: &crate::Order`, the body swaps the two, the method joins
 /// `impl Tax`, a method call and a path call swap receiver and argument, and a call whose
 /// receiver is `Order::new(1)` blocks the write (the two would run in the other order) until
-/// `force`. `move` on the method refuses and names the method move.
+/// `force`. `move` on the inherent method into a sibling module that declares `struct Order`
+/// refuses to guess the shadowed owner type.
 #[tokio::test]
 async fn a_method_moves_to_the_type_of_its_parameter() {
     let ws = workspace();
@@ -4939,7 +4940,13 @@ async fn a_method_moves_to_the_type_of_its_parameter() {
     commit(&ws);
     let (l, t) = (lib.clone(), tax.clone());
     let remote = scripted_gateway(Arc::new(move |method, params| match method {
-        "textDocument/definition" => answers::locations(&t, &[(1, 12)]),
+        "textDocument/definition" => {
+            if params.pointer("/position/line").and_then(|l| l.as_u64()) == Some(6) {
+                answers::locations(&l, &[(3, 12)])
+            } else {
+                answers::locations(&t, &[(1, 12)])
+            }
+        }
         // The parameter `tax` (13:30) is used once in the body; the method is called four times.
         "textDocument/references"
             if params.pointer("/position/character").and_then(|c| c.as_u64()) == Some(29) =>
@@ -4949,11 +4956,25 @@ async fn a_method_moves_to_the_type_of_its_parameter() {
         "textDocument/references" => {
             answers::locations(&l, &[(19, 7), (19, 33), (23, 19), (27, 12)])
         }
-        "textDocument/documentSymbol" => serde_json::json!([{
-            "name": "price_with", "kind": 6,
-            "range": { "start": { "line": 12, "character": 4 }, "end": { "line": 14, "character": 5 } },
-            "selectionRange": { "start": { "line": 12, "character": 11 }, "end": { "line": 12, "character": 21 } }
-        }]),
+        "textDocument/documentSymbol" => {
+            let uri = params
+                .pointer("/textDocument/uri")
+                .and_then(|u| u.as_str())
+                .unwrap_or_default();
+            if uri.ends_with("tax.rs") {
+                serde_json::json!([{
+                    "name": "Order", "kind": 23,
+                    "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 16 } },
+                    "selectionRange": { "start": { "line": 0, "character": 11 }, "end": { "line": 0, "character": 16 } }
+                }])
+            } else {
+                serde_json::json!([{
+                    "name": "price_with", "kind": 6,
+                    "range": { "start": { "line": 12, "character": 4 }, "end": { "line": 14, "character": 5 } },
+                    "selectionRange": { "start": { "line": 12, "character": 11 }, "end": { "line": 12, "character": 21 } }
+                }])
+            }
+        }
         "textDocument/diagnostic" => answers::no_diagnostics(),
         _ => serde_json::Value::Null,
     }))
@@ -4962,9 +4983,9 @@ async fn a_method_moves_to_the_type_of_its_parameter() {
     let refused =
         prod_code_mcp::move_item::move_item(remote, &root, &lib, 13, 12, &tax, false, false)
             .await
-            .expect_err("a method is not a free item");
+            .expect_err("a method is not moved into a module that shadows its owner type");
     assert!(
-        format!("{refused:#}").contains("move-method"),
+        format!("{refused:#}").contains("target declares a type named `Order`"),
         "{refused:#}"
     );
 
