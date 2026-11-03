@@ -62,8 +62,9 @@ fn missing_html_server(error: &anyhow::Error) -> bool {
     ]
     .iter()
     .any(|word| message.contains(word))
-        && message.contains("html language server did not start")
-        && (message.contains("no such file or directory") || message.contains("os error 2"))
+        && ((message.contains("html language server did not start")
+            && (message.contains("no such file or directory") || message.contains("os error 2")))
+            || message.contains("no reachable gateway serves html"))
 }
 
 /// Keep fallback and its read-lock wait inside the original caller's navigation deadline.

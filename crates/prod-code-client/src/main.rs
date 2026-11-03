@@ -102,33 +102,35 @@ async fn run_cli() -> Result<()> {
         ),
         _ => false,
     };
-    let (cwd_subproject, cwd_engine) =
-        if matches!(cli.command, Some(Commands::Grep { .. })) || local_source {
-            // Text search and checkout reads do not need the target file's language server.
-            (None, None)
-        } else {
-            cwd_root
-                .as_deref()
-                .map(|root| {
-                    let tokens = command_path_tokens(cli.command.as_ref());
-                    let cwd = env::current_dir().unwrap_or_else(|_| root.to_path_buf());
-                    let hint = placement_hint(root, &cwd, &tokens);
-                    if matches!(
-                        cli.command,
-                        Some(
-                            Commands::Check { .. }
-                                | Commands::Lint { .. }
-                                | Commands::Test { .. }
-                                | Commands::Benchmarks { .. }
-                        )
-                    ) {
-                        prod_code_mcp::verify::verify_project(root, Some(&hint))
-                    } else {
-                        prod_code_mcp::sync::engine_project(root, &hint)
-                    }
-                })
-                .unwrap_or((None, None))
-        };
+    let (cwd_subproject, cwd_engine) = if matches!(cli.command, Some(Commands::Grep { .. }))
+        || local_source
+        || cli::can_defer_html_definition(cli.command.as_ref(), cwd_root.as_deref())
+    {
+        // Text search and checkout reads do not need the target file's language server.
+        (None, None)
+    } else {
+        cwd_root
+            .as_deref()
+            .map(|root| {
+                let tokens = command_path_tokens(cli.command.as_ref());
+                let cwd = env::current_dir().unwrap_or_else(|_| root.to_path_buf());
+                let hint = placement_hint(root, &cwd, &tokens);
+                if matches!(
+                    cli.command,
+                    Some(
+                        Commands::Check { .. }
+                            | Commands::Lint { .. }
+                            | Commands::Test { .. }
+                            | Commands::Benchmarks { .. }
+                    )
+                ) {
+                    prod_code_mcp::verify::verify_project(root, Some(&hint))
+                } else {
+                    prod_code_mcp::sync::engine_project(root, &hint)
+                }
+            })
+            .unwrap_or((None, None))
+    };
     // A nested project of another language is placed under its own key, so its node does not
     // displace the checkout's own placement and back again on the next query (#125).
     let placement_key = match (&cwd_subproject, cwd_engine) {
