@@ -141,3 +141,38 @@ fn a_relative_workspace_root_is_resolved_against_the_current_directory() {
             .contains(&dir.path().join("Cargo.toml"))
     );
 }
+
+#[test]
+fn a_relative_member_snapshot_keeps_the_requested_member_root() {
+    let (dir, _) = small_crate("");
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[workspace]\nmembers = ['member']\nresolver = '2'\n",
+    )
+    .unwrap();
+    let member = dir.path().join("member");
+    std::fs::create_dir_all(member.join("src")).unwrap();
+    std::fs::write(
+        member.join("Cargo.toml"),
+        "[package]\nname = 'member'\nversion = '0.1.0'\nedition = '2021'\n",
+    )
+    .unwrap();
+    std::fs::write(member.join("src/lib.rs"), "pub fn member_fn() {}\n").unwrap();
+    std::fs::write(
+        member.join("prod-code.toml"),
+        "[rust]\nproc_macro_srv = 'disabled'\n",
+    )
+    .unwrap();
+    let cwd = std::env::current_dir().unwrap();
+    let mut relative = std::path::PathBuf::new();
+    for _ in cwd.components().skip(1) {
+        relative.push("..");
+    }
+    relative.push(member.strip_prefix("/").unwrap());
+    let engine = RustEngine::load(&relative).expect("loads the relative member");
+    assert_eq!(engine.workspace_root, relative);
+    assert_eq!(
+        engine.snapshot_for(&relative).workspace_root,
+        member.canonicalize().unwrap()
+    );
+}
