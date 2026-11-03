@@ -14,7 +14,7 @@ pub mod ignore;
 pub mod types;
 
 pub use ignore::{IgnoreSnapshot, is_baseline_ignored, is_config_or_ignore_file};
-pub use types::{Config, DEFAULT_MAX_FRAME_BYTES, McpConfig, WatchConfig};
+pub use types::{Config, DEFAULT_MAX_FRAME_BYTES, McpConfig, SyncConfig, WatchConfig};
 
 use std::path::{Path, PathBuf};
 
@@ -78,6 +78,11 @@ fn merge_config(mut base: Config, incoming: Config) -> Config {
             base.watch.ignore.push(pat);
         }
     }
+    for pat in incoming.sync.include {
+        if !base.sync.include.contains(&pat) {
+            base.sync.include.push(pat);
+        }
+    }
     base.watch.use_gitignore = incoming.watch.use_gitignore;
     if incoming.mcp.max_frame_bytes != DEFAULT_MAX_FRAME_BYTES {
         base.mcp.max_frame_bytes = incoming.mcp.max_frame_bytes;
@@ -100,6 +105,9 @@ mod tests {
 ignore = ["build", "docs/gen"]
 use_gitignore = true
 
+[sync]
+include = ["site/data/**", "fixtures/sample.csv"]
+
 [mcp]
 max_frame_bytes = 1048576
 "#;
@@ -107,6 +115,10 @@ max_frame_bytes = 1048576
 
         let config = load_config(root);
         assert_eq!(config.watch.ignore, vec!["build", "docs/gen"]);
+        assert_eq!(
+            config.sync.include,
+            vec!["site/data/**", "fixtures/sample.csv"]
+        );
         assert!(config.watch.use_gitignore);
         assert_eq!(config.mcp.max_frame_bytes, 1048576);
     }

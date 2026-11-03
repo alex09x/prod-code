@@ -63,6 +63,9 @@ pub async fn run_sync(remote: SocketAddr, subpath: Option<PathBuf>) -> Result<()
     println!("Files Updated:     {}", outcome.files_updated);
     println!("Files Deleted:     {}", outcome.files_deleted);
     println!("Data Transferred:  {kb:.1} KB");
+    if let Some(warning) = prod_code_mcp::sync::sync_omission_warning(&outcome.omitted) {
+        eprintln!("[prod-code sync] {warning}");
+    }
     println!("Status:            SYNCHRONIZED");
     Ok(())
 }

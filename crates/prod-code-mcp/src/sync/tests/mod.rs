@@ -12,6 +12,7 @@ mod cache_and_plan;
 mod dirty;
 mod engine_and_cgo;
 mod issue_1823;
+mod issue_1836_scope;
 mod make_cpp;
 mod membership_and_relevance;
 mod non_git_language_sources;

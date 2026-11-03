@@ -191,6 +191,7 @@ async fn push_workspace_sync_inner(
                         outcome.bytes_transferred += again.bytes_transferred;
                         outcome.changed_paths.extend(again.changed_paths);
                         outcome.stale_paths = again.stale_paths;
+                        outcome.omitted = again.omitted;
                         // Still not written though sent again: what runs next would see the node's
                         // old copy. The sync fails, and the next one sends them again (#1475).
                         // A sync of one subpath sends nothing outside it.
@@ -257,6 +258,7 @@ async fn push_sync_round(
     let root_str = root.to_string_lossy().to_string();
     let mut outcome = SyncOutcome {
         planned: plan.files.len(),
+        omitted: std::mem::take(&mut plan.omitted),
         ..SyncOutcome::default()
     };
 
