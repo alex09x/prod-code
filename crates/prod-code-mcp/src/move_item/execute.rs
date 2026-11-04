@@ -215,6 +215,14 @@ pub async fn move_item(
                 let (text, carried) = carry_imports(&source_text, &item, &target_text);
                 (text, item, carried)
             };
+            let has_external_reference = refs.iter().any(|(path, reference_line, _)| {
+                path != file || *reference_line < start || *reference_line > decl_end
+            });
+            let item = if has_external_reference {
+                super::visibility::widen_private_function(&item, &name, edition)?
+            } else {
+                item
+            };
             let target_new = if target_with_imports.trim().is_empty() {
                 let ending = source_text
                     .split_inclusive('\n')

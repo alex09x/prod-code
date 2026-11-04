@@ -6692,6 +6692,62 @@ async fn python_move_refuses_uncarried_module_level_dependencies() {
     );
 }
 
+#[tokio::test]
+async fn moving_a_private_rust_function_to_a_sibling_module_widens_its_visibility() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"private_move_visibility\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        ),
+        ("src/lib.rs", "mod parent;\nmod sibling;\n"),
+        (
+            "src/parent.rs",
+            "fn caller() { helper(); }\nfn helper() {}\n",
+        ),
+        ("src/sibling.rs", ""),
+    ]);
+    let source = ws.path("src/parent.rs");
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "textDocument/documentSymbol" => {
+            let uri = params
+                .pointer("/textDocument/uri")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if uri.ends_with("parent.rs") {
+                serde_json::json!([
+                    answers::document_symbol("caller", 12, 1, 1, 26),
+                    answers::document_symbol("helper", 12, 2, 2, 15)
+                ])
+            } else {
+                serde_json::Value::Null
+            }
+        }
+        "textDocument/references" => answers::locations(&source, &[(1, 15)]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_move",
+        serde_json::json!({
+            "path": "src/parent.rs",
+            "line": 2,
+            "character": 4,
+            "to": "src/sibling.rs",
+            "apply": false
+        }),
+    )
+    .await
+    .expect("the move preview should be returned");
+    let text = text_of(&result);
+    assert!(text.contains("pub(crate) fn helper()"), "{text}");
+    assert!(text.contains("use crate::sibling::helper;"), "{text}");
+    assert!(!text.contains("E0432"), "{text}");
+    assert!(!text.contains("E0425"), "{text}");
+}
+
 const TRAIT_ONE: &str = "pub trait T {\n    fn f(&self, a: u8, b: u8) -> u8;\n}\n\npub struct S;\n\nimpl T for S {\n    fn f(&self, a: u8, _b: u8) -> u8 {\n        a\n    }\n}\n\npub fn g(s: &S) -> u8 {\n    s.f(1, 2)\n}\n";
 
 /// `code_safe_delete` on a trait method's parameter removes it from the trait, the
