@@ -209,6 +209,17 @@ pub async fn apply_sync_with_metrics(
         #[cfg(test)]
         crate::sync::test_hooks::post_write(&server_workspace).await;
         workspace::record_synced(&server_workspace, &synced);
+        let mut client_manifest = super::manifest::load(&server_workspace);
+        for (relative_path, content_hash) in &synced {
+            if content_hash.is_some() {
+                client_manifest.insert(relative_path.clone());
+            } else {
+                client_manifest.remove(relative_path);
+            }
+        }
+        if let Err(error) = super::manifest::save(&server_workspace, &client_manifest) {
+            tracing::warn!(error = %error, "failed to update client sync manifest");
+        }
         workspace::touch_last_used(&server_workspace);
         let mut stale_paths =
             workspace::clear_stale_paths(&server_workspace, arrived.iter().map(String::as_str));

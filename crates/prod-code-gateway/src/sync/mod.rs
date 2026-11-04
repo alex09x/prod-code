@@ -15,6 +15,7 @@ pub(crate) mod artifact_target;
 pub(crate) mod base_updates;
 pub(crate) mod config_meta;
 pub mod file_write;
+mod manifest;
 pub mod source_pull;
 pub mod sync_fs;
 #[cfg(test)]
