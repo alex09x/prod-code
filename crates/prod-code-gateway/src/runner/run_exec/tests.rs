@@ -342,5 +342,9 @@ async fn a_command_past_its_deadline_is_killed_and_flagged() {
     let exit = run.exit();
     assert!(exit.timed_out);
     assert_eq!(exit.exit_code, None);
-    assert_eq!(exit.error, None);
+    assert!(
+        exit.error
+            .as_deref()
+            .is_some_and(|s| s.contains("null stdin and no TTY"))
+    );
 }

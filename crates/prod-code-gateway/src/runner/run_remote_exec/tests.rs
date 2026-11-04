@@ -307,7 +307,12 @@ async fn a_command_past_its_deadline_is_killed_and_flagged() {
     let result = run.result();
     assert!(result.timed_out);
     assert_eq!(result.exit_code, None);
-    assert_eq!(result.error, None);
+    assert!(
+        result
+            .error
+            .as_deref()
+            .is_some_and(|s| s.contains("null stdin and no TTY"))
+    );
 }
 
 #[tokio::test]
