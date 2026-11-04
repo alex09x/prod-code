@@ -59,6 +59,22 @@ class GrepInterceptionCasesMixin(GrepArgumentCasesMixin):
                     f"Text search `{cmd}` should be allowed without symbol interception",
                 )
 
+    def test_bounded_search_in_an_explicit_manifest_is_allowed(self) -> None:
+        with open(os.path.join(self.cwd, "Cargo.toml"), "w", encoding="utf-8") as manifest:
+            manifest.write("[profile.dev]\nopt-level = 1\n")
+        guard = self._guard()
+        command = "rg -n -A12 '^\\[profile' Cargo.toml"
+        self.assertIsNone(guard.symbol_grep(command, self.cwd))
+        self.assertIsNone(guard.text_grep(command, self.cwd))
+        payload = {
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": command, "Cwd": self.cwd},
+            },
+            "workspacePaths": [self.cwd],
+        }
+        self.assertEqual(self._invoke_main_stdio(payload), "")
+
     def test_fixed_string_workspace_fixture_allowed(self) -> None:
         guard = self._guard()
         fixtures_dir = os.path.join(self.cwd, "tests", "fixtures")

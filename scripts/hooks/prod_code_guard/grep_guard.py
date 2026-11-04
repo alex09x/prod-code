@@ -170,7 +170,20 @@ def text_grep(command, cwd):
     over source files with grep/rg that should be routed to `code_grep` / `prod-code grep` (#1119)."""
     if "PROD_CODE_GREP=1" in command:
         return None
-    for patterns, paths, _recursive, fixed_strings, _basic in _iter_grep_invocations(
+    manifest_files = {
+        "Cargo.toml",
+        "Cargo.lock",
+        "pyproject.toml",
+        "package.json",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "go.mod",
+        "go.sum",
+        "tsconfig.json",
+        "jsconfig.json",
+    }
+    for patterns, paths, recursive, fixed_strings, _basic in _iter_grep_invocations(
         command, cwd
     ):
         target_path = None
@@ -186,6 +199,13 @@ def text_grep(command, cwd):
             if is_filename_or_fixture_pattern(pat, cwd, fixed_strings):
                 continue
             if symbol_in(pat) is not None:
+                continue
+            if (
+                not recursive
+                and target_path is not None
+                and os.path.basename(target_path) in manifest_files
+                and os.path.isfile(os.path.join(cwd, target_path))
+            ):
                 continue
             return pat, target_path
     return None
