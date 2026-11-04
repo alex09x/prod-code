@@ -81,6 +81,7 @@ async fn manifest_probe_keeps_exec_artifacts_and_removes_client_files() {
         SyncRequest {
             client_workspace_root: "/tmp/manifest-ownership".to_string(),
             base_workspace_name: Some("manifest-ownership".to_string()),
+            symlinks: None,
             clean_others: false,
             files: vec![FileDelta {
                 relative_path: "src/client.txt".to_string(),
@@ -130,6 +131,7 @@ async fn test_sync_probe_seeds_and_reconciles() {
         SyncRequest {
             client_workspace_root: "/tmp/repo".to_string(),
             base_workspace_name: Some("repo".to_string()),
+            symlinks: None,
             files: ["Cargo.toml", "src/lib.rs", "src/only_in_origin.rs"]
                 .into_iter()
                 .map(|relative_path| FileDelta {
