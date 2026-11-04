@@ -105,6 +105,20 @@ fn ts_import_insert_or_merge_table() {
 fn py_import_insert_or_merge_table() {
     let cases: &[(&str, &str, &str, &str, bool)] = &[
         (
+            "from pkg.m import a\r\nx = 1\r\n",
+            "f",
+            "pkg.m",
+            "from pkg.m import a, f\r\nx = 1\r\n",
+            true,
+        ),
+        (
+            "# coding: utf-8\r\nx = 1\r\n",
+            "f",
+            "pkg.m",
+            "# coding: utf-8\r\nfrom pkg.m import f\r\nx = 1\r\n",
+            true,
+        ),
+        (
             "\"doc\"; value = f()\n",
             "f",
             "pkg.m",

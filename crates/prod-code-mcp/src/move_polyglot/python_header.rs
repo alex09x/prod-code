@@ -48,6 +48,7 @@ pub fn insert_or_merge_py_import(content: &str, sym: &str, mod_spec: &str) -> (S
     let mut offset = 0;
     for chunk in content.split_inclusive('\n') {
         let line = chunk.strip_suffix('\n').unwrap_or(chunk);
+        let line = line.strip_suffix('\r').unwrap_or(line);
         let trimmed = line.trim();
         if mask.get(offset) == Some(&true)
             && py_from_module(trimmed) == Some(mod_spec)
@@ -65,7 +66,12 @@ pub fn insert_or_merge_py_import(content: &str, sym: &str, mod_spec: &str) -> (S
         }
         offset += chunk.len();
     }
-    let import_line = format!("from {mod_spec} import {sym}\n");
+    let newline = if content.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let import_line = format!("from {mod_spec} import {sym}{newline}");
     let insert_pos = after_future_imports(content)
         .or_else(|| after_module_docstring(content))
         .unwrap_or_else(|| preamble_end(content));
@@ -82,7 +88,7 @@ pub fn insert_or_merge_py_import(content: &str, sym: &str, mod_spec: &str) -> (S
         return (out, true);
     }
     if insert_pos > 0 && !content[..insert_pos].ends_with('\n') {
-        out.push('\n');
+        out.push_str(newline);
     }
     out.push_str(&import_line);
     out.push_str(&content[insert_pos..]);
