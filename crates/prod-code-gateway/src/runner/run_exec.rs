@@ -245,8 +245,11 @@ pub async fn run_exec_with_ram(
     let shim_raw_status = status;
     let had_report = report.is_some();
     drop(report);
-    let (exit_code, usage, exec_err) =
+    let (exit_code, usage, mut exec_err) =
         exec_shim::outcome(report_status, shim_raw_status, had_report, timed_out);
+    if let Some(diagnostic) = super::timeout_diagnostic(timed_out, finished.output_bytes) {
+        exec_err = Some(diagnostic);
+    }
     if exit_code == Some(254) {
         tracing::warn!(
             "exec command exited with 254; ensuring sccache server is running cleanly on host"

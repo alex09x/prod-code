@@ -15,6 +15,7 @@ pub(crate) struct ExecCompletion {
     pub client_left: bool,
     pub status: Option<(i32, prod_code_protocol::ExecUsage)>,
     pub accumulator: JsonStreamAccumulator,
+    pub output_bytes: u64,
 }
 
 /// Owns the command's process group while its stream runs. The waiter leaves the exited
@@ -77,6 +78,7 @@ pub(crate) async fn stream_exec(
     let mut exited = false;
     let mut chunks_open = true;
     let mut client_left = false;
+    let mut output_bytes = 0u64;
     let mut accumulator = JsonStreamAccumulator::new();
     loop {
         tokio::select! {
@@ -84,6 +86,9 @@ pub(crate) async fn stream_exec(
                 Ok(chunk) => {
                     let is_stderr = chunk.stderr;
                     let data = chunk.data.clone();
+                    output_bytes = output_bytes.saturating_add(
+                        data.as_ref().map_or(0, |bytes| bytes.len() as u64),
+                    );
                     let message = if structured.is_some() {
                         WireMessage::RemoteExecStream(RemoteExecStream::Chunk(chunk))
                     } else {
@@ -147,6 +152,7 @@ pub(crate) async fn stream_exec(
         client_left,
         status,
         accumulator,
+        output_bytes,
     })
 }
 
