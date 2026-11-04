@@ -10,6 +10,7 @@
 import hashlib
 import io
 import json
+import os
 import subprocess
 import tarfile
 import tempfile
@@ -91,6 +92,93 @@ class ReleaseBoundaries(unittest.TestCase):
             ["--test", "live", "--", "--test-threads=1"],
         )
         self.assertEqual(run.call_args_list[1].args[0][-2:], ["--test", "wire"])
+
+    def native_build(self, banner="prod-code-server 1.2.3", version_exit=0):
+        work = Path(tempfile.mkdtemp(dir=self.root))
+        source, commands, runner = (work / name for name in ("source", "bin", "runner"))
+        binaries = source / "target" / "release"
+        binaries.mkdir(parents=True)
+        commands.mkdir()
+        runner.mkdir()
+        stubs = {
+            "cargo": "#!/bin/sh\nexit 0\n",
+            "rustc": "#!/bin/sh\nprintf 'host: aarch64-unknown-linux-gnu\\n'\n",
+            "uname": "#!/bin/sh\nprintf 'Linux\\n'\n",
+            "file": "#!/bin/sh\nexit 0\n",
+        }
+        for name, body in stubs.items():
+            path = commands / name
+            path.write_text(body)
+            path.chmod(0o755)
+        client = binaries / "prod-code"
+        client.write_text("#!/bin/sh\nprintf 'prod-code 1.2.3\\n'\n")
+        client.chmod(0o755)
+        server = binaries / "prod-code-server"
+        server.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' 'INFO allocator setup' \"$FAKE_VERSION_BANNER\"\n"
+            'exit "$FAKE_VERSION_EXIT"\n'
+        )
+        server.chmod(0o755)
+        marker = work / "glibc-checked"
+        gate = work / "automation" / "scripts" / "packaging" / "glibc_compat.py"
+        gate.parent.mkdir(parents=True)
+        gate.write_text(
+            "import os, sys\nfrom pathlib import Path\n"
+            "assert sys.argv[1:3] == ['--baseline', '2.35']\n"
+            "assert len(sys.argv[3:]) == 2\n"
+            "assert all(Path(p).is_file() for p in sys.argv[3:])\n"
+            "Path(os.environ['FAKE_GLIBC_MARKER']).write_text('checked')\n"
+        )
+        env = {
+            **os.environ,
+            "PATH": f"{commands}{os.pathsep}{os.environ.get('PATH', os.defpath)}",
+            "RELEASE_TARGET": "aarch64-unknown-linux-gnu",
+            "RELEASE_VERSION": "1.2.3",
+            "RUNNER_TEMP": str(runner),
+            "FAKE_VERSION_BANNER": banner,
+            "FAKE_VERSION_EXIT": str(version_exit),
+            "FAKE_GLIBC_MARKER": str(marker),
+        }
+        result = subprocess.run(
+            ["bash", str(Path(__file__).with_name("build-native.sh").resolve())],
+            cwd=source,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result, runner, marker
+
+    def test_native_build_accepts_logged_version_banner(self):
+        result, runner, marker = self.native_build()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(marker.is_file(), "the GLIBC gate must still run")
+        with tarfile.open(runner / "native-assets.tar") as archive:
+            self.assertEqual(
+                {m.name.removeprefix("./") for m in archive.getmembers() if m.isfile()},
+                {
+                    "prod-code-aarch64-unknown-linux-gnu",
+                    "prod-code-server-aarch64-unknown-linux-gnu",
+                },
+            )
+
+    def test_native_build_rejects_wrong_version_or_binary(self):
+        for banner in ("prod-code-server 9.9.9", "prod-code 1.2.3"):
+            with self.subTest(banner=banner):
+                result, runner, marker = self.native_build(banner)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Unexpected version", result.stderr)
+                self.assertFalse(marker.exists())
+                self.assertFalse((runner / "native-assets.tar").exists())
+
+    def test_native_build_rejects_failed_version_probe(self):
+        result, runner, marker = self.native_build(version_exit=7)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Version probe failed", result.stderr)
+        self.assertFalse(marker.exists())
+        self.assertFalse((runner / "native-assets.tar").exists())
 
     def fixture_archive(self, extra=None, tamper=False, status="Accepted"):
         incoming = self.root / "incoming"
