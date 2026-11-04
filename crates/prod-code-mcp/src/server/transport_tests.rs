@@ -120,16 +120,20 @@ fn real_tools_list_fits_comfortably_within_max_jsonrpc_frame_bytes() {
 }
 
 #[test]
-fn outline_is_advertised_as_read_only_in_the_mcp_tool_catalog() {
+fn navigation_tools_are_advertised_as_read_only_in_the_mcp_tool_catalog() {
     let tools = super::dispatch::list_tool_values().unwrap();
-    let outline = tools
-        .iter()
-        .find(|tool| tool["name"] == "code_outline")
-        .unwrap();
-    assert_eq!(outline["annotations"]["readOnlyHint"], true);
-    assert_eq!(outline["annotations"]["destructiveHint"], false);
-    assert_eq!(outline["annotations"]["idempotentHint"], true);
-    assert_eq!(outline["annotations"]["openWorldHint"], false);
+    for name in [
+        "code_outline",
+        "code_definition",
+        "code_callers",
+        "code_references",
+    ] {
+        let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
+        assert_eq!(tool["annotations"]["readOnlyHint"], true, "{name}");
+        assert_eq!(tool["annotations"]["destructiveHint"], false, "{name}");
+        assert_eq!(tool["annotations"]["idempotentHint"], true, "{name}");
+        assert_eq!(tool["annotations"]["openWorldHint"], false, "{name}");
+    }
     let mutation = tools
         .iter()
         .find(|tool| tool["name"] == "code_rename")

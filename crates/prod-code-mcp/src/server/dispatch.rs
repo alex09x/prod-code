@@ -26,12 +26,28 @@ pub const MCP_TOOL_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from
 pub const MAX_TOOL_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
 
 pub(crate) fn list_tool_values() -> anyhow::Result<Vec<serde_json::Value>> {
+    const READ_ONLY_NAVIGATION: &[&str] = &[
+        "code_callers",
+        "code_callees",
+        "code_implementations",
+        "code_supertypes",
+        "code_definition",
+        "code_references",
+        "code_source",
+        "code_outline",
+        "code_symbols",
+        "code_hover",
+        "code_type_at",
+        "code_search",
+        "code_grep",
+        "code_slice",
+    ];
     crate::tools::list_tools()
         .into_iter()
         .map(|tool| {
             let name = tool.name.clone();
             let mut value = serde_json::to_value(tool)?;
-            if name == "code_outline"
+            if READ_ONLY_NAVIGATION.contains(&name.as_str())
                 && let Some(object) = value.as_object_mut()
             {
                 object.insert(
