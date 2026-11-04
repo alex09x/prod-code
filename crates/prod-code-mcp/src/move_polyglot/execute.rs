@@ -103,6 +103,21 @@ pub async fn move_item(
         crate::move_item::append_item(&target_with_carried, &item)
     };
 
+    if lang == Language::Python {
+        let missing = super::python_dependencies::missing_module_dependencies(
+            &source_text,
+            &item_raw,
+            &target_new,
+            &name,
+        );
+        anyhow::ensure!(
+            missing.is_empty(),
+            "cannot move Python `{name}` because it depends on module-level declarations not carried to {}: {}; import or move those dependencies first",
+            display(root, target),
+            missing.join(", ")
+        );
+    }
+
     // A moved `export default` stays the destination's default export: the source's own
     // remaining uses import it by default, not by a name the destination does not export
     // (#1431).

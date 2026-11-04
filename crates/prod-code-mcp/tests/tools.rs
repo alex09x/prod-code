@@ -6627,6 +6627,43 @@ async fn move_module_reports_then_moves_the_file() {
     assert_eq!(ws.read("src/a.rs"), "");
 }
 
+#[tokio::test]
+async fn python_move_refuses_uncarried_module_level_dependencies() {
+    let ws = Workspace::new(&[
+        (
+            "src/example.py",
+            "LIMIT = 10\ndef helper(x):\n    return x + 1\ndef entry(x):\n    return helper(x) + LIMIT\n",
+        ),
+        ("src/extracted.py", ""),
+    ]);
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+    let error = execute_tool(
+        remote,
+        &ws.root(),
+        "code_move",
+        serde_json::json!({
+            "path": "src/example.py",
+            "line": 5,
+            "character": 5,
+            "to": "src/extracted.py",
+            "apply": false
+        }),
+    )
+    .await
+    .expect_err("the unsupported dependency boundary should refuse an invalid move");
+    let text = format!("{error:#}");
+    assert!(
+        text.contains("module-level declarations not carried"),
+        "{text}"
+    );
+    assert!(text.contains("LIMIT"), "{text}");
+    assert!(text.contains("helper"), "{text}");
+    assert_eq!(
+        std::fs::read_to_string(ws.path("src/example.py")).unwrap(),
+        "LIMIT = 10\ndef helper(x):\n    return x + 1\ndef entry(x):\n    return helper(x) + LIMIT\n"
+    );
+}
+
 const TRAIT_ONE: &str = "pub trait T {\n    fn f(&self, a: u8, b: u8) -> u8;\n}\n\npub struct S;\n\nimpl T for S {\n    fn f(&self, a: u8, _b: u8) -> u8 {\n        a\n    }\n}\n\npub fn g(s: &S) -> u8 {\n    s.f(1, 2)\n}\n";
 
 /// `code_safe_delete` on a trait method's parameter removes it from the trait, the
