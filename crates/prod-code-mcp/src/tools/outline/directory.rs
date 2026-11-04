@@ -68,6 +68,7 @@ pub async fn outline_directory(
     let mixed = engines.len() > 1;
     let mut sessions: std::collections::HashMap<&str, crate::session::LspSession> =
         std::collections::HashMap::new();
+    let mut unavailable_engines = std::collections::BTreeSet::new();
 
     let max_bytes = options.max_bytes.unwrap_or(usize::MAX);
     let max_items = options.max_items.unwrap_or(usize::MAX);
@@ -95,11 +96,31 @@ pub async fn outline_directory(
             "textDocument": { "uri": file_uri }
         });
         let key = if mixed { engine_of(&entry_file) } else { "" };
+        if unavailable_engines.contains(engine_of(&entry_file)) {
+            skipped += 1;
+            continue;
+        }
         if !sessions.contains_key(key) {
             let hint = if mixed { &entry_file } else { dir_path };
-            let opened =
-                crate::session::LspSession::open(remote, workspace_root, Some(hint)).await?;
-            sessions.insert(key, opened);
+            match crate::session::LspSession::open(remote, workspace_root, Some(hint)).await {
+                Ok(opened) => {
+                    sessions.insert(key, opened);
+                }
+                Err(error)
+                    if mixed
+                        && optional_backend_missing(
+                            engine_of(&entry_file),
+                            &format!("{error:#}"),
+                        ) =>
+                {
+                    let engine = engine_of(&entry_file);
+                    unavailable_engines.insert(engine);
+                    skipped += 1;
+                    tracing::warn!(%engine, error = %format!("{error:#}"), "directory outline skipped files whose language backend is unavailable");
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
         }
         let session = sessions.get_mut(key).expect("opened above");
         match session
@@ -140,6 +161,13 @@ pub async fn outline_directory(
     if tests_left_out > 0 {
         summary.push_str(&format!(", {tests_left_out} test file(s) left out"));
     }
+    if !unavailable_engines.is_empty() {
+        let engines = unavailable_engines
+            .into_iter()
+            .collect::<Vec<_>>()
+            .join(", ");
+        summary.push_str(&format!("\nLanguage backend unavailable: {engines}"));
+    }
     if stopped {
         let limit = if listed >= max_items {
             format!("the limit of {max_items} symbols")
@@ -167,6 +195,14 @@ pub async fn outline_directory(
         );
     }
     Ok(format!("{}\n\n{summary}", blocks.join("\n\n")))
+}
+
+fn optional_backend_missing(engine: &str, error: &str) -> bool {
+    engine == "shell"
+        && error.contains("bash-language-server")
+        && (error.contains("os error 2")
+            || error.contains("No such file or directory")
+            || error.contains("not installed"))
 }
 
 /// Whether a file name is a test file by its language's convention: `_test.go`, `*.test.ts`,

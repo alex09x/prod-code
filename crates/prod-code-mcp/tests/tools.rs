@@ -1638,6 +1638,52 @@ async fn code_outline_outlines_a_directory_skipping_files_it_cannot_outline() {
 }
 
 #[tokio::test]
+async fn mixed_directory_outline_keeps_python_when_shell_backend_is_unavailable() {
+    let ws = workspace();
+    write(&ws, "src/pkg/app.py", "def app():\n    return 1\n");
+    write(&ws, "src/pkg/check.sh", "#!/bin/sh\necho ok\n");
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(|method, params| match method {
+        "prod-code/handshake"
+            if params
+                .get("preferred_engine")
+                .and_then(serde_json::Value::as_str)
+                == Some("shell") =>
+        {
+            serde_json::json!({"refuse_handshake":"bash-language-server: No such file or directory (os error 2)"})
+        }
+        "textDocument/documentSymbol" => {
+            let uri = params
+                .pointer("/textDocument/uri")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if uri.ends_with("app.py") {
+                serde_json::json!([answers::document_symbol("app", 12, 1, 1, 21)])
+            } else {
+                serde_json::Value::Null
+            }
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_outline",
+        serde_json::json!({ "path": "src/pkg" }),
+    )
+    .await
+    .expect("the Python outline should survive the optional shell backend refusal");
+    let text = text_of(&result);
+    assert!(text.contains("[Function] app"), "{text}");
+    assert!(
+        text.contains("Language backend unavailable: shell"),
+        "{text}"
+    );
+    assert!(text.contains("1 skipped"), "{text}");
+}
+
+#[tokio::test]
 async fn code_hover_and_type_at_render_markdown_or_say_there_is_none() {
     let ws = workspace();
     write(&ws, "src/lib.rs", "pub fn a() {}\n");
