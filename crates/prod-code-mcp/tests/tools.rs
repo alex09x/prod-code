@@ -1764,6 +1764,34 @@ async fn stale_go_symbol_location_does_not_return_a_sibling_function() {
 }
 
 #[tokio::test]
+async fn qualified_rust_module_symbol_beats_same_named_python_method() {
+    let ws = workspace();
+    let rust = write(&ws, "src/commands.rs", "pub fn run() {}\n");
+    let python = write(
+        &ws,
+        "scripts/live_walkthrough/record.py",
+        "class Recorder:\n    def run(self):\n        return None\n",
+    );
+    commit(&ws);
+    let rust_path = rust.clone();
+    let python_path = python.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "workspace/symbol" => {
+            let mut py = answers::symbol("run", 6, &python_path, 2, 9);
+            py["containerName"] = serde_json::json!("Recorder");
+            serde_json::json!([py, answers::symbol("run", 12, &rust_path, 1, 8)])
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let hit = prod_code_mcp::tools::resolve_symbol(remote, &ws.root(), "commands::run", None)
+        .await
+        .expect("the Rust module-qualified function resolves");
+    assert_eq!(hit.path, rust);
+    assert_eq!(hit.line, 1);
+}
+
+#[tokio::test]
 async fn an_unknown_symbol_name_is_reported() {
     let ws = workspace();
     write(&ws, "src/lib.rs", "pub fn a() {}\n");
