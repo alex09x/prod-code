@@ -97,6 +97,7 @@ async fn sync_restore_transaction_session_sync_records_synced_and_protects_resto
     let mut locked_sync_fut = Box::pin(crate::session::handle_session_sync(
         SyncRequest {
             client_workspace_root: "/tmp/session-ws".to_string(),
+            symlinks: None,
             files: vec![write_delta(kept_rel, "pub fn kept() -> u32 { 2 }\n")],
             clean_others: false,
             base_workspace_name: Some("ws".to_string()),
@@ -130,6 +131,7 @@ async fn sync_restore_transaction_session_sync_records_synced_and_protects_resto
     crate::session::handle_session_sync(
         SyncRequest {
             client_workspace_root: "/tmp/session-ws".to_string(),
+            symlinks: None,
             files: vec![
                 write_delta(kept_rel, "pub fn kept() -> u32 { 2 }\n"),
                 delete_delta(deleted_rel),

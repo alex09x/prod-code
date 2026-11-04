@@ -365,6 +365,7 @@ async fn test_packet_capture_wire_confidentiality() {
         framed
             .send(WireMessage::SyncRequest(SyncRequest {
                 client_workspace_root: "/client/workspace".to_string(),
+                symlinks: None,
                 files: vec![FileDelta {
                     relative_path: "trading_algo.rs".to_string(),
                     content: Some(sensitive_code.as_bytes().to_vec()),

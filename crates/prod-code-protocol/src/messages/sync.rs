@@ -153,11 +153,24 @@ pub mod base64_bytes {
 pub struct SyncRequest {
     pub client_workspace_root: String,
     pub files: Vec<FileDelta>,
+    /// Complete set of Git-tracked symlinks for full syncs; `None` means a partial sync did not
+    /// assert ownership of the full symlink set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symlinks: Option<Vec<SyncSymlink>>,
     #[serde(default)]
     pub clean_others: bool,
     #[serde(default)]
     pub base_workspace_name: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SyncSymlink {
+    pub relative_path: String,
+    pub target: String,
+}
+
+/// Reserved non-path acknowledgment carried only in `SyncResponse::stale_paths`.
+pub const SYNC_SYMLINKS_ACK: &str = "\0prod-code:tracked-symlinks-v1";
 
 /// Response returned after remote gateway writes files to storage and updates in-memory engines.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

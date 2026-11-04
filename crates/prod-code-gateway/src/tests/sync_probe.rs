@@ -17,6 +17,7 @@ async fn test_delta_sync_reports_fresh_until_probed() {
     let manager = WorkspaceManager::new();
     let delta = || SyncRequest {
         client_workspace_root: "/tmp/ws".to_string(),
+        symlinks: None,
         files: vec![FileDelta {
             relative_path: "src/lib.rs".to_string(),
             content: Some(b"fn a() {}".to_vec()),

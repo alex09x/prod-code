@@ -75,6 +75,7 @@ impl GatewayHarness {
         let answer = self
             .ask(WireMessage::SyncRequest(SyncRequest {
                 client_workspace_root: client_root.to_string(),
+                symlinks: None,
                 files,
                 clean_others: false,
                 base_workspace_name: base_name.map(str::to_string),

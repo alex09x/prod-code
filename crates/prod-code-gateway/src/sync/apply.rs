@@ -79,6 +79,7 @@ pub async fn apply_sync_with_metrics(
     req: SyncRequest,
 ) -> SyncResponse {
     let start = Instant::now();
+    let symlinks_requested = req.symlinks.is_some();
     let target = workspace::server_workspace_path(
         storage_root,
         &req.client_workspace_root,
@@ -96,7 +97,7 @@ pub async fn apply_sync_with_metrics(
         project_config_changed,
         watched,
         base_paths,
-        stale_paths,
+        mut stale_paths,
     ) = tokio::spawn(async move {
         let sync_guard = sync_guard;
         let server_workspace = workspace::resolve_server_workspace(
@@ -126,6 +127,15 @@ pub async fn apply_sync_with_metrics(
         let mut failed: Vec<String> = Vec::new();
         let mut synced: Vec<(String, Option<u64>)> = Vec::with_capacity(req.files.len());
         let mut base_paths = Vec::new();
+        let symlink_result = req
+            .symlinks
+            .as_deref()
+            .map(|links| super::symlinks::apply(&server_workspace, links));
+        if let Some(result) = &symlink_result {
+            files_updated += result.updated;
+            files_deleted += result.deleted;
+            failed.extend(result.failed.iter().cloned());
+        }
         for delta in req.files {
             let target_path = match safe_sync_target(&server_workspace, &delta.relative_path).await
             {
@@ -233,6 +243,9 @@ pub async fn apply_sync_with_metrics(
     })
     .await
     .expect("sync disk commit task must not panic");
+    if symlinks_requested {
+        stale_paths.push(prod_code_protocol::messages::sync::SYNC_SYMLINKS_ACK.to_string());
+    }
 
     let folder_name = server_workspace
         .file_name()
@@ -348,6 +361,7 @@ mod tests {
             &wm,
             SyncRequest {
                 client_workspace_root: "/tmp/client-go-repo".to_string(),
+                symlinks: None,
                 base_workspace_name: Some("client-go-repo".to_string()),
                 clean_others: false,
                 files: vec![FileDelta {

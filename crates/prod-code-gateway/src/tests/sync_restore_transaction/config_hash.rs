@@ -29,6 +29,7 @@ async fn coordinated_config_survives_restore(session: bool) {
     let payload = r#"{"compilerOptions":{"typeRoots":["./custom"]}}"#;
     let req = SyncRequest {
         client_workspace_root: "/tmp/config".into(),
+        symlinks: None,
         base_workspace_name: Some("config".into()),
         files: ["tsconfig.json", "jsconfig.json", "blocked/tsconfig.json"]
             .map(|name| write_delta(name, payload))

@@ -115,6 +115,7 @@ async fn test_apply_sync_create_and_delete() {
 
     let req = SyncRequest {
         client_workspace_root: client_root.to_string(),
+        symlinks: None,
         files: vec![
             FileDelta {
                 relative_path: "src/lib.rs".to_string(),
@@ -144,6 +145,7 @@ async fn test_apply_sync_create_and_delete() {
     // Now test deleting README.md
     let del_req = SyncRequest {
         client_workspace_root: client_root.to_string(),
+        symlinks: None,
         files: vec![FileDelta {
             relative_path: "README.md".to_string(),
             content: None,
@@ -182,6 +184,7 @@ async fn sync_rejects_absolute_parent_and_symlink_paths() {
         &manager,
         SyncRequest {
             client_workspace_root: "/tmp/ws".to_string(),
+            symlinks: None,
             files: vec![
                 FileDelta {
                     relative_path: "../parent-escape.txt".to_string(),
