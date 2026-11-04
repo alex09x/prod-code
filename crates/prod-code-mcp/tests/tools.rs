@@ -8312,6 +8312,34 @@ async fn code_definition_positional_on_outline_definition_falls_back_when_lsp_re
 }
 
 #[tokio::test]
+async fn swift_definition_uses_a_labelled_local_outline_when_lsp_returns_empty() {
+    let ws = Workspace::new(&[
+        ("Package.swift", "// swift-tools-version: 5.9\n"),
+        (
+            "Sources/App/TerminalController.swift",
+            "struct TerminalController {\n    func newWindow() { print(\"ok\") }\n}\n",
+        ),
+    ]);
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({
+            "path": "Sources/App/TerminalController.swift",
+            "line": 2,
+            "character": 15
+        }),
+    )
+    .await
+    .expect("a local syntax-only Swift declaration should remain readable");
+    let text = text_of(&result);
+    assert!(text.contains("syntax-only local Swift outline"), "{text}");
+    assert!(text.contains("func newWindow()"), "{text}");
+    assert!(text.contains("print(\"ok\")"), "{text}");
+}
+
+#[tokio::test]
 async fn code_references_finds_same_line_recursive_call_as_only_use() {
     let ws = workspace();
     let source = "pub fn recurse() { recurse(); }\n";
