@@ -128,6 +128,12 @@ pub async fn apply_sync_probe(
             let incoming = req.files.clone();
             match tokio::task::spawn_blocking(move || {
                 let files = copy_tree(&from, &to)?;
+                let seed_manifest = super::manifest::load(&from);
+                if !seed_manifest.is_empty()
+                    && let Err(error) = super::manifest::save(&to, &seed_manifest)
+                {
+                    tracing::warn!(error = %error, "failed to copy client sync ownership from seed workspace");
+                }
                 if let Err(error) = crate::sync::config_meta::copy_workspace(&from, &to) {
                     tracing::warn!(error = %error, "failed to seed coordinated config metadata");
                 }

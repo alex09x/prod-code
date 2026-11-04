@@ -123,6 +123,24 @@ async fn test_sync_probe_seeds_and_reconciles() {
     std::fs::write(origin.join("src/lib.rs"), "pub fn a() {}").unwrap();
     std::fs::write(origin.join("src/only_in_origin.rs"), "pub fn gone() {}").unwrap();
     let manager = WorkspaceManager::new();
+    crate::sync::apply_sync(
+        storage.path(),
+        &manager,
+        SyncRequest {
+            client_workspace_root: "/tmp/repo".to_string(),
+            base_workspace_name: Some("repo".to_string()),
+            files: ["Cargo.toml", "src/lib.rs", "src/only_in_origin.rs"]
+                .into_iter()
+                .map(|relative_path| FileDelta {
+                    relative_path: relative_path.to_string(),
+                    content: Some(std::fs::read(origin.join(relative_path)).unwrap()),
+                    is_executable: false,
+                })
+                .collect(),
+            clean_others: false,
+        },
+    )
+    .await;
 
     let req = SyncProbeRequest {
         client_workspace_root: "/tmp/wt".to_string(),
