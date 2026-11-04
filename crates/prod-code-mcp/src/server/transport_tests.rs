@@ -127,6 +127,7 @@ fn navigation_tools_are_advertised_as_read_only_in_the_mcp_tool_catalog() {
         "code_definition",
         "code_callers",
         "code_references",
+        "code_source",
     ] {
         let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
         assert_eq!(tool["annotations"]["readOnlyHint"], true, "{name}");
