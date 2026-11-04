@@ -9,6 +9,15 @@
  */
 
 use super::*;
+
+#[test]
+fn silent_timeouts_explain_noninteractive_exec_without_guessing_a_cause() {
+    let diagnostic = timeout_diagnostic(true, 0).unwrap();
+    assert!(diagnostic.contains("null stdin and no TTY"));
+    assert!(diagnostic.contains("does not identify which cause"));
+    assert!(timeout_diagnostic(false, 0).is_none());
+    assert!(timeout_diagnostic(true, 1).is_none());
+}
 use std::path::Path;
 
 #[test]

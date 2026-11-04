@@ -29,6 +29,12 @@ pub use snapshot::*;
 #[cfg(test)]
 mod tests;
 
+pub(crate) fn timeout_diagnostic(timed_out: bool, output_bytes: u64) -> Option<String> {
+    (timed_out && output_bytes == 0).then(|| {
+        "remote command timed out before producing stdout or stderr. Remote exec uses null stdin and no TTY; interactive authentication prompts or operating-system permission prompts cannot be answered in this session. Check gateway execution-context credentials and file access. The timeout does not identify which cause, if any, occurred.".to_string()
+    })
+}
+
 /// Trait to accept either `&std::io::Error`, `std::io::Error`, `i32` raw OS error code,
 /// or `Option<i32>` when checking for EPERM / permission denial (#1776).
 pub trait AsIoErrorOrRawCode {

@@ -254,8 +254,11 @@ pub async fn run_remote_exec_with_ram(
     let had_report = report.is_some();
     drop(report);
     // Killed on a timeout, the shim wrote no report and its own usage is not reported (#1483).
-    let (exit_code, usage, exec_err) =
+    let (exit_code, usage, mut exec_err) =
         exec_shim::outcome(report_status, shim_raw_status, had_report, timed_out);
+    if let Some(diagnostic) = super::timeout_diagnostic(timed_out, finished.output_bytes) {
+        exec_err = Some(diagnostic);
+    }
 
     if exit_code == Some(254) {
         tokio::task::spawn_blocking(crate::shadow::ensure_sccache_server)
