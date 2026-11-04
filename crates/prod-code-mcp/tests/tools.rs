@@ -6429,6 +6429,34 @@ async fn code_source_reads_local_workspace_file_directly() {
 }
 
 #[tokio::test]
+async fn code_source_explains_cross_repository_workspace_scope_on_external_read_failure() {
+    let ws = workspace();
+    let other = tempfile::tempdir().unwrap();
+    let path = other.path().join("src/lib.rs");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "pub fn source() {}\n").unwrap();
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+    let error = execute_tool(
+        remote,
+        &ws.root(),
+        "code_source",
+        serde_json::json!({ "path": path.to_string_lossy() }),
+    )
+    .await
+    .expect_err("a failed cross-repository read should explain its supported scope");
+    let text = format!("{error:#}");
+    assert!(text.contains("another local checkout"), "{text}");
+    assert!(
+        text.contains("session rooted in the target repository"),
+        "{text}"
+    );
+    assert!(
+        text.contains("cross-repository reads are not supported"),
+        "{text}"
+    );
+}
+
+#[tokio::test]
 async fn code_status_reports_health() {
     let ws = workspace();
     let remote = mock_gateway(Script::default()).await;
