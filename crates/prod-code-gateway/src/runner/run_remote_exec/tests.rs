@@ -16,6 +16,28 @@ struct Run {
     messages: Vec<WireMessage>,
 }
 
+fn is_disk_warning(message: &WireMessage) -> bool {
+    matches!(message, WireMessage::RemoteExecStream(RemoteExecStream::Chunk(chunk))
+    if chunk.stderr
+        && chunk.data.as_deref().is_some_and(|data| {
+            data.starts_with(b"[prod-code exec] WARNING: ")
+        }))
+}
+
+#[test]
+fn disk_headroom_diagnostics_are_separate_from_remote_child_stderr() {
+    let warning = WireMessage::RemoteExecStream(RemoteExecStream::Chunk(ExecChunk {
+        stderr: true,
+        data: Some(b"[prod-code exec] WARNING: 9.9 GB free".to_vec()),
+    }));
+    let child = WireMessage::RemoteExecStream(RemoteExecStream::Chunk(ExecChunk {
+        stderr: true,
+        data: Some(b"oops\n".to_vec()),
+    }));
+    assert!(is_disk_warning(&warning));
+    assert!(!is_disk_warning(&child));
+}
+
 impl Run {
     fn workspace(&self) -> PathBuf {
         self.storage.path().join("ws")
@@ -33,7 +55,9 @@ impl Run {
             .messages
             .iter()
             .filter_map(|m| match m {
-                WireMessage::RemoteExecStream(RemoteExecStream::Chunk(c)) if c.stderr == stderr => {
+                WireMessage::RemoteExecStream(RemoteExecStream::Chunk(c))
+                    if c.stderr == stderr && !is_disk_warning(m) =>
+                {
                     c.data.clone()
                 }
                 _ => None,
@@ -136,7 +160,14 @@ async fn a_request_that_cannot_run_is_refused_with_its_reason() {
         assert_eq!(result.exit_code, None, "{name}");
         assert!(!result.timed_out, "{name}");
         assert_eq!(result.duration_ms, 0, "{name}");
-        assert_eq!(run.messages.len(), 1, "{name}: nothing else is sent");
+        assert_eq!(
+            run.messages
+                .iter()
+                .filter(|message| !is_disk_warning(message))
+                .count(),
+            1,
+            "{name}: only the refusal response is sent"
+        );
     }
     // An unusable subdirectory falls back to the workspace root rather than escaping it.
     let run = run(

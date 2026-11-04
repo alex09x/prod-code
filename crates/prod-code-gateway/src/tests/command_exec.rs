@@ -324,9 +324,20 @@ async fn test_exec_fails_when_subdir_does_not_exist() {
     });
 
     let mut framed = Framed::new(client, ProdCodeCodec::new());
-    let exit = match tokio::time::timeout(std::time::Duration::from_secs(10), framed.next()).await {
-        Ok(Some(Ok(WireMessage::ExecExit(exit)))) => exit,
-        other => panic!("expected ExecExit, got: {other:?}"),
+    let exit = loop {
+        match tokio::time::timeout(std::time::Duration::from_secs(10), framed.next()).await {
+            Ok(Some(Ok(WireMessage::ExecChunk(chunk))))
+                if chunk.stderr
+                    && chunk
+                        .data
+                        .as_deref()
+                        .is_some_and(|data| data.starts_with(b"[prod-code exec] WARNING: ")) =>
+            {
+                continue;
+            }
+            Ok(Some(Ok(WireMessage::ExecExit(exit)))) => break exit,
+            other => panic!("expected ExecExit, got: {other:?}"),
+        }
     };
     assert!(
         exit.error
