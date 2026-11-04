@@ -95,6 +95,12 @@ async fn manifest_probe_keeps_exec_artifacts_and_removes_client_files() {
         "/tmp/manifest-ownership",
         Some("manifest-ownership"),
     );
+    let before_exec = crate::runner::snapshot::snapshot_tree(&root);
+    let _active_exec = crate::workspace::register_active_exec(
+        &root,
+        std::time::Instant::now(),
+        std::sync::Arc::new(before_exec.stamps),
+    );
     std::fs::create_dir_all(root.join(".mitts")).unwrap();
     std::fs::write(root.join(".mitts/generated.tar"), b"exec artifact").unwrap();
 
