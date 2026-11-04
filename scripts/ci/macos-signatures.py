@@ -99,7 +99,7 @@ def main():
         for prefix, required in REQUIRED_TESTS.items():
             result = subprocess.run(
                 [
-                    "cargo",
+                    "mitts",
                     "test",
                     "--locked",
                     "-p",

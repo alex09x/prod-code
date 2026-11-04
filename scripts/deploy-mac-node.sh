@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# prod-code — Remote code intelligence
+# Copyright (c) 2026 Alexander Panasenko
+# Contact: alex@prod.codes
+# Author: https://prod.codes/about/
+# Project: https://github.com/alex09x/prod-code
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # Build the gateway on a macOS node, sign it with the Apple Development identity that lives in
 # the Mac Studio keychain (stable identifier + team ⇒ macOS remembers the Local Network /
 # TCC grants across rebuilds instead of prompting after every deploy), install, restart.
@@ -21,14 +27,14 @@ trap 'rm -rf "$TMP"' EXIT
 
 REMOTE_BUILD=$(cat <<'RB'
 set -euo pipefail
-export PATH=$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH
+export PATH=$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH
 cd ~/prod-code 2>/dev/null || cd ~/Documents/workspace/prod-code
 if [ "$PROFILE" = release ]; then
   git pull -q origin main; git log --oneline -1
-  cargo build --release -p prod-code-gateway 2>&1 | tail -1
+  mitts build --native --release -p prod-code-gateway 2>&1 | tail -1
   echo "$PWD/target/release/prod-code-server"
 else
-  cargo build -p prod-code-gateway 2>&1 | tail -1
+  mitts build --native -p prod-code-gateway 2>&1 | tail -1
   echo "$PWD/target/debug/prod-code-server"
 fi
 RB

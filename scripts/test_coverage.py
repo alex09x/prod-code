@@ -60,6 +60,23 @@ def run_coverage(args: list[str]) -> tuple[int, str, str]:
 
 
 class TestReportValidation(unittest.TestCase):
+    def test_workspace_membership_uses_mitts_metadata(self) -> None:
+        metadata = {
+            "workspace_members": ["local"],
+            "packages": [{"id": "local", "manifest_path": "/tmp/demo/Cargo.toml"}],
+        }
+        with mock.patch("coverage.subprocess.run") as run:
+            run.return_value.stdout = json.dumps(metadata)
+            paths = coverage.cargo_workspace_search_dirs(pathlib.Path(REPO_ROOT))
+        self.assertEqual(paths, [pathlib.Path("/tmp/demo").resolve()])
+        self.assertEqual(run.call_args.args[0], ["mitts", "metadata", "--format-version", "1"])
+
+    def test_report_generation_refuses_unsupported_mitts_output_path(self) -> None:
+        with mock.patch("coverage.subprocess.run") as run:
+            with self.assertRaisesRegex(ValueError, "mitts#31"):
+                coverage.collect(None, REPO_ROOT)
+        run.assert_not_called()
+
     def test_validate_report_rejects_non_dict(self) -> None:
         with self.assertRaises(ValueError) as ctx:
             coverage.validate_report([])  # type: ignore[arg-type]
