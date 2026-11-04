@@ -233,6 +233,34 @@ fn a_seeded_copy_takes_no_build_directory_holding_the_seeds_paths() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn a_seeded_copy_preserves_dangling_contained_symlinks_and_skips_escapes() {
+    let dir = tempfile::tempdir().unwrap();
+    let seed = dir.path().join("seed");
+    let fresh = dir.path().join("fresh");
+    let link_parent = seed.join("swift/Sources/TakoApp");
+    std::fs::create_dir_all(&link_parent).unwrap();
+    std::os::unix::fs::symlink("../../../target/bindings", link_parent.join("_bindings")).unwrap();
+    std::os::unix::fs::symlink("../../../../outside", link_parent.join("escape")).unwrap();
+    assert!(!seed.join("target/bindings").exists());
+
+    crate::seed_cache::build_cache::copy_tree(&seed, &fresh).unwrap();
+
+    let bindings = fresh.join("swift/Sources/TakoApp/_bindings");
+    assert!(
+        std::fs::symlink_metadata(&bindings)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(
+        std::fs::read_link(&bindings).unwrap(),
+        std::path::PathBuf::from("../../../target/bindings")
+    );
+    assert!(!fresh.join("swift/Sources/TakoApp/escape").exists());
+}
+
 /// Room for a seed with plenty to spare.
 fn roomy() -> Option<DiskSpace> {
     space(u64::MAX / 4, u64::MAX / 2)
