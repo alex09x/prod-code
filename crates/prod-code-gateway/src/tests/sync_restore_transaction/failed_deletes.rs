@@ -48,6 +48,7 @@ pub(super) async fn sync_restore_transaction_failed_deletes_stay_stale_while_abs
         &manager,
         SyncRequest {
             client_workspace_root: "/tmp/delete-standalone".to_string(),
+            symlinks: None,
             files: deltas(),
             clean_others: false,
             base_workspace_name: Some("delete-standalone".to_string()),
@@ -89,6 +90,7 @@ pub(super) async fn sync_restore_transaction_failed_deletes_stay_stale_while_abs
     crate::session::handle_session_sync(
         SyncRequest {
             client_workspace_root: "/tmp/delete-session".to_string(),
+            symlinks: None,
             files: deltas(),
             clean_others: false,
             base_workspace_name: Some("delete-session".to_string()),

@@ -175,6 +175,10 @@ fn test_sync_codec_roundtrip() {
 
     let req = WireMessage::SyncRequest(SyncRequest {
         client_workspace_root: "/Users/dev/repo".to_string(),
+        symlinks: Some(vec![crate::messages::sync::SyncSymlink {
+            relative_path: "swift/Sources/App/_bindings".into(),
+            target: "../../../target/bindings".into(),
+        }]),
         files: vec![
             FileDelta {
                 relative_path: "src/main.rs".to_string(),

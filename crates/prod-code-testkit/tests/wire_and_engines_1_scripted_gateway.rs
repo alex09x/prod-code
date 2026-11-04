@@ -92,6 +92,7 @@ async fn sync_messages_are_answered_as_if_the_tree_were_held() {
     }
     let sync = WireMessage::SyncRequest(SyncRequest {
         client_workspace_root: "/other".into(),
+        symlinks: None,
         files: Vec::new(),
         clean_others: false,
         base_workspace_name: None,

@@ -68,6 +68,7 @@ async fn a_file_past_the_snapshot_limits_is_removed_and_reported_stale() {
     // The next sync answers with what it still lacks until the client has sent both.
     let sync = |files: Vec<FileDelta>| SyncRequest {
         client_workspace_root: "/tmp/ws".to_string(),
+        symlinks: None,
         files,
         clean_others: false,
         base_workspace_name: Some("ws".to_string()),
@@ -114,6 +115,7 @@ async fn a_sync_write_that_fails_keeps_the_old_text_and_asks_for_it_again() {
     let manager = WorkspaceManager::new();
     let sync = |text: &str| SyncRequest {
         client_workspace_root: "/tmp/ws".to_string(),
+        symlinks: None,
         files: vec![FileDelta {
             relative_path: "src/lib.rs".to_string(),
             content: Some(text.as_bytes().to_vec()),
@@ -206,6 +208,7 @@ async fn concurrent_sync_during_active_exec_preserves_formatted_new_go_files() {
         &manager,
         SyncRequest {
             client_workspace_root: "/client/gofmt-ws".to_string(),
+            symlinks: None,
             base_workspace_name: Some(ws_name.to_string()),
             clean_others: false,
             files: vec![
@@ -238,6 +241,7 @@ async fn concurrent_sync_during_active_exec_preserves_formatted_new_go_files() {
         &manager,
         SyncRequest {
             client_workspace_root: "/client/gofmt-ws".to_string(),
+            symlinks: None,
             base_workspace_name: Some(ws_name.to_string()),
             clean_others: false,
             files: vec![FileDelta {

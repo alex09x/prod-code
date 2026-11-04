@@ -46,6 +46,51 @@ pub(crate) fn extend_listed_via_tracked_dir_symlinks(
     }
 }
 
+/// Returns Git-tracked symlinks that belong to the workspace sync filter.
+pub(crate) fn tracked_symlink_manifest(
+    root: &Path,
+) -> Vec<prod_code_protocol::messages::sync::SyncSymlink> {
+    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let Ok(output) = super::git::git_output(&canonical_root, ["ls-files", "-s", "-z"]) else {
+        return Vec::new();
+    };
+    let include = super::include::SyncInclude::load(&canonical_root);
+    output
+        .split(|byte| *byte == 0)
+        .filter_map(|record| {
+            if !record.starts_with(b"120000 ") {
+                return None;
+            }
+            let tab = record.iter().position(|byte| *byte == b'\t')?;
+            let relative_path = std::str::from_utf8(&record[tab + 1..]).ok()?;
+            if !super::filter_path::is_synced_git_path_with(relative_path, &include) {
+                return None;
+            }
+            let target = std::fs::read_link(canonical_root.join(relative_path))
+                .ok()?
+                .into_os_string()
+                .into_string()
+                .ok()?;
+            Some(prod_code_protocol::messages::sync::SyncSymlink {
+                relative_path: relative_path.to_string(),
+                target,
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn is_alias_path(
+    relative_path: &str,
+    symlinks: &[prod_code_protocol::messages::sync::SyncSymlink],
+) -> bool {
+    symlinks.iter().any(|link| {
+        relative_path == link.relative_path
+            || relative_path
+                .strip_prefix(&link.relative_path)
+                .is_some_and(|suffix| suffix.starts_with('/'))
+    })
+}
+
 fn shallowest_symlink_ancestor(canonical_root: &Path, rel_path: &str) -> Option<String> {
     let parent = Path::new(rel_path).parent()?;
     let mut prefix = PathBuf::new();
@@ -157,5 +202,45 @@ fn is_contained_under_dir_symlink(canonical_root: &Path, link_rel: &str, target_
             .is_ok_and(|canon| canon.is_file() && canon.starts_with(canonical_root))
     } else {
         false
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+    use std::process::Command;
+
+    #[test]
+    fn tracked_dangling_symlink_is_included_in_full_manifest() {
+        let root = tempfile::tempdir().expect("temporary Git workspace");
+        let link = root.path().join("swift/Sources/App/_bindings");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        symlink("../../../target/bindings", &link).unwrap();
+        assert!(
+            Command::new("git")
+                .args(["-C", root.path().to_str().unwrap(), "init", "-q"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args([
+                    "-C",
+                    root.path().to_str().unwrap(),
+                    "add",
+                    "--",
+                    "swift/Sources/App/_bindings"
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+
+        let links = tracked_symlink_manifest(root.path());
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].relative_path, "swift/Sources/App/_bindings");
+        assert_eq!(links[0].target, "../../../target/bindings");
     }
 }
