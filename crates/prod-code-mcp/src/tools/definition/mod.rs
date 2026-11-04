@@ -192,9 +192,26 @@ pub(crate) async fn handle_definition(
             .get("syntax_only_unindexed")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let swift_syntax_only = file_path
+            .extension()
+            .is_some_and(|extension| extension == "swift")
+            && args.get("symbol").is_none()
+            && std::fs::read_to_string(&file_path)
+                .ok()
+                .is_some_and(|source| {
+                    let symbols = crate::tools::outline::file::local_swift_outline_symbols(&source);
+                    super::range::outline_contains_definition(
+                        &symbols,
+                        line.saturating_sub(1) as usize,
+                        character.saturating_sub(1) as usize,
+                    )
+                });
         let is_def = if args.get("symbol").is_some() {
             true
         } else if is_outline_definition(remote, workspace_root, &file_path, line, character).await {
+            true
+        } else if swift_syntax_only {
+            syntax_only = true;
             true
         } else if is_lexical_rust_declaration(&file_path, line, character) {
             syntax_only = true;
@@ -204,9 +221,15 @@ pub(crate) async fn handle_definition(
         };
         if is_def {
             if syntax_only {
-                out.push_str(&format!(
-                    "📍 Definition: {file_uri}:{line}:{character} (syntax-only, outside analyzer module graph)"
-                ));
+                if swift_syntax_only {
+                    out.push_str(&format!(
+                        "📍 Definition: {file_uri}:{line}:{character} (syntax-only local Swift outline; analyzer returned no definition)"
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "📍 Definition: {file_uri}:{line}:{character} (syntax-only, outside analyzer module graph)"
+                    ));
+                }
             } else {
                 out.push_str(&format!("📍 Definition: {file_uri}:{line}:{character}"));
             }
