@@ -171,6 +171,8 @@ async fn busy_probe_timeouts_retain_at_most_one_response_slot() {
     assert_eq!(engine.retained_health_responses(), 1);
 }
 
+mod retirement;
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn three_idle_probe_response_timeouts_retire_the_owned_gopls() {
@@ -181,12 +183,18 @@ async fn three_idle_probe_response_timeouts_retire_the_owned_gopls() {
     )
     .await;
     tokio::time::timeout(Duration::from_secs(2), async {
-        while engine.is_alive() {
+        loop {
+            let cleaned_up = !engine.is_alive()
+                && engine.capabilities.read().await.is_none()
+                && lock_unpoisoned(&engine.pending_requests).is_empty();
+            if cleaned_up {
+                break;
+            }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .expect("three idle response timeouts retire gopls");
+    .expect("three idle response timeouts finish gopls retirement");
     assert!(engine.capabilities.read().await.is_none());
     assert!(lock_unpoisoned(&engine.pending_requests).is_empty());
     assert_process_exits(&dir.path().join("pid")).await;
