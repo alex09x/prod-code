@@ -113,13 +113,19 @@ pub(crate) async fn symbol_search_across_projects(
     let primary_deadline =
         deadline.min(tokio::time::Instant::now() + std::time::Duration::from_secs(10));
     let mut primary_timed_out = false;
+    let mut primary_error = None;
     let mut hits = match tokio::time::timeout_at(
         primary_deadline,
         workspace_symbol_search(primary_node, root, query, hint, limit),
     )
     .await
     {
-        Ok(result) => result?,
+        Ok(Ok(hits)) => hits,
+        Ok(Err(error)) if hint.is_none() && !qualifiers.is_empty() => {
+            primary_error = Some(error);
+            Vec::new()
+        }
+        Ok(Err(error)) => return Err(error),
         Err(_) => {
             primary_timed_out = true;
             tracing::warn!(
@@ -218,6 +224,11 @@ pub(crate) async fn symbol_search_across_projects(
         });
     }
     if anchors.is_empty() && has_relevant_hits {
+        if hits.is_empty()
+            && let Some(error) = primary_error
+        {
+            return Err(error);
+        }
         return Ok(hits);
     }
     if anchors.is_empty() {
@@ -323,6 +334,11 @@ pub(crate) async fn symbol_search_across_projects(
         if named(&hits) {
             break;
         }
+    }
+    if hits.is_empty()
+        && let Some(error) = primary_error
+    {
+        return Err(error);
     }
     Ok(hits)
 }
