@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+- **A Missing Language Server No Longer Fails a Mixed-Language Directory Outline** (`crates/prod-code-mcp`, #1898): `prod-code outline scripts/` on a directory with Python and shell files refused the whole directory when the shell language server could not start. The files of the engines that could be reached are outlined, the files of the unreachable one are counted as skipped, and the summary names the engine and the reason. A directory of one language still fails with its error, since there is nothing else to show.
+- **Assembly Files Have an Outline** (`crates/prod-code-mcp`, #1935): `prod-code outline boot.S` answered that no language server serves `.S` files. `.s`, `.S` and `.asm` files are now outlined from the file itself, as Markdown and Protobuf are: `.globl` symbols, labels and `.macro` definitions, with their lines. Local labels (`.L…`, `1:`) are left out.
+- **Gateway Tests No Longer Depend on Disk Headroom or Handler Timing** (`crates/prod-code-gateway`, #1928, #1931): the exec tests compared a command's stderr byte for byte and counted frames, and failed on a runner under 10 GiB free, where the gateway adds its own `[prod-code exec] WARNING` line before the output. They now tell the gateway's notes from the command's output. The warning stays visible to callers. `validation_under_memory_pressure_refuses_when_redirect_count_reached` read the workspace's session count right after the refusal frame, before the connection handler had cleaned up, and now reads it once the handler is done.
+- **The Guard Test Locks In That a Bounded Manifest Search Is Allowed** (`scripts/`, #1877): `rg -n -A12 '^\[profile' Cargo.toml` is configuration text in one named manifest, not source discovery. The repository's guard already allows it; a test now pins that.
+
 ### Added
 - **Hosted Checks and Protected Native Releases** (#1852): GitHub Actions workflows run existing Rust tests and lint on standard hosted runners, build client/server assets for Linux x86_64, Linux ARM64 and macOS ARM64, and gate Developer ID signing, Apple notarization and publication behind a protected release environment and checksum verification.
 

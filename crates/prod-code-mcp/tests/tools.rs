@@ -2547,6 +2547,35 @@ async fn an_outline_of_a_file_no_server_serves_says_so() {
     assert!(text.contains("language not supported"), "{text}");
 }
 
+/// No language server serves assembly, so its outline is read from the file: global symbols,
+/// labels and macros, without asking a gateway anything (#1935).
+#[tokio::test]
+async fn an_assembly_file_is_outlined_from_its_labels() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        ),
+        (
+            "boot/entry.S",
+            ".globl _start\n_start:\n  b main\n.Ltmp:\nmain:\n  ret\n",
+        ),
+    ]);
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_outline",
+        serde_json::json!({ "path": "boot/entry.S" }),
+    )
+    .await
+    .expect("an assembly outline");
+    let text = text_of(&result);
+    assert!(text.contains("[Global] _start (line 1)"), "{text}");
+    assert!(text.contains("[Label] main (line 5)"), "{text}");
+    assert!(!text.contains(".Ltmp"), "{text}");
+}
+
 /// A Markdown file with CRLF line endings and TOML front-matter parses headings correctly.
 #[tokio::test]
 async fn a_markdown_outline_supports_crlf_and_toml_front_matter() {
