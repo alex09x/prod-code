@@ -1684,6 +1684,27 @@ async fn mixed_directory_outline_keeps_python_when_shell_backend_is_unavailable(
 }
 
 #[tokio::test]
+async fn assembly_outline_works_without_a_language_server() {
+    let ws = Workspace::new(&[("sample.S", ".globl entry\nentry: nop\n.Lloop: nop\n")]);
+    let remote = scripted_gateway(Arc::new(|method, _| {
+        panic!("assembly lexical outline must not contact an LSP: {method}")
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_outline",
+        serde_json::json!({"path": "sample.S"}),
+    )
+    .await
+    .expect("assembly labels can be outlined locally");
+    let text = text_of(&result);
+    assert!(text.contains("entry"), "{text}");
+    assert!(text.contains(".Lloop"), "{text}");
+    assert!(text.contains("lexical assembly labels"), "{text}");
+}
+
+#[tokio::test]
 async fn bash_file_outline_works_without_a_shell_language_server() {
     let ws = Workspace::new(&[(
         "scripts/run_tests_isolated.sh",

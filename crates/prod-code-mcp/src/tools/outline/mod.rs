@@ -18,6 +18,7 @@ use anyhow::{Context, Result};
 use crate::protocol::McpToolCallResult;
 use crate::tools::resolve_file_path;
 
+mod assembly;
 pub mod directory;
 pub mod file;
 pub mod markdown;

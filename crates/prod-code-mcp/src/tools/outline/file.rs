@@ -77,6 +77,22 @@ pub async fn outline_file(
         );
         return Ok(text);
     }
+    if matches!(extension.as_deref(), Some("s" | "asm")) {
+        let source = std::fs::read_to_string(file_path).with_context(|| {
+            crate::remote_fs::missing_file_context(workspace_root, file_path, "reading")
+        })?;
+        let symbols = super::assembly::symbols(&source);
+        let mut rendered = render_outline_with(&symbols, path_str, options, Some(&source)).0;
+        rendered.push_str(
+            "\n\n(note: lexical assembly labels; preprocessing and macros were not evaluated)",
+        );
+        return Ok(cut_block(
+            &rendered,
+            options.max_bytes.unwrap_or(usize::MAX),
+            options.max_items.unwrap_or(usize::MAX),
+        )
+        .0);
+    }
     if matches!(extension.as_deref(), Some("sh" | "bash")) {
         let source = std::fs::read_to_string(file_path).with_context(|| {
             crate::remote_fs::missing_file_context(workspace_root, file_path, "reading")
