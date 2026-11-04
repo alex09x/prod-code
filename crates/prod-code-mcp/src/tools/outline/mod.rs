@@ -24,6 +24,7 @@ pub mod markdown;
 pub mod options;
 pub mod protobuf;
 pub mod render;
+mod shell;
 
 pub use directory::outline_directory;
 pub use file::outline_file;

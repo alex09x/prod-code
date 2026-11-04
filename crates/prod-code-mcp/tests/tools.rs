@@ -1684,6 +1684,29 @@ async fn mixed_directory_outline_keeps_python_when_shell_backend_is_unavailable(
 }
 
 #[tokio::test]
+async fn bash_file_outline_works_without_a_shell_language_server() {
+    let ws = Workspace::new(&[(
+        "scripts/run_tests_isolated.sh",
+        "#!/bin/bash\nrun_tests() {\n  echo ok\n}\n",
+    )]);
+    let remote = scripted_gateway(Arc::new(|method, _| {
+        panic!("Bash lexical outline must not contact an LSP: {method}")
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_outline",
+        serde_json::json!({ "path": "scripts/run_tests_isolated.sh" }),
+    )
+    .await
+    .expect("Bash lexical outline does not require a shell backend");
+    let text = text_of(&result);
+    assert!(text.contains("[Function] run_tests"), "{text}");
+    assert!(text.contains("lexical Bash outline"), "{text}");
+}
+
+#[tokio::test]
 async fn code_hover_and_type_at_render_markdown_or_say_there_is_none() {
     let ws = workspace();
     write(&ws, "src/lib.rs", "pub fn a() {}\n");

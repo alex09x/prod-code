@@ -77,6 +77,20 @@ pub async fn outline_file(
         );
         return Ok(text);
     }
+    if matches!(extension.as_deref(), Some("sh" | "bash")) {
+        let source = std::fs::read_to_string(file_path).with_context(|| {
+            crate::remote_fs::missing_file_context(workspace_root, file_path, "reading")
+        })?;
+        let symbols = super::shell::symbols(&source);
+        let rendered = render_outline_with(&symbols, path_str, options, Some(&source)).0;
+        let (mut rendered, _) = cut_block(
+            &rendered,
+            options.max_bytes.unwrap_or(usize::MAX),
+            options.max_items.unwrap_or(usize::MAX),
+        );
+        rendered.push_str("\n\n(note: lexical Bash outline; no shell language server was used)");
+        return Ok(rendered);
+    }
     let engine = crate::sync::engine_for_file(file_path);
     if !matches!(
         engine,
