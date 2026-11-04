@@ -100,3 +100,10 @@ async fn local_files_are_not_asked_and_readable_ones_are_kept() {
         [readable.to_string_lossy().into_owned()]
     );
 }
+
+#[test]
+fn indexed_identifier_must_start_at_the_reported_utf16_column() {
+    assert!(super::identifier_starts_at("call target()", 6, "target"));
+    assert!(!super::identifier_starts_at("call target()", 1, "target"));
+    assert!(!super::identifier_starts_at("call target()", 6, "tar"));
+}

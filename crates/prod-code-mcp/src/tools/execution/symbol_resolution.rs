@@ -102,7 +102,7 @@ pub(super) async fn resolve_symbol_args(
             ])
         }
     };
-    let candidates = match (reference_budget, tool_name == "code_references") {
+    let mut candidates = match (reference_budget, tool_name == "code_references") {
         (Some(budget), true) => {
             let sync_stage = crate::sync::types::SyncStageTracker::new();
             let tracked =
@@ -162,6 +162,26 @@ pub(super) async fn resolve_symbol_args(
             Err(error) => return Err(error),
         },
     };
+
+    if candidates.len() == 1
+        && candidates[0]
+            .path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            == Some("go")
+    {
+        let indexed = &candidates[0];
+        let declarations = crate::tools::symbols::search::declarations_in(
+            remote,
+            workspace_root,
+            std::slice::from_ref(&indexed.path),
+            &symbol_trimmed,
+        )
+        .await?;
+        if declarations.len() == 1 {
+            candidates = declarations;
+        }
+    }
 
     if candidates.len() > 1 {
         if tool_name == "code_definition" {

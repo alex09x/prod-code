@@ -1718,6 +1718,52 @@ async fn a_symbol_argument_is_resolved_before_the_tool_runs() {
 }
 
 #[tokio::test]
+async fn stale_go_symbol_location_does_not_return_a_sibling_function() {
+    let ws = workspace();
+    let source = write(
+        &ws,
+        "src/lib.go",
+        "package sample\nfunc sibling() { target() }\nfunc target() {}\n",
+    );
+    commit(&ws);
+    let symbol_path = source.clone();
+    let def_path = source.clone();
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" => serde_json::json!([
+            answers::symbol("target", 12, &symbol_path, 2, 24)
+        ]),
+        "textDocument/definition" => {
+            let line = params
+                .pointer("/position/line")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(1);
+            if line == 1 {
+                answers::locations(&def_path, &[(2, 23)])
+            } else {
+                answers::locations(&def_path, &[(3, 6)])
+            }
+        }
+        "textDocument/documentSymbol" => serde_json::json!([
+            {"name":"sibling","kind":12,"range":{"start":{"line":1,"character":0},"end":{"line":1,"character":32}},"selectionRange":{"start":{"line":1,"character":5},"end":{"line":1,"character":12}}},
+            {"name":"target","kind":12,"range":{"start":{"line":2,"character":0},"end":{"line":2,"character":17}},"selectionRange":{"start":{"line":2,"character":5},"end":{"line":2,"character":11}}}
+        ]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({ "symbol": "target" }),
+    )
+    .await
+    .expect("the stale symbol location should be detected");
+    let output = text_of(&result);
+    assert!(output.contains("func target()"), "{output}");
+    assert!(!output.contains("func sibling()"), "{output}");
+}
+
+#[tokio::test]
 async fn an_unknown_symbol_name_is_reported() {
     let ws = workspace();
     write(&ws, "src/lib.rs", "pub fn a() {}\n");
