@@ -26,10 +26,16 @@ fn descendant_retaining_stdout_pipe_is_terminated_and_reaped_on_timeout() {
         pid_file.to_string_lossy()
     );
     make_executable_script(&fake_npm, &script);
+    // Keep the completed script writable while its interpreter starts reading it.
+    let script_writer = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&fake_npm)
+        .expect("hold fixture write access");
 
     // Observe the child before measuring pipe cleanup: script startup may consume the
     // entire short deadline on a busy host, without ever creating a descendant.
-    let mut cmd = std::process::Command::new(&fake_npm);
+    let mut cmd = std::process::Command::new("/bin/sh");
+    cmd.arg(&fake_npm);
     let group = OwnedProcessGroup::spawn(&mut cmd).expect("spawn fixture script");
     let startup_deadline = Instant::now() + Duration::from_secs(10);
     let descendant_pid: i32 = loop {
@@ -42,6 +48,7 @@ fn descendant_retaining_stdout_pipe_is_terminated_and_reaped_on_timeout() {
         assert!(Instant::now() < startup_deadline, "descendant must start");
         std::thread::sleep(Duration::from_millis(10));
     };
+    drop(script_writer);
     let start = Instant::now();
     let result = wait_with_timeout(group, Duration::from_millis(200));
     let elapsed = start.elapsed();
