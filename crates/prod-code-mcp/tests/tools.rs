@@ -1638,6 +1638,41 @@ async fn code_outline_outlines_a_directory_skipping_files_it_cannot_outline() {
 }
 
 #[tokio::test]
+async fn swift_callers_explains_when_the_server_has_no_call_hierarchy() {
+    let ws = Workspace::new(&[
+        ("Package.swift", "// swift-tools-version: 5.9\n"),
+        (
+            "Sources/App/TerminalController.swift",
+            "struct TerminalController {\n    func newWindow() {}\n}\n",
+        ),
+    ]);
+    let remote = scripted_gateway(Arc::new(|method, _| match method {
+        "textDocument/prepareCallHierarchy" => serde_json::Value::Null,
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_callers",
+        serde_json::json!({
+            "path": "Sources/App/TerminalController.swift",
+            "line": 2,
+            "character": 10
+        }),
+    )
+    .await
+    .expect("the Swift capability limitation should be actionable");
+    let text = text_of(&result);
+    assert!(
+        text.contains("Swift language server returned no call hierarchy"),
+        "{text}"
+    );
+    assert!(text.contains("code_references"), "{text}");
+    assert!(!text.starts_with("No function"), "{text}");
+}
+
+#[tokio::test]
 async fn code_hover_and_type_at_render_markdown_or_say_there_is_none() {
     let ws = workspace();
     write(&ws, "src/lib.rs", "pub fn a() {}\n");

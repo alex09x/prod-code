@@ -165,6 +165,9 @@ pub(crate) async fn handle_callers(
     }
     let body = match found {
         Some(tree) => tree.render(),
+        None if crate::sync::engine_for_file(&file_path) == Some("swift") => format!(
+            "Swift language server returned no call hierarchy for {path_str}:{line}:{character}. Use `code_references` to list symbol uses; callers require Swift call-hierarchy support."
+        ),
         None => format!("No function at {path_str}:{line}:{character}."),
     };
     Ok(McpToolCallResult::text(match note {
