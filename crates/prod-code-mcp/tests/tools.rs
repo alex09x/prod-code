@@ -6656,6 +6656,44 @@ async fn move_module_reports_then_moves_the_file() {
 }
 
 #[tokio::test]
+async fn python_move_keeps_module_header_before_inserted_import() {
+    let source = "#!/usr/bin/env python3\n# coding: utf-8\n\"\"\"Example module.\"\"\"\nfrom __future__ import annotations\ndef helper():\n    return 1\nvalue = helper()\n";
+    let ws = Workspace::new(&[("src/example.py", source), ("src/extracted.py", "")]);
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+    execute_tool(
+        remote,
+        &ws.root(),
+        "code_move",
+        serde_json::json!({
+            "path": "src/example.py",
+            "line": 5,
+            "character": 5,
+            "to": "src/extracted.py",
+            "apply": true,
+            "force": true
+        }),
+    )
+    .await
+    .expect("move should succeed");
+    let result = std::fs::read_to_string(ws.path("src/example.py")).unwrap();
+    assert!(result.starts_with("#!/usr/bin/env python3\n# coding: utf-8\n\"\"\"Example module.\"\"\"\nfrom __future__ import annotations\nfrom src.extracted import helper\n"), "{result}");
+    assert!(result.contains("value = helper()"), "{result}");
+    let parsed = std::process::Command::new("python3")
+        .args([
+            "-c",
+            "import ast, sys; ast.parse(open(sys.argv[1], encoding='utf-8').read())",
+        ])
+        .arg(ws.path("src/example.py"))
+        .output()
+        .expect("python3 should be available for the Python move test");
+    assert!(
+        parsed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&parsed.stderr)
+    );
+}
+
+#[tokio::test]
 async fn python_move_refuses_uncarried_module_level_dependencies() {
     let ws = Workspace::new(&[
         (

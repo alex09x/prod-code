@@ -22,6 +22,7 @@ pub mod go_refs;
 pub mod header;
 pub mod imports;
 mod python_dependencies;
+mod python_header;
 pub mod specifiers;
 pub mod target;
 
