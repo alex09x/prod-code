@@ -17,3 +17,4 @@ runs:
         MITTS_INSTALL_ROOT="$RUNNER_TEMP/mitts" sh "$RUNNER_TEMP/install-mitts.sh"
         "$RUNNER_TEMP/mitts/bin/mitts" --version
         echo "$RUNNER_TEMP/mitts/bin" >> "$GITHUB_PATH"
+        echo "MITTS_CACHE_DIR=$RUNNER_TEMP/mitts-cache" >> "$GITHUB_ENV"

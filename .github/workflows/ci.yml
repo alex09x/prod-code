@@ -43,9 +43,8 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-registry-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+            ${{ runner.temp }}/mitts-cache
+          key: mitts-cache-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
       - name: Fetch complete workspace dependencies before sharing the cache
         run: mitts fetch --locked
       - id: plan
@@ -64,9 +63,8 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-registry-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+            ${{ runner.temp }}/mitts-cache
+          key: mitts-cache-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
       - name: Validate workflow definitions
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck= -pyflakes= .github/workflows/ci.yml .github/workflows/release.yml
       - run: mitts fmt --all --check
@@ -93,9 +91,8 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-registry-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+            ${{ runner.temp }}/mitts-cache
+          key: mitts-cache-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
       - name: Install the real Rust analyzer test prerequisites
         if: matrix.kind != 'doc' && matrix.package != 'prod-code-protocol'
         run: rustup component add rust-src rust-analyzer rustfmt clippy
@@ -130,9 +127,8 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-registry-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+            ${{ runner.temp }}/mitts-cache
+          key: mitts-cache-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
       - name: Test valid Developer ID, unsigned, tampered and ad-hoc downloads without secrets
         run: python3 scripts/ci/macos-signatures.py
       - name: Verify Git build metadata on native macOS
