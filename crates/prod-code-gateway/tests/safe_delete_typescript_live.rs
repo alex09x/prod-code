@@ -285,8 +285,16 @@ fn source_cli(deadline: Instant) -> PathBuf {
             .expect("workspace")
             .to_path_buf();
         let (ok, output) = run_command(
-            Command::new("cargo")
-                .args(["build", "-p", "prod-code-client", "--bin", "prod-code"])
+            Command::new("mitts")
+                .args([
+                    "build",
+                    "--native",
+                    "--locked",
+                    "-p",
+                    "prod-code-client",
+                    "--bin",
+                    "prod-code",
+                ])
                 .current_dir(&workspace),
             deadline,
             "source client build",

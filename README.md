@@ -101,7 +101,7 @@ flowchart TD
             Router["Placement & Gossip Router"] --> Workspaces["Per-Worktree Mirrors\n(<repo>--wt-<hash>)"]
             Workspaces --> PrimarySalsa["Primary Salsa DB\n(rust-analyzer in-proc; child LSPs)"]
             Workspaces --> ShadowValidation["Validation Engines\n(private or shared by engine)"]
-            Workspaces --> RemoteExec["Remote Builds, Lints & Tests\n(cargo, go, pytest, swift, etc.)"]
+    Workspaces --> RemoteExec["Remote Builds, Lints & Tests\n(mitts, go, pytest, swift, etc.)"]
             GatewayInternals --> Telemetry["Prometheus Scrape (:9401)\n& Pushgateway (:9091)"]
         end
     end

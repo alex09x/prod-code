@@ -31,18 +31,18 @@ fn narrow_scope_picks_cargo_member_go_dir_and_pytest_path() {
     .unwrap();
     std::fs::write(member.join("lib.rs"), "").unwrap();
 
-    let mut cmd = strs(&["cargo", "test", "--workspace"]);
+    let mut cmd = strs(&["mitts", "test", "--workspace"]);
     narrow_scope(&mut cmd, "rust", root, &member.join("lib.rs"));
-    assert_eq!(cmd, strs(&["cargo", "test", "-p", "gw"]));
+    assert_eq!(cmd, strs(&["mitts", "test", "-p", "gw"]));
 
-    let mut cmd = strs(&["cargo", "test", "--workspace"]);
+    let mut cmd = strs(&["mitts", "test", "--workspace"]);
     narrow_scope(&mut cmd, "rust", root, root);
-    assert_eq!(cmd, strs(&["cargo", "test", "--workspace"]));
+    assert_eq!(cmd, strs(&["mitts", "test", "--workspace"]));
 
     // A crate name instead of a path.
-    let mut cmd = strs(&["cargo", "test", "--workspace"]);
+    let mut cmd = strs(&["mitts", "test", "--workspace"]);
     narrow_scope(&mut cmd, "rust", root, &root.join("gw"));
-    assert_eq!(cmd, strs(&["cargo", "test", "-p", "gw"]));
+    assert_eq!(cmd, strs(&["mitts", "test", "-p", "gw"]));
 
     let mut cmd = strs(&["go", "test", "-json", "./..."]);
     narrow_scope(&mut cmd, "go", root, &root.join("crates/gw"));

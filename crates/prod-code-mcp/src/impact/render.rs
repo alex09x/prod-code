@@ -38,7 +38,7 @@ impl ImpactReport {
                 self.unattributed_files.join(", ")
             ));
         }
-        // Only Rust tests become `cargo test` filters; another language's tests in a Rust-root
+        // Only Rust tests become Rust test filters; another language's tests in a Rust-root
         // repository run under their own command (#1471).
         let rust_filter_count = self
             .tests

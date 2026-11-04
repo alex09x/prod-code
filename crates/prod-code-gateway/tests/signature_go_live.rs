@@ -539,13 +539,21 @@ fn source_cli() -> PathBuf {
             .and_then(Path::parent)
             .expect("gateway crate lives below workspace")
             .to_path_buf();
-        // A seeded target can contain an older binary. Always ask Cargo to establish that
+        // A seeded target can contain an older binary. Always ask Mitts to establish that
         // this checkout's client is current, including when instrumentation selects a target.
-        let status = Command::new("cargo")
-            .args(["build", "-p", "prod-code-client", "--bin", "prod-code"])
+        let status = Command::new("mitts")
+            .args([
+                "build",
+                "--native",
+                "--locked",
+                "-p",
+                "prod-code-client",
+                "--bin",
+                "prod-code",
+            ])
             .current_dir(&workspace)
             .status()
-            .expect("build source client");
+            .expect("build source client with Mitts");
         assert!(status.success(), "build source client: {status}");
         let target = std::env::var_os("CARGO_TARGET_DIR")
             .map(PathBuf::from)

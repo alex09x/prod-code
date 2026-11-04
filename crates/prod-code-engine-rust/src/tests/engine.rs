@@ -78,14 +78,8 @@ fn manifest_declared_extensionless_rust_target_is_outlined() {
     let unrelated = src.join("notes");
     std::fs::write(&unrelated, "ordinary text, not a Cargo target\n").unwrap();
 
-    let metadata = std::process::Command::new("cargo")
-        .args([
-            "metadata",
-            "--format-version",
-            "1",
-            "--no-deps",
-            "--manifest-path",
-        ])
+    let metadata = std::process::Command::new("mitts")
+        .args(["metadata", "--format-version", "1", "--manifest-path"])
         .arg(temp.path().join("Cargo.toml"))
         .output()
         .unwrap();

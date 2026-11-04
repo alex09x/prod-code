@@ -9,6 +9,9 @@
 """Read and validate LLVM coverage reports."""
 
 import json
+import os
+import subprocess
+import sys
 
 
 def validate_report(report: dict) -> None:
@@ -54,7 +57,20 @@ def collect(report_path: str | None, root: str) -> dict:
             raise ValueError(f"invalid JSON in coverage report {report_path}: {err}") from err
         validate_report(report)
         return report
-    raise ValueError(
-        "Generating a coverage report requires Mitts support for llvm-cov "
-        "--output-path (alex09x/mitts#31); supply an existing report with --report"
+    out_path = os.path.join(root, "target", "coverage-report.json")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    subprocess.run(
+        [
+            "mitts", "llvm-cov", "--workspace", "--json", "--summary-only",
+            "--output-path", out_path,
+        ],
+        check=True,
     )
+    print(f"report kept at {out_path} (reuse it with --report)", file=sys.stderr)
+    try:
+        with open(out_path, "r", encoding="utf-8") as handle:
+            report = json.load(handle)
+    except (OSError, json.JSONDecodeError) as err:
+        raise ValueError(f"cannot read generated coverage report {out_path}: {err}") from err
+    validate_report(report)
+    return report

@@ -172,7 +172,7 @@ pub fn test_command(
             leaf_names.dedup();
             if leaf_names.len() == 1 {
                 vec![
-                    "cargo".to_string(),
+                    "mitts".to_string(),
                     "test".to_string(),
                     "--workspace".to_string(),
                     "--".to_string(),
@@ -180,7 +180,7 @@ pub fn test_command(
                 ]
             } else if leaf_names.len() > 25 {
                 vec![
-                    "cargo".to_string(),
+                    "mitts".to_string(),
                     "test".to_string(),
                     "--workspace".to_string(),
                 ]
@@ -188,7 +188,7 @@ pub fn test_command(
                 let mut command = vec![
                     "sh".to_string(),
                     "-c".to_string(),
-                    "for test_name in \"$@\"; do cargo test --workspace -- \"$test_name\" || exit; done"
+                    "for test_name in \"$@\"; do mitts test --workspace -- \"$test_name\" || exit; done"
                         .to_string(),
                     "prod-code-impact".to_string(),
                 ];

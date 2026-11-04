@@ -71,11 +71,23 @@ class TestReportValidation(unittest.TestCase):
         self.assertEqual(paths, [pathlib.Path("/tmp/demo").resolve()])
         self.assertEqual(run.call_args.args[0], ["mitts", "metadata", "--format-version", "1"])
 
-    def test_report_generation_refuses_unsupported_mitts_output_path(self) -> None:
-        with mock.patch("coverage.subprocess.run") as run:
-            with self.assertRaisesRegex(ValueError, "mitts#31"):
-                coverage.collect(None, REPO_ROOT)
-        run.assert_not_called()
+    def test_report_generation_uses_mitts_output_path(self) -> None:
+        expected = {"data": [{"files": [{"filename": "/tmp/demo/src.rs", "summary": {
+            "regions": {"count": 1, "covered": 1}}}]}]}
+        with tempfile.TemporaryDirectory() as root:
+            def write_report(argv: list[str], **kwargs: object) -> mock.Mock:
+                output = argv[argv.index("--output-path") + 1]
+                pathlib.Path(output).write_text(json.dumps(expected), encoding="utf-8")
+                return mock.Mock(returncode=0)
+
+            with mock.patch("coverage_report.subprocess.run", side_effect=write_report) as run:
+                report = coverage.collect(None, root)
+
+            self.assertEqual(report, expected)
+            self.assertEqual(run.call_args.args[0], [
+                "mitts", "llvm-cov", "--workspace", "--json", "--summary-only",
+                "--output-path", str(pathlib.Path(root, "target", "coverage-report.json")),
+            ])
 
     def test_validate_report_rejects_non_dict(self) -> None:
         with self.assertRaises(ValueError) as ctx:
