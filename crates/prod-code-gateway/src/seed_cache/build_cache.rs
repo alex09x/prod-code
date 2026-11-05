@@ -257,6 +257,7 @@ pub fn is_node_cache(name: &str) -> bool {
             | ".gradle"
     ) || name == workspace::LAST_USED_MARKER
         || name == workspace::STALE_MARKER
+        || name == workspace::EXEC_CREATED_MARKER
 }
 
 pub fn walk_files(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, PathBuf)>) {

@@ -110,12 +110,17 @@ pub fn reconcile_manifest(
         .collect();
     let mut present = Vec::new();
     walk_files(root, root, &mut present);
+    // What a command made on the node is the node's: the client never had it to list (#1895).
+    let made_by_commands = workspace::exec_created_paths(root);
     let mut missing = Vec::new();
     let mut deleted = Vec::new();
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for (rel, path) in &present {
         match wanted.get(rel.as_str()) {
             None => {
+                if made_by_commands.contains(rel.as_str()) {
+                    continue;
+                }
                 if active_exec
                     .as_ref()
                     .is_some_and(|(_, before)| !before.contains_key(rel.as_str()))
