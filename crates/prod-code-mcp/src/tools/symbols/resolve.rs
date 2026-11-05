@@ -235,9 +235,12 @@ pub(crate) async fn resolve_symbol_ties(
             // An index can be stale or (clangd) point the right range at the wrong file:
             // the name must actually be at that position. A server that decorates the name
             // (`Type.name`) may point at the bare name, so either spelling counts.
-            if !identifier_at(&hit.path, &remote_texts, hit.line, hit.col, &hit.name)
-                && !identifier_at(&hit.path, &remote_texts, hit.line, hit.col, bare)
-            {
+            let matches_position = source_text(&hit.path, &remote_texts).is_some_and(|text| {
+                text.lines()
+                    .nth(hit.line.saturating_sub(1) as usize)
+                    .is_some_and(|row| identifier_starts_at(row, hit.col, bare))
+            });
+            if !matches_position {
                 score -= 1000;
             }
             (score, hit)
