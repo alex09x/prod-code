@@ -119,6 +119,35 @@ fn a_directory_gone_locally_is_gone_from_the_copy() {
     assert!(root.exists(), "the workspace root itself is never removed");
 }
 
+/// What a command created on the copy, the client's manifest never lists: a probe keeps it (a
+/// scratch script the next command runs), while a file the client dropped still goes (#1895).
+#[test]
+fn reconciliation_keeps_the_files_a_command_created() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), "lib").unwrap();
+    std::fs::write(root.join("src/dropped.rs"), "dropped").unwrap();
+    let before = workspace::present_paths(root);
+    std::fs::create_dir_all(root.join(".scratch")).unwrap();
+    std::fs::write(root.join(".scratch/probe.py"), "print(1)").unwrap();
+    workspace::record_exec_created(root, &before);
+
+    let manifest = [FileStamp {
+        relative_path: "src/lib.rs".to_string(),
+        size: 3,
+        hash: content_hash(b"lib"),
+        is_executable: None,
+    }];
+    let (missing, deleted) = reconcile_manifest(root, &manifest);
+    assert!(missing.is_empty(), "{missing:?}");
+    assert_eq!(deleted, ["src/dropped.rs"]);
+    assert!(
+        root.join(".scratch/probe.py").is_file(),
+        "the file a command made survives the probe"
+    );
+}
+
 /// A directory symlink on the copy is not walked: the files behind an alias of the source tree
 /// or of a parent are not "absent from the manifest", so reconciliation deletes nothing through
 /// it, and a link back up cannot recurse (#1526). An ordinary unlisted file still goes.

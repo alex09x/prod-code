@@ -10,6 +10,7 @@
 
 //! Workspace management: multi-tenant shared workspaces, leader-follower coalescing, and worktree views.
 
+pub(crate) mod exec_created;
 pub(crate) mod loader;
 pub(crate) mod manager;
 pub(crate) mod paths;
@@ -25,6 +26,9 @@ pub(crate) mod validation;
 #[cfg(test)]
 mod tests;
 
+pub use exec_created::{
+    EXEC_CREATED_MARKER, exec_created_paths, present_paths, record_exec_created,
+};
 pub use manager::{RECLAIM_MIN_IDLE, WorkspaceManager};
 pub use paths::{
     extract_workspace_identifier, resolve_server_workspace, sanitize_identifier,
