@@ -27,6 +27,7 @@ async fn cancelled_sync_records_before_restore(session: bool) {
     let (view, out, _receiver) = make_session_view(&manager, &root, 1).await;
     let req = SyncRequest {
         client_workspace_root: "/tmp/interleave".into(),
+        symlinks: None,
         base_workspace_name: Some("interleave".into()),
         files: vec![write_delta("client.rs", "new client\n")],
         clean_others: false,
@@ -132,6 +133,7 @@ async fn sync_restore_transaction_blocking_restore_cancellation() {
         &manager,
         SyncRequest {
             client_workspace_root: "/tmp/cancel".into(),
+            symlinks: None,
             base_workspace_name: Some("cancel".into()),
             files: vec![write_delta("client.rs", "new client\n")],
             clean_others: false,

@@ -59,6 +59,7 @@ async fn sync_restore_transaction_review_engine_wait_allows_following_sync_and_p
             &manager,
             SyncRequest {
                 client_workspace_root: "/tmp/engine-wait".into(),
+                symlinks: None,
                 base_workspace_name: Some("engine-wait".into()),
                 files: vec![write_delta("src/lib.rs", "pub const VALUE: u32 = 2;\n")],
                 clean_others: false,
@@ -170,6 +171,7 @@ async fn sync_restore_transaction_deferred_restore_reads_current_disk_and_invali
             &manager,
             SyncRequest {
                 client_workspace_root: "/tmp/deferred".into(),
+                symlinks: None,
                 base_workspace_name: Some("deferred".into()),
                 files: vec![write_delta("src/lib.rs", newer)],
                 clean_others: false,

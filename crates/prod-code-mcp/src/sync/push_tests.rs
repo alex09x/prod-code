@@ -110,6 +110,7 @@ async fn keepalives_extend_the_wait_past_the_idle_limit_up_to_the_cap() {
 /// with the stale set `stale(n, missing, sent)` gives for the `n`th request, recording what each one carried.
 async fn stale_gateway(
     missing: Vec<String>,
+    supports_symlinks: bool,
     stale: fn(usize, &[String], &[String]) -> Vec<String>,
 ) -> (
     Framed<AnyStream, ProdCodeCodec>,
@@ -135,8 +136,15 @@ async fn stale_gateway(
                 WireMessage::SyncRequest(req) => {
                     let sent: Vec<String> =
                         req.files.iter().map(|f| f.relative_path.clone()).collect();
+                    let symlinks_requested = req.symlinks.is_some();
                     let mut log = log.lock().unwrap();
                     log.push(sent.clone());
+                    let mut stale_paths = stale(log.len() - 1, &missing, &sent);
+                    if supports_symlinks && symlinks_requested {
+                        stale_paths.push(
+                            prod_code_protocol::messages::sync::SYNC_SYMLINKS_ACK.to_string(),
+                        );
+                    }
                     WireMessage::SyncResponse(prod_code_protocol::SyncResponse {
                         server_workspace_root: "/srv/ws".to_string(),
                         files_updated: req.files.len(),
@@ -144,7 +152,7 @@ async fn stale_gateway(
                         bytes_transferred: 0,
                         duration_ms: 1,
                         workspace_was_fresh: false,
-                        stale_paths: stale(log.len() - 1, &missing, &sent),
+                        stale_paths,
                     })
                 }
                 _ => continue,
@@ -212,7 +220,7 @@ async fn a_file_a_later_batch_delivered_is_not_resent() {
     let temp = checkout(&names.map(|n| (n, big.clone())));
     let missing = names.map(str::to_string).to_vec();
     // The first answer names stale what is still to come; the last, nothing.
-    let (mut framed, seen) = stale_gateway(missing, |n, missing, sent| match n {
+    let (mut framed, seen) = stale_gateway(missing, true, |n, missing, sent| match n {
         0 => missing
             .iter()
             .filter(|m| !sent.contains(m))
@@ -235,8 +243,10 @@ async fn a_file_a_later_batch_delivered_is_not_resent() {
 #[tokio::test]
 async fn a_file_the_gateway_cannot_write_fails_the_sync_and_is_sent_again() {
     let temp = checkout(&[("a.rs", b"pub fn a() {}".to_vec())]);
-    let (mut framed, seen) =
-        stale_gateway(vec!["a.rs".to_string()], |_, _, _| vec!["a.rs".to_string()]).await;
+    let (mut framed, seen) = stale_gateway(vec!["a.rs".to_string()], true, |_, _, _| {
+        vec!["a.rs".to_string()]
+    })
+    .await;
     let err = push_workspace_sync(&mut framed, temp.path(), &identity(), None)
         .await
         .unwrap_err()
@@ -255,4 +265,105 @@ async fn a_file_the_gateway_cannot_write_fails_the_sync_and_is_sent_again() {
             .collect::<Vec<_>>()
     );
     crate::sync::cache::clear_sync_cache_for(temp.path(), &node);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_old_gateway_refuses_a_workspace_with_tracked_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let temp = checkout(&[("README.md", b"fixture".to_vec())]);
+    let link = temp.path().join("swift/Sources/App/_bindings");
+    std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+    symlink("../../../target/bindings", &link).unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .args(["add", "--", "swift/Sources/App/_bindings"])
+            .current_dir(temp.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                "add link",
+            ])
+            .current_dir(temp.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    let (mut framed, _) = stale_gateway(Vec::new(), false, |_, _, _| Vec::new()).await;
+
+    let error = push_workspace_sync(&mut framed, temp.path(), &identity(), None)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("does not support tracked symlink sync"),
+        "{error}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_gateway_acknowledges_and_receives_a_dangling_symlink_manifest() {
+    use std::os::unix::fs::symlink;
+
+    let temp = checkout(&[("README.md", b"fixture".to_vec())]);
+    let generated_dir = temp.path().join("swift/Sources/App");
+    std::fs::create_dir_all(&generated_dir).unwrap();
+    std::fs::write(generated_dir.join("Generated.swift"), "struct Generated {}").unwrap();
+    symlink("../../../target/bindings", generated_dir.join("_bindings")).unwrap();
+    symlink("Generated.swift", generated_dir.join("_generated.swift")).unwrap();
+    for args in [
+        &[
+            "add",
+            "--",
+            "swift/Sources/App/Generated.swift",
+            "swift/Sources/App/_bindings",
+            "swift/Sources/App/_generated.swift",
+        ][..],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "add link",
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(temp.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let (mut framed, sent) = stale_gateway(
+        vec![
+            "swift/Sources/App/Generated.swift".into(),
+            "swift/Sources/App/_generated.swift".into(),
+        ],
+        true,
+        |_, _, _| Vec::new(),
+    )
+    .await;
+    let outcome = push_workspace_sync(&mut framed, temp.path(), &identity(), None)
+        .await
+        .expect("supported gateway accepts the link manifest");
+    assert!(outcome.stale_paths.is_empty(), "{outcome:?}");
+    let files = sent.lock().unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0], vec!["swift/Sources/App/Generated.swift"]);
 }

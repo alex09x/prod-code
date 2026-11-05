@@ -90,6 +90,15 @@ fn a_wire_message_keeps_its_kind_through_a_round_trip() {
 }
 
 #[test]
+fn an_older_sync_request_without_the_symlink_extension_still_decodes() {
+    let request: crate::messages::sync::SyncRequest = serde_json::from_str(
+        r#"{"client_workspace_root":"/srv/w","files":[],"clean_others":false,"base_workspace_name":null}"#,
+    )
+    .expect("legacy sync request");
+    assert!(request.symlinks.is_none());
+}
+
+#[test]
 fn redirect_message_round_trips() {
     let msg = WireMessage::Redirect {
         target_addr: "192.0.2.191:9400".to_string(),

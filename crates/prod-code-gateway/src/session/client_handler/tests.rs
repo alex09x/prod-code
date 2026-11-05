@@ -269,6 +269,7 @@ async fn every_pre_handshake_request_gets_its_own_kind_of_answer() {
     let answer = s
         .ask(WireMessage::SyncRequest(SyncRequest {
             client_workspace_root: root.clone(),
+            symlinks: None,
             files: Vec::new(),
             clean_others: false,
             base_workspace_name: Some("unit-ws".to_string()),
