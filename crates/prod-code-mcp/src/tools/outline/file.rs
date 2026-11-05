@@ -90,6 +90,19 @@ pub async fn outline_file(
         );
         return Ok(text);
     }
+    // Nor does one have to be installed for a shell script: its functions are read here (#1851).
+    if matches!(extension.as_deref(), Some("sh" | "bash" | "zsh")) {
+        let text = std::fs::read_to_string(file_path).with_context(|| {
+            crate::remote_fs::missing_file_context(workspace_root, file_path, "reading")
+        })?;
+        let rendered = super::shell::shell_outline(&text, path_str, options);
+        let (text, _) = cut_block(
+            &rendered,
+            options.max_bytes.unwrap_or(usize::MAX),
+            options.max_items.unwrap_or(usize::MAX),
+        );
+        return Ok(text);
+    }
     let engine = crate::sync::engine_for_file(file_path);
     if !matches!(
         engine,
@@ -102,7 +115,8 @@ pub async fn outline_file(
         anyhow::bail!(
             "no outline for {path_str}: language not supported (no language server serves {kind}). \
              prod-code serves Rust, Go, C, C++ and Objective-C, TypeScript and JavaScript, Python \
-             and Swift, and outlines Markdown by its headings and Protobuf declarations"
+             and Swift, and outlines Markdown by its headings, Protobuf declarations, assembly \
+             labels and shell functions"
         );
     }
     let file_uri = Url::from_file_path(file_path)
