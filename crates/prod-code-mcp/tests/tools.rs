@@ -1753,6 +1753,34 @@ async fn a_symbol_argument_is_resolved_before_the_tool_runs() {
 }
 
 #[tokio::test]
+async fn qualified_rust_module_symbol_beats_same_named_python_method() {
+    let ws = workspace();
+    let rust = write(&ws, "src/commands.rs", "pub fn run() {}\n");
+    let python = write(
+        &ws,
+        "scripts/live_walkthrough/record.py",
+        "class Recorder:\n    def run(self):\n        return None\n",
+    );
+    commit(&ws);
+    let rust_path = rust.clone();
+    let python_path = python.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "workspace/symbol" => {
+            let mut py = answers::symbol("run", 6, &python_path, 2, 9);
+            py["containerName"] = serde_json::json!("Recorder");
+            serde_json::json!([py, answers::symbol("run", 12, &rust_path, 1, 8)])
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let hit = prod_code_mcp::tools::resolve_symbol(remote, &ws.root(), "commands::run", None)
+        .await
+        .expect("the Rust module-qualified function resolves");
+    assert_eq!(hit.path, rust);
+    assert_eq!(hit.line, 1);
+}
+
+#[tokio::test]
 async fn an_unknown_symbol_name_is_reported() {
     let ws = workspace();
     write(&ws, "src/lib.rs", "pub fn a() {}\n");
@@ -2533,14 +2561,14 @@ async fn an_outline_of_a_file_no_server_serves_says_so() {
             "Cargo.toml",
             "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
         ),
-        ("scripts/build.sh", "#!/bin/sh\necho hi\n"),
+        ("scripts/build.zig", "pub fn main() void {}\n"),
     ]);
     let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
     let text = match execute_tool(
         remote,
         &ws.root(),
         "code_outline",
-        serde_json::json!({ "path": "scripts/build.sh" }),
+        serde_json::json!({ "path": "scripts/build.zig" }),
     )
     .await
     {
@@ -2548,10 +2576,67 @@ async fn an_outline_of_a_file_no_server_serves_says_so() {
         Err(err) => format!("{err:#}"),
     };
     assert!(
-        text.contains("no language server serves `.sh` files"),
+        text.contains("no language server serves `.zig` files"),
         "{text}"
     );
     assert!(text.contains("language not supported"), "{text}");
+}
+
+/// A shell script's outline is read from the file, listing its functions, with no gateway
+/// answer needed (#1851).
+#[tokio::test]
+async fn a_shell_script_is_outlined_from_its_functions() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        ),
+        (
+            "scripts/run.sh",
+            "#!/bin/bash\nset -e\nsetup() {\n  :\n}\nfunction run_all {\n  setup\n}\n",
+        ),
+    ]);
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_outline",
+        serde_json::json!({ "path": "scripts/run.sh" }),
+    )
+    .await
+    .expect("a shell outline");
+    let text = text_of(&result);
+    assert!(text.contains("[Function] setup (line 3)"), "{text}");
+    assert!(text.contains("[Function] run_all (line 6)"), "{text}");
+}
+
+/// No language server serves assembly, so its outline is read from the file: global symbols,
+/// labels and macros, without asking a gateway anything (#1935).
+#[tokio::test]
+async fn an_assembly_file_is_outlined_from_its_labels() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        ),
+        (
+            "boot/entry.S",
+            ".globl _start\n_start:\n  b main\n.Ltmp:\nmain:\n  ret\n",
+        ),
+    ]);
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_outline",
+        serde_json::json!({ "path": "boot/entry.S" }),
+    )
+    .await
+    .expect("an assembly outline");
+    let text = text_of(&result);
+    assert!(text.contains("[Global] _start (line 1)"), "{text}");
+    assert!(text.contains("[Label] main (line 5)"), "{text}");
+    assert!(!text.contains(".Ltmp"), "{text}");
 }
 
 /// A Markdown file with CRLF line endings and TOML front-matter parses headings correctly.
