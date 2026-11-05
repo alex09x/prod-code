@@ -30,7 +30,19 @@ pub(crate) async fn handle_source(
         )?;
     let line = args.get("line").and_then(|v| v.as_u64()).map(|l| l as u32);
     let context = args.get("context").and_then(|v| v.as_u64()).unwrap_or(30) as u32;
-    let (bytes, truncated) = crate::remote_fs::read_source(remote, workspace_root, path).await?;
+    let external_path = crate::remote_fs::uri_to_path(path);
+    let (bytes, truncated) = crate::remote_fs::read_source(remote, workspace_root, path)
+        .await
+        .map_err(|error| {
+            let external_path = Path::new(&external_path);
+            if external_path.is_file() && !external_path.starts_with(workspace_root) {
+                error.context(
+                    "this path is in another local checkout; `workspace` only selects worktrees of the same Git repository. Run `code_source` from a session rooted in the target repository; cross-repository reads are not supported by this workspace",
+                )
+            } else {
+                error
+            }
+        })?;
     let text = String::from_utf8_lossy(&bytes);
     let mut out = match line {
         Some(line) => crate::remote_fs::snippet(&text, line, context),
