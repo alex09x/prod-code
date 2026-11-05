@@ -261,6 +261,23 @@ pub async fn move_item(
         .into_iter()
         .map(|note| format!("{}: {note}", display(root, target)))
         .collect();
+    // A private function or type moved to a sibling module stays private there, while another
+    // module still names it; `pub(crate)` is the narrowest visibility that reaches a sibling
+    // (#1933). A move into a child keeps its own rules, and a method its `impl`'s.
+    if enclosing_impl.is_none()
+        && !extracted_inline_mod
+        && !child
+        && by_file.keys().any(|path| path != target)
+        && let Some(widened) = super::visibility::with_crate_visibility(&item, edition)
+        && let Some(text) = rewritten.get_mut(target)
+        && text.contains(&item)
+    {
+        *text = text.replacen(&item, &widened, 1);
+        imports.push(format!(
+            "{}: `{name}` is now `pub(crate)`: other modules still use it",
+            display(root, target)
+        ));
+    }
     let left_alone = Vec::new();
     let mut unmatched = Vec::new();
     let mut callers: Vec<PathBuf> = Vec::new();

@@ -229,3 +229,14 @@ fn fun_name(start_line: usize, end_line: usize) -> String {
         "end_line was declared as parameter, must not be flagged"
     );
 }
+
+/// #1934: a name the extracted helper binds itself, with a `for` loop, is not an enclosing local
+/// it forgot to capture, even when the enclosing function has a local or parameter of that name.
+#[test]
+fn a_loop_binding_inside_the_selection_is_not_an_uncaptured_local() {
+    let original = "fn total(values: &[i32], value: i32) -> i32 {\n    let item = 0;\n    let mut sum = value;\n    for value in values {\n        sum += value;\n    }\n    for (index, item) in values.iter().enumerate() {\n        sum += item + index as i32;\n    }\n    for &value in values.iter() {\n        sum += value;\n    }\n    sum + item\n}\n";
+    let start = original.find("for value in values").unwrap();
+    let extracted = "fn total(values: &[i32], value: i32) -> i32 {\n    let item = 0;\n    let mut sum = value;\n    sum = fun_name(values, sum);\n    sum + item\n}\n\nfn fun_name(values: &[i32], mut sum: i32) -> i32 {\n    for value in values {\n        sum += value;\n    }\n    for (index, item) in values.iter().enumerate() {\n        sum += item + index as i32;\n    }\n    for &value in values.iter() {\n        sum += value;\n    }\n    sum\n}\n";
+    let uncaptured = uncaptured_enclosing_locals(original, start, extracted, None);
+    assert!(uncaptured.is_empty(), "{uncaptured:?}");
+}
