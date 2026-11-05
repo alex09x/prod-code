@@ -1033,10 +1033,12 @@ async fn validation_under_memory_pressure_refuses_when_redirect_count_reached() 
         &manager.get_loaded(&server_root).await.unwrap(),
         &workspace,
     ));
-    assert_eq!(workspace.active_sessions.load(Ordering::Relaxed), 0);
 
+    // The refusal reaches the client before the handler has finished its cleanup, so the
+    // invariant is read after the handler is done, not racing its teardown (#1931).
     drop(client);
     let _ = server.join().await;
+    assert_eq!(workspace.active_sessions.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

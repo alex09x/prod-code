@@ -59,6 +59,21 @@ class GrepInterceptionCasesMixin(GrepArgumentCasesMixin):
                     f"Text search `{cmd}` should be allowed without symbol interception",
                 )
 
+    def test_bounded_search_of_one_named_manifest_is_allowed_issue_1877(self) -> None:
+        guard = self._guard()
+        for cmd in [
+            "rg -n -A12 '^\\[profile' Cargo.toml",
+            "rg -n -A12 '^\\[profile' Cargo.toml | head -40",
+            "grep -n '^\\[workspace' Cargo.toml",
+            "cd crates && rg -n 'edition' pkg/Cargo.toml",
+        ]:
+            with self.subTest(command=cmd):
+                self.assertIsNone(guard.symbol_grep(cmd, self.cwd))
+                self.assertIsNone(
+                    guard.text_grep(cmd, self.cwd),
+                    "configuration text in one named manifest is not source discovery (#1877)",
+                )
+
     def test_fixed_string_workspace_fixture_allowed(self) -> None:
         guard = self._guard()
         fixtures_dir = os.path.join(self.cwd, "tests", "fixtures")

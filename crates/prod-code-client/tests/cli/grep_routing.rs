@@ -29,7 +29,11 @@ async fn cli_grep_searches_shell_directory_without_shell_engine() {
             stdout_of(&out)
         );
     }
+    // The outline of a script is read from the file, so no shell server is asked for (#1851): a
+    // script with no function has an empty outline, which says so, not that no node serves shell.
     let out = run_cli(&ws, gw.addr, &["outline", "scripts/check.sh"]).await;
     assert!(!out.status.success());
-    assert!(stderr_of(&out).contains("no reachable gateway serves shell"));
+    let stderr = stderr_of(&out);
+    assert!(stderr.contains("no outline symbols found"), "{stderr}");
+    assert!(!stderr.contains("no reachable gateway"), "{stderr}");
 }
