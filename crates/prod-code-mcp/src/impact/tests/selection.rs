@@ -166,7 +166,7 @@ fn test_commands_select_tests() {
         test_command("rust", &tools, &[t("a"), t("b")])
             .unwrap()
             .join(" "),
-        "sh -c for test_name in \"$@\"; do mitts test --workspace -- \"$test_name\" || exit; done prod-code-impact a b"
+        "sh -c for test_name in \"$@\"; do cargo test --workspace -- \"$test_name\" || exit; done prod-code-impact a b"
     );
     let py = test_command("python", &tools, &[t("test_a")]).unwrap();
     assert!(py.ends_with(&["-k".to_string(), "test_a".to_string()]));
@@ -266,11 +266,11 @@ fn the_whole_suite_runs_when_the_selection_cannot_be_trusted() {
         "{}",
         decision.why
     );
-    report.test_command = Some(vec!["mitts".into(), "test".into()]);
+    report.test_command = Some(vec!["cargo".into(), "test".into()]);
     assert_eq!(
         report.ci_decision(),
         CiDecision {
-            run: CiRun::Selected(vec!["mitts".into(), "test".into()]),
+            run: CiRun::Selected(vec!["cargo".into(), "test".into()]),
             why: "1 test(s) that reach the change".into(),
         }
     );
@@ -293,14 +293,14 @@ fn the_whole_suite_runs_when_the_selection_cannot_be_trusted() {
     );
     report.incomplete.clear();
     report.test_command = None;
-    let summary = report.ci_summary(Some(&["mitts".into(), "test".into()]), "the selection");
+    let summary = report.ci_summary(Some(&["cargo".into(), "test".into()]), "the selection");
     assert!(
         summary.contains("| `price` | `src/lib.rs:3` |"),
         "{summary}"
     );
     assert!(summary.contains("- `prices` (`src/lib.rs:9`)"), "{summary}");
     assert!(
-        summary.contains("Ran `mitts test`: the selection."),
+        summary.contains("Ran `cargo test`: the selection."),
         "{summary}"
     );
     assert!(

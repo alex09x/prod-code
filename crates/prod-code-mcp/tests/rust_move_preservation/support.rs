@@ -186,14 +186,12 @@ pub fn save_named(id: &str, record: Value) {
 
 pub fn cargo(root: &Path) -> Value {
     let mut commands = Vec::new();
-    let mut command = Command::new("mitts");
+    let mut command = Command::new("cargo");
     command
         .args([
             "test",
-            "--tests",
-            "--bins",
-            "--lib",
             "--offline",
+            "--all-targets",
             "--quiet",
             "--manifest-path",
         ])

@@ -79,14 +79,25 @@ pub fn plan_command_basic(
     filter: Option<&str>,
 ) -> Result<Vec<String>> {
     let mut cmd: Vec<String> = match (language, kind) {
-        ("rust", VerifyKind::Check) => vec!["mitts", "check", "--workspace", "--all-targets"],
-        ("rust", VerifyKind::Lint) => vec![
-            "mitts", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings",
+        ("rust", VerifyKind::Check) => vec![
+            "cargo",
+            "check",
+            "--workspace",
+            "--all-targets",
+            "--message-format=json",
         ],
-        ("rust", VerifyKind::Test) => vec!["mitts", "test", "--workspace"],
-        ("rust", VerifyKind::Bench) => anyhow::bail!(
-            "Rust benchmark execution is not supported by Mitts 0.3.23; see https://github.com/alex09x/mitts/issues/43"
-        ),
+        ("rust", VerifyKind::Lint) => vec![
+            "cargo",
+            "clippy",
+            "--workspace",
+            "--all-targets",
+            "--message-format=json",
+            "--",
+            "-D",
+            "warnings",
+        ],
+        ("rust", VerifyKind::Test) => vec!["cargo", "test", "--workspace"],
+        ("rust", VerifyKind::Bench) => vec!["cargo", "bench", "--workspace"],
         ("go", VerifyKind::Bench) => vec!["go", "test", "-run", "^$", "-bench"],
         ("go", VerifyKind::Check) => vec!["go", "build", "./..."],
         ("go", VerifyKind::Test) => vec!["go", "test", "-json", "./..."],

@@ -56,7 +56,7 @@ pub fn refactoring_tools() -> Vec<McpTool> {
                     "to": { "type": "string", "description": "What it becomes (`trade_id`); spelled per language automatically" },
                     "path": { "type": "string", "description": "Only look under this directory (default: the whole workspace)" },
                     "repos": { "type": "array", "items": { "type": "string" }, "description": "More repositories to rename in as one change (`../frontend`): paths, absolute or relative to this workspace. Each is planned and checked by its own analyzers, and `apply` writes all of them or none. Not with `path` or `verify`" },
-            "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `mitts check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too. Slower (seconds, not milliseconds) and it is the compiler — the analyzer's own check does not see an unresolved type or module path" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too. Slower (seconds, not milliseconds) and it is the compiler — the analyzer's own check does not see an unresolved type or module path" },
                     "apply": { "type": "boolean", "description": "Write the rename (default false: report the diff and the checks only)" },
                     "force": { "type": "boolean", "description": "Allow a short name, a large number of occurrences, and writing a result that does not compile" },
                     "workspace_edit": { "type": "boolean", "description": "Emit standard LSP WorkspaceEdit (documentChanges) JSON payload" }
@@ -122,7 +122,7 @@ pub fn refactoring_tools() -> Vec<McpTool> {
                     "type": { "type": "string", "description": "The field's type" },
                     "init": { "type": "string", "description": "What every construction site initialises the field with (default: the expression itself)" },
                     "replace_all": { "type": "boolean", "description": "Read the field at every identical occurrence in the method (default false: only the selection)" },
-            "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `mitts check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
                     "force": { "type": "boolean", "description": "Write even when a pattern would break or the result does not compile" }
                 },
@@ -296,7 +296,7 @@ pub fn refactoring_tools() -> Vec<McpTool> {
                     "path": { "type": "string", "description": "File that declares the struct or class" },
                     "type_name": { "type": "string", "description": "Name of the struct or class" },
                     "factory_name": { "type": "string", "description": "Name of the factory method (default: language convention, e.g. `new`, `New<Type>`, `create`)" },
-            "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `mitts check` on the result in a shadow of the workspace before writing it" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and analyzer diagnostics only)" },
                     "force": { "type": "boolean", "description": "Write even when analyzer warnings or non-fatal diagnostics occur" }
                 },
@@ -313,7 +313,7 @@ pub fn refactoring_tools() -> Vec<McpTool> {
                     "path": { "type": "string", "description": "File that declares the struct or class" },
                     "type_name": { "type": "string", "description": "Name of the struct or class" },
                     "builder_name": { "type": "string", "description": "Name of the builder type (default: `<Type>Builder`)" },
-            "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `mitts check` on the result in a shadow of the workspace before writing it" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and analyzer diagnostics only)" },
                     "force": { "type": "boolean", "description": "Write even when analyzer warnings or non-fatal diagnostics occur" }
                 },

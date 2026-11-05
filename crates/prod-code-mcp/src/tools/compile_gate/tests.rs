@@ -28,12 +28,11 @@ async fn compiler_verdict_controls_writes_and_force_overrides_rejection() {
                 assert_eq!(
                     params["command"],
                     json!([
-                        "mitts",
+                        "cargo",
                         "check",
                         "--workspace",
                         "--all-targets",
-                        "--",
-                        "--error-format=short"
+                        "--message-format=short"
                     ])
                 );
                 json!({"exit_code":exit})
@@ -59,10 +58,10 @@ async fn compiler_verdict_controls_writes_and_force_overrides_rejection() {
         let expected = if !analyzer_clean && !force {
             "\nthe compiler was not asked: the analyzer already rejects the result\n".to_string()
         } else if exit == 0 {
-            "\nthe compiler accepts the result too: `mitts check` in a shadow of the workspace, 10 ms\n".to_string()
+            "\nthe compiler accepts the result too: `cargo check` in a shadow of the workspace, 10 ms\n".to_string()
         } else {
             format!(
-                "\nthe compiler rejects the result (`mitts check` in a shadow of the workspace, 10 ms):\n  (it failed without an error line this could read; see the build)\n{}",
+                "\nthe compiler rejects the result (`cargo check` in a shadow of the workspace, 10 ms):\n  (it failed without an error line this could read; see the build)\n{}",
                 if apply && !force {
                     "\nnothing was written: the compiler rejects it. Pass `force: true` to write it anyway.\n"
                 } else {

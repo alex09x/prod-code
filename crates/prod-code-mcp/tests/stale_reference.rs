@@ -324,11 +324,11 @@ pub fn work() {}
     }
     assert!(loaded, "analyzer loaded the workspace");
 
-    let compiled = std::process::Command::new("mitts")
+    let compiled = std::process::Command::new("cargo")
         .args(["check", "--quiet"])
         .current_dir(&root)
         .output()
-        .expect("Mitts checks the original fixture");
+        .expect("compiler checks the original fixture");
     assert!(
         compiled.status.success(),
         "the original caller must compile: {}",
@@ -447,7 +447,7 @@ async fn native_inline_test_module_relocation_keeps_definitions_and_fields_clean
     let ws = Workspace::new(&[("Cargo.toml", CARGO), ("src/lib.rs", BEFORE)]);
     let root = ws.root();
     let compile = |dir: &std::path::Path| {
-        let result = std::process::Command::new("mitts")
+        let result = std::process::Command::new("cargo")
             .args(["test", "--quiet"])
             .current_dir(dir)
             .output()

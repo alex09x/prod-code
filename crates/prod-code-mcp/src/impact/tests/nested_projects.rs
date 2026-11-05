@@ -78,5 +78,5 @@ fn same_language_nested_project_is_distinct_but_cargo_member_is_not() {
         &["member/Cargo.toml".into()],
     );
     assert!(plan.whole_is_root_only);
-    assert_eq!(plan.selected.unwrap()[0], "mitts");
+    assert_eq!(plan.selected.unwrap()[0], "cargo");
 }

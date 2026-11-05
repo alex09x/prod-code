@@ -47,14 +47,14 @@ pub fn execution_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_coverage".to_string(),
-            description: "Run Mitts llvm-cov on the remote build node using a Rust toolchain that has the matching llvm-tools-preview component. Defaults to the current package, --lib, and toolchain 1.97.1. Set package to select one crate or workspace: true to cover the workspace. No command runs on the local machine."
+            description: "Run cargo llvm-cov on the remote build node using a Rust toolchain that has the matching llvm-tools-preview component. Defaults to Cargo's package selection, --no-report --lib, and toolchain 1.97.1. Set package to select one crate or workspace: true to cover the workspace. No command runs on the local machine."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "package": { "type": "string", "description": "Package to cover; omit to use Mitts' default package selection, or when workspace is true" },
-                    "workspace": { "type": "boolean", "description": "Cover the whole workspace instead of one package (default false)" },
-                    "args": { "type": "array", "items": { "type": "string" }, "description": "Additional Mitts llvm-cov arguments (default: --lib)" },
+                    "package": { "type": "string", "description": "Cargo package to cover; omit to use Cargo's default package selection, or when workspace is true" },
+                    "workspace": { "type": "boolean", "description": "Cover the whole Cargo workspace instead of one package (default false)" },
+                    "args": { "type": "array", "items": { "type": "string" }, "description": "Additional cargo llvm-cov arguments (default: --no-report --lib)" },
                     "toolchain": { "type": "string", "description": "Rust toolchain with llvm-tools-preview installed (default: 1.97.1)" },
                     "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" },
                     "tail_bytes": { "type": "integer", "description": "How much of the output tail to return (default 16384)" }
@@ -63,7 +63,7 @@ pub fn execution_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_check".to_string(),
-            description: "Compile-check the whole workspace on the remote gateway (mitts check / go build) and return structured compiler errors and warnings with file:line:col. Nothing runs on the local machine. `fix: true` applies machine-applicable fixes where the compiler exposes them, then checks again and reports what was fixed, what was skipped and why, and what is left."
+            description: "Compile-check the whole workspace on the remote gateway (cargo check / go build) and return structured compiler errors and warnings with file:line:col. Nothing runs on the local machine. `fix: true` (Rust) applies every fix the compiler marks machine-applicable to the checkout in one edit, then checks again and reports what was fixed, what was skipped and why, and what is left."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -77,7 +77,7 @@ pub fn execution_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_lint".to_string(),
-            description: "Lint the whole workspace on the remote gateway (mitts clippy -D warnings; golangci-lint, or go vet on a node without it; ruff; eslint / biome; clang-tidy) and return structured findings with file:line:col. `fix: true` applies machine-applicable fixes where the tool exposes them, then lints again."
+            description: "Lint the whole workspace on the remote gateway (cargo clippy -D warnings; golangci-lint, or go vet on a node without it; ruff; eslint / biome; clang-tidy) and return structured findings with file:line:col. `fix: true` (Rust) applies every fix clippy and rustc mark machine-applicable, then lints again."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -105,12 +105,12 @@ pub fn execution_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_test".to_string(),
-            description: "Run tests on the remote gateway (mitts test / go test -json / pytest / vitest / …), optionally filtered by test name, and return pass/fail counts plus the output of each failed test. `path` narrows the run to the Rust package, Go package tree or pytest directory/file containing it. A filtered Rust run matching zero tests returns an error. Pass `workspace` to target another Git worktree of this repository."
+            description: "Run tests on the remote gateway (cargo test / go test -json / pytest / vitest / …), optionally filtered by test name, and return pass/fail counts plus the output of each failed test. `path` narrows the run to the Cargo crate, Go package tree or pytest directory/file containing it. A filtered Rust run matching zero tests returns an error. Pass `workspace` to target another Git worktree of this repository."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "filter": { "type": "string", "description": "Test name filter (mitts test TESTNAME / go test -run)" },
+                    "filter": { "type": "string", "description": "Test name filter (cargo test TESTNAME / go test -run)" },
                     "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Environment variables for the command, e.g. {\"RUST_BACKTRACE\": \"1\"}" },
                     "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" },
                     "path": { "type": "string", "description": "Narrow the run: a file or directory inside the project (runs only its Cargo crate / Go package tree / pytest path), a crate name (`prod-code-gateway`), or a nested project. A Rust integration-test file selects its target; another Rust file selects its Cargo package. Unsupported or ambiguous integration-test files are refused rather than widened to the workspace." },

@@ -33,14 +33,20 @@ fn package(root: &Path, relative: &str, name: &str, independent: bool) {
     );
 }
 
-/// Mitts runs only inside this fixture on the remote test node. Its project model is
+/// Cargo runs only inside this fixture on the remote test node. Its project model is
 /// the oracle; these tests assert application routing, not TOML/glob parser behavior.
 fn cargo_members(root: &Path, expected: &[&str]) {
-    let output = std::process::Command::new("mitts")
-        .args(["metadata", "--offline", "--format-version", "1"])
+    let output = std::process::Command::new("cargo")
+        .args([
+            "metadata",
+            "--offline",
+            "--no-deps",
+            "--format-version",
+            "1",
+        ])
         .current_dir(root)
         .output()
-        .expect("remote Mitts metadata");
+        .expect("remote Cargo metadata");
     assert!(
         output.status.success(),
         "{}",

@@ -38,13 +38,13 @@ impl CompileVerdict {
     pub fn render(&self) -> String {
         if self.passed {
             return format!(
-                "\nthe compiler accepts the result too: `mitts check` in a shadow of the workspace, \
+                "\nthe compiler accepts the result too: `cargo check` in a shadow of the workspace, \
                  {} ms\n",
                 self.duration_ms
             );
         }
         let mut out = format!(
-            "\nthe compiler rejects the result (`mitts check` in a shadow of the workspace, {} ms):\n",
+            "\nthe compiler rejects the result (`cargo check` in a shadow of the workspace, {} ms):\n",
             self.duration_ms
         );
         for e in &self.errors {
@@ -57,9 +57,9 @@ impl CompileVerdict {
     }
 }
 
-/// The error lines of rustc short diagnostics from `mitts check`: `path:line:col: error[CODE]: text`.
+/// The error lines of `cargo check --message-format=short`: `path:line:col: error[CODE]: text`.
 ///
-/// Warnings are not errors, and summary lines printed at the end (`error: could not
+/// Warnings are not errors, and the summary lines cargo prints at the end (`error: could not
 /// compile ...`) name no position, so both are left out.
 pub fn short_errors(output: &str) -> Vec<String> {
     output
@@ -83,7 +83,7 @@ pub fn short_errors(output: &str) -> Vec<String> {
         .collect()
 }
 
-/// Runs `mitts check` against every affected Rust package group in the workspace with `files`
+/// Runs `cargo check` against every affected Rust package group in the workspace with `files`
 /// in place of what is on disk.
 pub async fn check(
     remote: SocketAddr,
@@ -103,12 +103,11 @@ pub async fn check(
         edits,
     };
     let command: Vec<String> = [
-        "mitts",
+        "cargo",
         "check",
         "--workspace",
         "--all-targets",
-        "--",
-        "--error-format=short",
+        "--message-format=short",
     ]
     .iter()
     .map(|s| s.to_string())

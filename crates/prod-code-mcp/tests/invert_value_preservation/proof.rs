@@ -29,7 +29,7 @@ pub fn native(case: &Case, source: &str, label: &str) -> (bool, String) {
     fs::write(dir.path().join("src/main.rs"), source).unwrap();
     let (compiled, bin, command) = if case.serde {
         fs::write(dir.path().join("Cargo.toml"), format!("{MANIFEST}\n[dependencies]\nserde = {{ version = \"1\", features = [\"derive\"] }}\n")).unwrap();
-        let compiled = Command::new("mitts")
+        let compiled = Command::new("cargo")
             .args(["build", "--offline", "--quiet"])
             .current_dir(dir.path())
             .env("CARGO_TARGET_DIR", SERDE_TARGET.path())
@@ -38,7 +38,7 @@ pub fn native(case: &Case, source: &str, label: &str) -> (bool, String) {
         (
             compiled,
             SERDE_TARGET.path().join("debug/invert_probe"),
-            "mitts build --offline --quiet",
+            "cargo build --offline --quiet",
         )
     } else {
         let compiled = Command::new("rustc")
