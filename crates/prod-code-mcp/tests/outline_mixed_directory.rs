@@ -95,3 +95,52 @@ async fn a_directory_of_one_language_keeps_one_session() {
     );
     assert_eq!(&log[1..], ["a.py", "b.py"], "{text}");
 }
+
+/// #1898: a language server that cannot start for one language of a mixed directory does not
+/// fail the directory; the other languages' files are outlined and the summary names the engine.
+#[tokio::test]
+async fn a_backend_that_cannot_start_leaves_the_other_languages_outlined() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        ("src/lib.rs", "pub fn f() {}\n"),
+        ("scripts/a.py", "def main():\n    pass\n"),
+        ("scripts/b.ts", "export function main() {}\n"),
+    ]);
+    let gateway = ScriptedGateway::start(|method, params| {
+        match method {
+            "prod-code/handshake" if params["preferred_engine"] == "typescript" => {
+                return serde_json::json!({
+                    "refuse_handshake": "typescript-language-server start could not be executed (os error 2)"
+                });
+            }
+            "textDocument/documentSymbol" => {
+                return serde_json::json!([answers::document_symbol("main", 12, 1, 1, 10)]);
+            }
+            _ => {}
+        }
+        serde_json::Value::Null
+    })
+    .await;
+    let root = ws.root();
+    let text = outline_directory(
+        gateway.addr(),
+        &root,
+        &root.join("scripts"),
+        std::path::Path::new("scripts"),
+        &OutlineOptions::all(usize::MAX, false, "include_locals"),
+    )
+    .await
+    .expect("the directory is outlined without the missing backend");
+    assert!(text.contains("a.py"), "{text}");
+    assert!(text.contains("1 file(s) outlined, 1 skipped"), "{text}");
+    assert!(
+        text.contains(
+            "The typescript files were not outlined: no typescript backend could be reached"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("os error 2"), "{text}");
+}

@@ -18,12 +18,28 @@ use anyhow::{Context, Result};
 use crate::protocol::McpToolCallResult;
 use crate::tools::resolve_file_path;
 
+pub(crate) mod assembly;
 pub mod directory;
 pub mod file;
 pub mod markdown;
 pub mod options;
 pub mod protobuf;
 pub mod render;
+pub(crate) mod shell;
+
+/// Whether the outline of `path` is read from the file itself, with no language server: so no
+/// node has to serve its language for the command to run (#1851, #1935).
+pub fn is_read_locally(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|e| {
+            matches!(
+                e.as_str(),
+                "md" | "markdown" | "proto" | "s" | "asm" | "sh" | "bash" | "zsh"
+            )
+        })
+}
 
 pub use directory::outline_directory;
 pub use file::outline_file;

@@ -68,6 +68,9 @@ pub async fn outline_directory(
     let mixed = engines.len() > 1;
     let mut sessions: std::collections::HashMap<&str, crate::session::LspSession> =
         std::collections::HashMap::new();
+    // Engines whose session could not be opened, with why.
+    let mut unavailable: std::collections::BTreeMap<&str, String> =
+        std::collections::BTreeMap::new();
 
     let max_bytes = options.max_bytes.unwrap_or(usize::MAX);
     let max_items = options.max_items.unwrap_or(usize::MAX);
@@ -95,11 +98,27 @@ pub async fn outline_directory(
             "textDocument": { "uri": file_uri }
         });
         let key = if mixed { engine_of(&entry_file) } else { "" };
+        if unavailable.contains_key(key) {
+            skipped += 1;
+            continue;
+        }
         if !sessions.contains_key(key) {
             let hint = if mixed { &entry_file } else { dir_path };
-            let opened =
-                crate::session::LspSession::open(remote, workspace_root, Some(hint)).await?;
-            sessions.insert(key, opened);
+            match crate::session::LspSession::open(remote, workspace_root, Some(hint)).await {
+                Ok(opened) => {
+                    sessions.insert(key, opened);
+                }
+                // One language's server missing leaves the others' files outlined; the
+                // summary says which engine could not be reached (#1898). A directory of a
+                // single language has nothing else to show, so its failure stands.
+                Err(error) if mixed => {
+                    let reason = format!("{error:#}");
+                    unavailable.insert(key, reason.lines().next().unwrap_or("").to_string());
+                    skipped += 1;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
         }
         let session = sessions.get_mut(key).expect("opened above");
         match session
@@ -139,6 +158,11 @@ pub async fn outline_directory(
         format!("{outlined} file(s) outlined, {skipped} skipped, {listed} symbol(s) listed");
     if tests_left_out > 0 {
         summary.push_str(&format!(", {tests_left_out} test file(s) left out"));
+    }
+    for (engine, reason) in &unavailable {
+        summary.push_str(&format!(
+            "\nThe {engine} files were not outlined: no {engine} backend could be reached ({reason})."
+        ));
     }
     if stopped {
         let limit = if listed >= max_items {
