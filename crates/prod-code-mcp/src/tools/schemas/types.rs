@@ -71,6 +71,8 @@ pub const WORKSPACE_SELECTABLE: &[&str] = &[
     "code_supertypes",
     "code_type_at",
     "code_assists",
+    // The report is of one checkout's diff, so the caller must be able to say which (#1939).
+    "code_impact",
 ];
 
 /// The mutation catalog (#1811): the refactoring tools and `code_assist` accept the same

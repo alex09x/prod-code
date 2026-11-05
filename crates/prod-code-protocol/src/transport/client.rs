@@ -95,6 +95,32 @@ pub(crate) fn resolve_token(
     Ok(Some(token.to_string()))
 }
 
+/// How long a node gets to accept a connection before it is reported as not answering. Without
+/// a limit the operating system's own connect timeout applies, once per attempt (#1938).
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// `connect` under `limit`: a node that does not answer in time is a `TimedOut` error that names
+/// the node and what to do about it, not the bare "Connection timed out" of the system, and
+/// it is not tried again.
+pub(crate) async fn connect_within<T>(
+    addr: SocketAddr,
+    limit: Duration,
+    connect: impl std::future::Future<Output = std::io::Result<T>>,
+) -> std::io::Result<T> {
+    match tokio::time::timeout(limit, connect).await {
+        Ok(result) => result,
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!(
+                "no answer from {addr} within {}s: the node is down or not reachable from here; \
+                 check it with `prod-code status`, or run on another node with `--remote` or \
+                 `--pin-node`",
+                limit.as_secs().max(1)
+            ),
+        )),
+    }
+}
+
 /// Establishes a raw tuned TCP connection to `addr` with backoff retries for transient ARP/network errors.
 pub(crate) async fn connect_raw_tcp(addr: SocketAddr) -> std::io::Result<TcpStream> {
     let mut last_err = None;
@@ -109,11 +135,13 @@ pub(crate) async fn connect_raw_tcp(addr: SocketAddr) -> std::io::Result<TcpStre
             };
             tokio::time::sleep(backoff).await;
         }
-        match TcpStream::connect(addr).await {
+        match connect_within(addr, CONNECT_TIMEOUT, TcpStream::connect(addr)).await {
             Ok(stream) => {
                 tune(&stream);
                 return Ok(stream);
             }
+            // A node that does not answer is not asked again at once: that only repeats the wait.
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => return Err(e),
             Err(e) => {
                 last_err = Some(e);
             }
