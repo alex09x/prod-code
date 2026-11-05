@@ -10,9 +10,12 @@
 
 //! A private item moved into a sibling module is still private there, so the module it came
 //! from, which still names it, can no longer reach it (E0432, E0425). It becomes `pub(crate)`,
-//! the narrowest visibility that reaches a sibling (#1933).
+//! the narrowest visibility that reaches a sibling (#1933, #1893).
 
-use ra_ap_syntax::{AstNode, Edition, NodeOrToken, SyntaxKind, ast};
+use anyhow::{Context, Result};
+use ra_ap_syntax::{
+    AstNode, Edition, NodeOrToken, SyntaxKind, ast, ast::HasName, ast::HasVisibility,
+};
 
 use super::rust_syntax::{parse, range};
 
@@ -49,6 +52,40 @@ pub(crate) fn with_crate_visibility(item: &str, edition: Edition) -> Option<Stri
     Some(widened)
 }
 
+/// The function `name` in `item` with `pub(crate) ` in front of its declaration, when it has no
+/// visibility; `item` unchanged when it has one or holds no such function.
+pub(super) fn widen_private_function(item: &str, name: &str, edition: Edition) -> Result<String> {
+    let tree = parse(item, edition);
+    let Some(function) = tree
+        .syntax()
+        .descendants()
+        .filter_map(ast::Fn::cast)
+        .find(|function| {
+            function
+                .name()
+                .is_some_and(|item_name| item_name.text() == name)
+        })
+    else {
+        return Ok(item.to_string());
+    };
+    if function.visibility().is_some() {
+        return Ok(item.to_string());
+    }
+    let token = function
+        .syntax()
+        .children_with_tokens()
+        .find_map(|element| match element {
+            NodeOrToken::Token(token) => Some(token),
+            NodeOrToken::Node(_) => None,
+        })
+        .context("private function has no declaration token")?;
+    let leading_whitespace = token.text().len() - token.text().trim_start().len();
+    let insertion = usize::from(token.text_range().start()) + leading_whitespace;
+    let mut widened = item.to_string();
+    widened.insert_str(insertion, "pub(crate) ");
+    Ok(widened)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,5 +114,28 @@ mod tests {
         ] {
             assert_eq!(with_crate_visibility(already, edition), None, "{already}");
         }
+    }
+
+    #[test]
+    fn private_function_visibility_is_widened_after_attributes() {
+        let moved = "#[inline]\nasync fn helper() {}\n";
+        assert_eq!(
+            widen_private_function(moved, "helper", Edition::CURRENT).unwrap(),
+            "#[inline]\npub(crate) async fn helper() {}\n"
+        );
+    }
+
+    #[test]
+    fn existing_visibility_and_non_functions_are_preserved() {
+        let public = "pub(super) fn helper() {}\n";
+        assert_eq!(
+            widen_private_function(public, "helper", Edition::CURRENT).unwrap(),
+            public
+        );
+        let structure = "struct Helper;\n";
+        assert_eq!(
+            widen_private_function(structure, "Helper", Edition::CURRENT).unwrap(),
+            structure
+        );
     }
 }
