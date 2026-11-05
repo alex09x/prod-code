@@ -23,12 +23,43 @@ pub fn record(id: &str, name: &str, text: &str) {
     }
 }
 
+/// Writes the fixture's manifest with a `serde` that lives next to it: derive macros named
+/// `Serialize` and `Deserialize` that expand to nothing. What the case proves is that the derive
+/// attribute, wherever it is written, survives the edit and the program still builds and runs;
+/// that needs the names to resolve, not the real crate. The real one would have to be in the
+/// machine's crate cache, which a CI runner that builds with Mitts does not have.
+fn serde_stand_in(dir: &Path) {
+    let macros = dir.join("serde_macros");
+    let serde = dir.join("serde");
+    for (crate_dir, manifest, source) in [
+        (
+            &macros,
+            "[package]\nname = \"serde_macros\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[lib]\nproc-macro = true\n",
+            "use proc_macro::TokenStream;\n\n#[proc_macro_derive(Serialize)]\npub fn serialize(_: TokenStream) -> TokenStream {\n    TokenStream::new()\n}\n\n#[proc_macro_derive(Deserialize)]\npub fn deserialize(_: TokenStream) -> TokenStream {\n    TokenStream::new()\n}\n",
+        ),
+        (
+            &serde,
+            "[package]\nname = \"serde\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\nserde_macros = { path = \"../serde_macros\" }\n",
+            "pub use serde_macros::{Deserialize, Serialize};\n",
+        ),
+    ] {
+        fs::create_dir_all(crate_dir.join("src")).unwrap();
+        fs::write(crate_dir.join("Cargo.toml"), manifest).unwrap();
+        fs::write(crate_dir.join("src/lib.rs"), source).unwrap();
+    }
+    fs::write(
+        dir.join("Cargo.toml"),
+        format!("{MANIFEST}\n[dependencies]\nserde = {{ path = \"serde\" }}\n"),
+    )
+    .unwrap();
+}
+
 pub fn native(case: &Case, source: &str, label: &str) -> (bool, String) {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir(dir.path().join("src")).unwrap();
     fs::write(dir.path().join("src/main.rs"), source).unwrap();
     let (compiled, bin, command) = if case.serde {
-        fs::write(dir.path().join("Cargo.toml"), format!("{MANIFEST}\n[dependencies]\nserde = {{ version = \"1\", features = [\"derive\"] }}\n")).unwrap();
+        serde_stand_in(dir.path());
         let compiled = Command::new("cargo")
             .args(["build", "--offline", "--quiet"])
             .current_dir(dir.path())
