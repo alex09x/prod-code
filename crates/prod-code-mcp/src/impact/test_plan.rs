@@ -89,6 +89,21 @@ fn label((path, language): &Scope) -> String {
     format!("{} ({language})", if path.is_empty() { "." } else { path })
 }
 
+/// `swift test` runs a Swift package. A directory of Swift tests without a `Package.swift`, an
+/// Xcode project's UI-test target for one, has no command this tool can name (#1951); it is
+/// reported as unsupported instead of with a command that fails in that directory.
+fn is_swift_without_package(root: &Path, (path, language): &Scope) -> bool {
+    language == "swift" && !root.join(path).join("Package.swift").is_file()
+}
+
+fn unsupported_label(root: &Path, group: &Scope) -> String {
+    if is_swift_without_package(root, group) {
+        format!("{}; Xcode project, not a Swift package", label(group))
+    } else {
+        label(group)
+    }
+}
+
 fn compose(commands: Vec<(String, Vec<String>)>) -> Option<Vec<String>> {
     if commands.is_empty() {
         return None;
@@ -136,6 +151,11 @@ pub(super) fn build_test_plan(
     let mut plan = ImpactTestPlan::default();
     let mut selected = Vec::new();
     for (group, tests) in &groups {
+        if is_swift_without_package(root, group) {
+            plan.unsupported_selected
+                .push(unsupported_label(root, group));
+            continue;
+        }
         let nested = (!group.0.is_empty()).then(|| detect_tools(&root.join(&group.0)));
         let tools = nested.as_ref().unwrap_or(root_tools);
         let fallback = plan_command_with(tools, &group.1, VerifyKind::Test, None).ok();
@@ -178,6 +198,10 @@ pub(super) fn build_test_plan(
             .is_some_and(|(path, language)| path.is_empty() && language == default_language);
     let mut whole = Vec::new();
     for group in scopes {
+        if is_swift_without_package(root, &group) {
+            plan.unsupported_whole.push(unsupported_label(root, &group));
+            continue;
+        }
         let nested = (!group.0.is_empty()).then(|| detect_tools(&root.join(&group.0)));
         let tools = nested.as_ref().unwrap_or(root_tools);
         match plan_command_with(tools, &group.1, VerifyKind::Test, None) {

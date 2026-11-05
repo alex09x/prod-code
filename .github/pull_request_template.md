@@ -25,9 +25,9 @@ and workload.
 
 ## Checks (run on a build node, paste the result lines)
 
-- [ ] `cargo fmt --all -- --check`
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings`
-- [ ] `cargo test -p <touched crates>`
+- [ ] `mitts fmt --all --check`
+- [ ] `mitts clippy --workspace --all-targets --locked` (CI runs it without `-D warnings`)
+- [ ] `mitts test -p <touched crates> --concurrency` (or `--workspace` for a change that spans crates)
 - [ ] scenario from the issue against a running gateway
 - [ ] regression fails on the base for the reported reason, then passes with the fix (or explain why not applicable)
 - [ ] coverage gate has valid measurements for the changed source files

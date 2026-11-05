@@ -196,6 +196,17 @@ pub(crate) async fn handle_rename(
             errors.join("\n  ")
         )));
     }
+    // The name under the cursor, read before the write replaces it (#1953).
+    let swift_old_name = if file_path
+        .extension()
+        .is_some_and(|extension| extension == "swift")
+    {
+        std::fs::read_to_string(&file_path)
+            .ok()
+            .and_then(|source| super::rename_leftovers::old_name_at(&source, line, character))
+    } else {
+        None
+    };
     // With `comments` the texts are no longer the analyzer's edit alone: write them whole.
     let touched = if comments {
         let files: std::collections::BTreeMap<std::path::PathBuf, String> = planned
@@ -237,6 +248,18 @@ pub(crate) async fn handle_rename(
     }
     if moves_files {
         text.push_str("\n\nthe rename also moved files; that part was not checked before writing");
+    }
+    // A Swift rename covers what sourcekit-lsp's index knows; say where the old name remains (#1953).
+    if let Some(old) = swift_old_name {
+        let edited: Vec<std::path::PathBuf> = touched
+            .iter()
+            .map(|relative| workspace_root.join(relative))
+            .collect();
+        let leftovers =
+            super::rename_leftovers::swift_files_still_naming(workspace_root, &old, &edited);
+        if let Some(warning) = super::rename_leftovers::render(workspace_root, &old, &leftovers) {
+            text.push_str(&warning);
+        }
     }
     Ok(McpToolCallResult::text(text))
 }

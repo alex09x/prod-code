@@ -25,7 +25,20 @@ pub(crate) fn shell_outline(text: &str, path: &str, options: &OutlineOptions) ->
         out.push_str("  (no functions)");
         return out;
     }
-    let mut listed = 0usize;
+    let functions = shell_functions(text);
+    for (name, line, _) in &functions {
+        out.push_str(&format!("  [Function] {name} (line {})\n", line + 1));
+    }
+    if functions.is_empty() {
+        out.push_str("  (no functions)");
+    }
+    out.trim_end().to_string()
+}
+
+/// The functions `text` defines, as `(name, 0-based line, 0-based column of the name)`, in
+/// order. Comments and here-document bodies are not looked into.
+pub(crate) fn shell_functions(text: &str) -> Vec<(String, usize, usize)> {
+    let mut found = Vec::new();
     let mut heredoc_end: Option<String> = None;
     for (i, line) in text.lines().enumerate() {
         if let Some(end) = &heredoc_end {
@@ -41,15 +54,11 @@ pub(crate) fn shell_outline(text: &str, path: &str, options: &OutlineOptions) ->
         if code.starts_with('#') {
             continue;
         }
-        if let Some(name) = function_name(code) {
-            listed += 1;
-            out.push_str(&format!("  [Function] {name} (line {})\n", i + 1));
+        if let Some((name, offset)) = function_name(code) {
+            found.push((name.to_string(), i, line.len() - code.len() + offset));
         }
     }
-    if listed == 0 {
-        out.push_str("  (no functions)");
-    }
-    out.trim_end().to_string()
+    found
 }
 
 /// The terminator of a here-document started on `line` (`<<EOF`, `<<-'EOF'`), if one is.
@@ -68,24 +77,26 @@ fn heredoc_marker(line: &str) -> Option<String> {
     (!word.is_empty() && !word.starts_with(|c: char| c.is_ascii_digit())).then(|| word.to_string())
 }
 
-/// The name a function definition on `code` (comment-free, left-trimmed) gives.
-fn function_name(code: &str) -> Option<&str> {
+/// The name a function definition on `code` (comment-free, left-trimmed) gives, and where in
+/// `code` the name starts.
+fn function_name(code: &str) -> Option<(&str, usize)> {
     let ident = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | ':');
-    let (name, rest) = if let Some(after) = code.strip_prefix("function ") {
-        let after = after.trim_start();
-        let end = after.find(|c: char| !ident(c)).unwrap_or(after.len());
-        (&after[..end], after[end..].trim_start())
+    let (name, offset, rest) = if let Some(after) = code.strip_prefix("function ") {
+        let trimmed = after.trim_start();
+        let offset = "function ".len() + (after.len() - trimmed.len());
+        let end = trimmed.find(|c: char| !ident(c)).unwrap_or(trimmed.len());
+        (&trimmed[..end], offset, trimmed[end..].trim_start())
     } else {
         let end = code.find(|c: char| !ident(c))?;
         let rest = code[end..].trim_start();
         let rest = rest.strip_prefix('(')?.trim_start().strip_prefix(')')?;
-        (&code[..end], rest.trim_start())
+        (&code[..end], 0, rest.trim_start())
     };
     let rest = rest.strip_prefix("()").map(str::trim_start).unwrap_or(rest);
     (!name.is_empty()
         && !name.starts_with(|c: char| c.is_ascii_digit())
         && rest.starts_with(['{', '(']))
-    .then_some(name)
+    .then_some((name, offset))
 }
 
 #[cfg(test)]
