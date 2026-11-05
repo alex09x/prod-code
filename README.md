@@ -454,6 +454,10 @@ workspace view. Isolation from primary analyzer caches is therefore not universa
 **Builds and tests run on the node**, in the workspace's own `target/`, which stays warm
 between runs. Files a command changes are written back into your checkout.
 
+Remote exec mirrors source inputs, not the local `.git` database. Git-history commands such as
+`git log` and `git shortlog` therefore cannot inspect the originating checkout remotely; run
+those commands in the local checkout. Use Mitts for supported remote Rust builds and tests.
+
 **Mirror omissions and `[sync] include`.** Ordinary sync skips output and data trees
 (`results/`, `artifacts/`, `site/data/`, `data/`, `target/`…), git-ignored or `.ignore`-matched
 paths, directories matched by `[watch] ignore` (non-Git workspaces), hidden paths, unlisted
@@ -518,7 +522,7 @@ $ prod-code cluster
 | extract parameter / parameter object | supported shapes | supported shapes | supported shapes | supported shapes | supported shapes | supported shapes |
 | check | cargo check | go build | cmake / meson / make | tsc (bunx / pnpm / yarn / npx) | basedpyright (uv / .venv aware) | swift build / xcodebuild |
 | lint | clippy | go vet | - | eslint / biome | ruff | - |
-| test | cargo test | go test | ctest / meson test | vitest / jest / bun test / mocha | pytest / unittest | swift test / xcodebuild test |
+| test | mitts test | go test | ctest / meson test | vitest / jest / bun test / mocha | pytest / unittest | swift test / xcodebuild test |
 
 `code_search` and `code_slice` work on all six. Tooling is detected from the checkout (lock
 files, `package.json`, `pyproject`, `CMakeLists`…). Dependencies live on the node: run
@@ -528,7 +532,7 @@ language servers and test runners use them.
 Retrieve compiled outputs with the same checkout identity used for execution:
 
 ```sh
-prod-code exec -- cargo build --release --bin my-program
+prod-code exec -- mitts build --release --bin my-program
 prod-code pull target/release/my-program
 ```
 
