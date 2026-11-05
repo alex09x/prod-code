@@ -2281,6 +2281,56 @@ async fn candidate_nested_project_fast_path_avoids_unrelated_projects_and_outlin
     );
 }
 
+#[tokio::test]
+async fn qualified_swift_symbol_uses_nested_engine_when_root_engine_is_unavailable() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"mixed\"\nversion = \"0.1.0\"\n",
+        ),
+        ("src/lib.rs", "pub fn root() {}\n"),
+        ("swift/Package.swift", "// swift-tools-version: 5.9\n"),
+        (
+            "swift/Sources/App/ExampleController.swift",
+            "public struct ExampleController {\n    public func newItem() {}\n}\n",
+        ),
+    ]);
+    let swift_path = ws.root().join("swift/Sources/App/ExampleController.swift");
+    let definition_path = swift_path.clone();
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "prod-code/handshake"
+            if params
+                .get("preferred_engine")
+                .and_then(serde_json::Value::as_str)
+                == Some("rust") =>
+        {
+            serde_json::json!({"refuse_handshake":"no reachable gateway serves rust"})
+        }
+        "workspace/symbol" => {
+            serde_json::json!([answers::symbol("ExampleController.newItem", 6, &swift_path, 2, 21)])
+        }
+        "textDocument/definition" => answers::locations(&definition_path, &[(2, 17)]),
+        "textDocument/documentSymbol" => serde_json::json!([
+            {"name":"ExampleController","kind":23,"range":{"start":{"line":0,"character":0},"end":{"line":2,"character":1}},"selectionRange":{"start":{"line":0,"character":14},"end":{"line":0,"character":32}},"children":[
+                {"name":"newItem","kind":6,"range":{"start":{"line":1,"character":4},"end":{"line":1,"character":28}},"selectionRange":{"start":{"line":1,"character":18},"end":{"line":1,"character":25}}}
+            ]}
+        ]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({ "symbol": "ExampleController.newItem" }),
+    )
+    .await
+    .expect("the Swift nested project should resolve without the root Rust backend");
+    let text = text_of(&result);
+    assert!(text.contains("ExampleController.swift"), "{text}");
+    assert!(text.contains("newItem"), "{text}");
+}
+
 /// Five functions per Go file, `<Stem>1` to `<Stem>5`, as a server outlines them.
 fn five_functions(params: &serde_json::Value) -> serde_json::Value {
     let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
@@ -8510,6 +8560,34 @@ async fn code_definition_positional_on_outline_definition_falls_back_when_lsp_re
     .await
     .expect("positional definition runs");
     assert_eq!(text_of(&after_token), "No definition found.");
+}
+
+#[tokio::test]
+async fn swift_definition_uses_a_labelled_local_outline_when_lsp_returns_empty() {
+    let ws = Workspace::new(&[
+        ("Package.swift", "// swift-tools-version: 5.9\n"),
+        (
+            "Sources/App/TerminalController.swift",
+            "struct TerminalController {\n    func newWindow() { print(\"ok\") }\n}\n",
+        ),
+    ]);
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({
+            "path": "Sources/App/TerminalController.swift",
+            "line": 2,
+            "character": 15
+        }),
+    )
+    .await
+    .expect("a local syntax-only Swift declaration should remain readable");
+    let text = text_of(&result);
+    assert!(text.contains("syntax-only local Swift outline"), "{text}");
+    assert!(text.contains("func newWindow()"), "{text}");
+    assert!(text.contains("print(\"ok\")"), "{text}");
 }
 
 #[tokio::test]
