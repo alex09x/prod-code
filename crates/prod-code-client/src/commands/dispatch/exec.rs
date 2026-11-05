@@ -236,7 +236,10 @@ pub async fn dispatch_exec(cmd: Commands, cx: &DispatchContext<'_>) -> Result<()
             no_pull,
             env,
             command,
-        } => run_exec(cx.remote, command, env, timeout_secs, !no_pull).await,
+        } => {
+            crate::commands::exec_stdin::refuse_unforwarded_stdin()?;
+            run_exec(cx.remote, command, env, timeout_secs, !no_pull).await
+        }
         Commands::ShadowRun {
             spec,
             timeout_secs,

@@ -12,6 +12,7 @@ pub mod bench;
 pub mod common;
 pub mod dispatch;
 pub mod exec;
+pub mod exec_stdin;
 pub mod ops;
 pub mod provenance;
 pub mod query;

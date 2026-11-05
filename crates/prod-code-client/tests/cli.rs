@@ -3252,6 +3252,41 @@ async fn cli_outline_of_a_shell_script_needs_no_shell_server() {
     assert!(text.contains("[Function] deploy (line 5)"), "{text}");
 }
 
+/// `exec` does not carry standard input to the node; a heredoc given to it is refused before
+/// anything runs, not dropped while the command reports success (#1944).
+#[tokio::test]
+async fn cli_exec_refuses_standard_input_it_would_drop() {
+    use tokio::io::AsyncWriteExt;
+    let ws = make_workspace();
+    let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+    let remote = gw.addr.to_string();
+
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+        .args(["--remote", &remote, "exec", "--", "python3", "-"])
+        .env("PROD_CODE_REMOTE", &remote)
+        .env("HOME", ws.root())
+        .current_dir(ws.root())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run prod-code");
+    let mut stdin = child.stdin.take().expect("stdin");
+    stdin
+        .write_all(b"print('stdin-marker')\n")
+        .await
+        .expect("write the program");
+    let out = child.wait_with_output().await.expect("wait for prod-code");
+    drop(stdin);
+
+    assert!(!out.status.success(), "{}", stdout_of(&out));
+    let stderr = stderr_of(&out);
+    assert!(
+        stderr.contains("exec does not forward standard input") && stderr.contains("python3 -c"),
+        "{stderr}"
+    );
+}
+
 /// The command line takes the outline's filters and budget (#368).
 #[tokio::test]
 async fn cli_outline_takes_kinds_and_a_budget() {
