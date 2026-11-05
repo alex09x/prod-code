@@ -119,6 +119,29 @@ fn real_tools_list_fits_comfortably_within_max_jsonrpc_frame_bytes() {
     assert!(val.get("error").is_none());
 }
 
+#[test]
+fn navigation_tools_are_advertised_as_read_only_in_the_mcp_tool_catalog() {
+    let tools = super::dispatch::list_tool_values().unwrap();
+    for name in [
+        "code_outline",
+        "code_definition",
+        "code_callers",
+        "code_references",
+        "code_source",
+    ] {
+        let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
+        assert_eq!(tool["annotations"]["readOnlyHint"], true, "{name}");
+        assert_eq!(tool["annotations"]["destructiveHint"], false, "{name}");
+        assert_eq!(tool["annotations"]["idempotentHint"], true, "{name}");
+        assert_eq!(tool["annotations"]["openWorldHint"], false, "{name}");
+    }
+    let mutation = tools
+        .iter()
+        .find(|tool| tool["name"] == "code_rename")
+        .unwrap();
+    assert!(mutation.get("annotations").is_none());
+}
+
 #[tokio::test]
 async fn cluster_rebalance_tick_ignores_filesystem_root() {
     let mut remote: std::net::SocketAddr = "127.0.0.1:9000".parse().unwrap();
