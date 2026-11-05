@@ -91,10 +91,23 @@ class ReleaseBoundaries(unittest.TestCase):
         ) as run:
             self.assertEqual(run_tests(self.root, row), [])
         self.assertEqual(
-            run.call_args_list[0].args[0][-4:],
-            ["--test", "live", "--", "--test-threads=1"],
+            run.call_args_list[0].args[0][-3:],
+            ["--concurrency=1", "--test", "live"],
         )
-        self.assertEqual(run.call_args_list[1].args[0][-2:], ["--test", "wire"])
+        self.assertEqual(
+            run.call_args_list[1].args[0][-3:], ["--concurrency", "--test", "wire"]
+        )
+
+    def test_every_shard_runs_its_tests_in_one_pool_as_wide_as_the_runner(self):
+        row = {"package": "demo", "kind": "lib", "targets": ["demo"]}
+        with patch(
+            "plan.subprocess.run", return_value=subprocess.CompletedProcess([], 0)
+        ) as run:
+            self.assertEqual(run_tests(self.root, row), [])
+        self.assertEqual(
+            run.call_args_list[0].args[0],
+            ["mitts", "test", "--locked", "-p", "demo", "--concurrency", "--lib"],
+        )
 
     def native_build(self, banner="prod-code-server 1.2.3", version_exit=0):
         work = Path(tempfile.mkdtemp(dir=self.root))

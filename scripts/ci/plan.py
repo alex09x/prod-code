@@ -97,13 +97,17 @@ def run_tests(root, row):
             if row["kind"] == "lib"
             else (["--doc"] if row["kind"] == "doc" else [f"--{row['kind']}", target])
         )
-        runtime = (
-            ["--", "--test-threads=1"]
+        # The tests of a shard share one pool as wide as the runner. The live gateway fixtures
+        # each start real language servers and run one at a time; Mitts does not hand arguments
+        # after `--` to the test processes, so the width is set by its own flag.
+        concurrency = (
+            "--concurrency=1"
             if (row["package"], row["kind"], target)
             == ("prod-code-gateway", "test", "live")
-            else []
+            else "--concurrency"
         )
-        if subprocess.run(base + selector + runtime, cwd=root, check=False).returncode:
+        command_line = base + [concurrency] + selector
+        if subprocess.run(command_line, cwd=root, check=False).returncode:
             failed.append(target)
     return failed
 
