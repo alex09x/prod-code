@@ -35,24 +35,27 @@ pub(crate) fn resolve_file_path(workspace_root: &Path, path_str: &str) -> std::p
 }
 
 /// Helper to connect, initialize, and execute a targeted LSP request against the remote gateway.
-pub async fn execute_lsp_query(
+pub fn execute_lsp_query<'a>(
     remote: SocketAddr,
-    workspace_root: &Path,
-    file_path: &Path,
-    method: &str,
+    workspace_root: &'a Path,
+    file_path: &'a Path,
+    method: &'a str,
     params: serde_json::Value,
-) -> Result<serde_json::Value> {
-    let remote =
-        if crate::cluster::nested_engine(workspace_root, &file_path.to_string_lossy()).is_some() {
+) -> impl std::future::Future<Output = Result<serde_json::Value>> + Send + 'a {
+    Box::pin(async move {
+        let remote = if crate::cluster::nested_engine(workspace_root, &file_path.to_string_lossy())
+            .is_some()
+        {
             crate::cluster::route_for_path(remote, workspace_root, file_path.to_str())
                 .await
                 .unwrap_or(remote)
         } else {
             remote
         };
-    // One long-lived session per checkout for the life of this process (see
-    // crate::session::pooled_query): local edits are pushed before the query.
-    crate::session::pooled_query(remote, workspace_root, file_path, method, params).await
+        // One long-lived session per checkout for the life of this process (see
+        // crate::session::pooled_query): local edits are pushed before the query.
+        crate::session::pooled_query(remote, workspace_root, file_path, method, params).await
+    })
 }
 
 /// Refuses to write a plan that left references it did not rewrite. With `verify: "compile"` the
