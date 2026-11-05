@@ -2572,14 +2572,14 @@ async fn an_outline_of_a_file_no_server_serves_says_so() {
             "Cargo.toml",
             "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
         ),
-        ("scripts/build.sh", "#!/bin/sh\necho hi\n"),
+        ("scripts/build.zig", "pub fn main() void {}\n"),
     ]);
     let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
     let text = match execute_tool(
         remote,
         &ws.root(),
         "code_outline",
-        serde_json::json!({ "path": "scripts/build.sh" }),
+        serde_json::json!({ "path": "scripts/build.zig" }),
     )
     .await
     {
@@ -2587,10 +2587,67 @@ async fn an_outline_of_a_file_no_server_serves_says_so() {
         Err(err) => format!("{err:#}"),
     };
     assert!(
-        text.contains("no language server serves `.sh` files"),
+        text.contains("no language server serves `.zig` files"),
         "{text}"
     );
     assert!(text.contains("language not supported"), "{text}");
+}
+
+/// A shell script's outline is read from the file, listing its functions, with no gateway
+/// answer needed (#1851).
+#[tokio::test]
+async fn a_shell_script_is_outlined_from_its_functions() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        ),
+        (
+            "scripts/run.sh",
+            "#!/bin/bash\nset -e\nsetup() {\n  :\n}\nfunction run_all {\n  setup\n}\n",
+        ),
+    ]);
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_outline",
+        serde_json::json!({ "path": "scripts/run.sh" }),
+    )
+    .await
+    .expect("a shell outline");
+    let text = text_of(&result);
+    assert!(text.contains("[Function] setup (line 3)"), "{text}");
+    assert!(text.contains("[Function] run_all (line 6)"), "{text}");
+}
+
+/// No language server serves assembly, so its outline is read from the file: global symbols,
+/// labels and macros, without asking a gateway anything (#1935).
+#[tokio::test]
+async fn an_assembly_file_is_outlined_from_its_labels() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        ),
+        (
+            "boot/entry.S",
+            ".globl _start\n_start:\n  b main\n.Ltmp:\nmain:\n  ret\n",
+        ),
+    ]);
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_outline",
+        serde_json::json!({ "path": "boot/entry.S" }),
+    )
+    .await
+    .expect("an assembly outline");
+    let text = text_of(&result);
+    assert!(text.contains("[Global] _start (line 1)"), "{text}");
+    assert!(text.contains("[Label] main (line 5)"), "{text}");
+    assert!(!text.contains(".Ltmp"), "{text}");
 }
 
 /// A Markdown file with CRLF line endings and TOML front-matter parses headings correctly.

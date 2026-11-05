@@ -55,7 +55,6 @@ pub fn command_path_tokens(command: Option<&Commands>) -> Vec<PathBuf> {
         | Commands::Assists { file: f, .. }
         | Commands::Assist { file: f, .. }
         | Commands::Diagnostics { file: f, .. }
-        | Commands::Outline { file: f, .. }
         | Commands::InlineParameter { file: f, .. }
         | Commands::ExtractDelegate { file: f, .. }
         | Commands::ExtractTrait { file: f, .. }
@@ -77,6 +76,13 @@ pub fn command_path_tokens(command: Option<&Commands>) -> Vec<PathBuf> {
         Commands::MoveModule { file, to, .. } => {
             paths.push(file.clone());
             paths.push(to.clone());
+        }
+        // An outline read from the file itself (a shell script, assembly, Markdown, Protobuf)
+        // needs no node that serves its language (#1851).
+        Commands::Outline { file: f, .. } => {
+            if !prod_code_mcp::tools::outline::is_read_locally(f) {
+                paths.push(f.clone());
+            }
         }
         Commands::Move { to, path, .. } => {
             paths.push(PathBuf::from(to));
