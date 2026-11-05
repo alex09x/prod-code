@@ -122,7 +122,12 @@ async fn cli_and_mcp_list_without_sync_or_local_writes() {
         stdout.contains("result.json") && stdout.contains("/remote/owned-copy"),
         "{stdout}"
     );
-    let result = prod_code_mcp::tools::execute_tool(
+    // A store of this test's own: the node it remembers is read by nothing else.
+    let store_dir = tempfile::tempdir().unwrap();
+    let placement =
+        prod_code_mcp::cluster::PlacementStore::at(store_dir.path().join("placement.json"));
+    let result = prod_code_mcp::tools::execute_tool_with(
+        placement.clone(),
         address,
         root.path(),
         "code_pull",
@@ -133,9 +138,10 @@ async fn cli_and_mcp_list_without_sync_or_local_writes() {
     assert!(!result.is_error);
     let result = serde_json::to_string(&result).unwrap();
     assert!(result.contains("result.json"), "{result}");
-    prod_code_mcp::exec::remember_exec_node(root.path(), address);
+    prod_code_mcp::exec::remember_exec_node(&placement, root.path(), address);
     let fallback = "127.0.0.1:1".parse().unwrap();
-    let result = prod_code_mcp::tools::execute_tool(
+    let result = prod_code_mcp::tools::execute_tool_with(
+        placement.clone(),
         fallback,
         root.path(),
         "code_pull",

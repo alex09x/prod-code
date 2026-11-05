@@ -46,7 +46,7 @@ pub use pin_scope::{
     process_policy, set_pin_inputs, with_root_policy,
 };
 pub use pin_wire::confirm_pin;
-pub use placement::{forget_placement, remember_placement, remembered_node};
+pub use placement::{PlacementStore, forget_placement, remember_placement, remembered_node};
 pub use rebalance::{evaluate_cluster_rebalance, evaluate_cluster_rebalance_with};
 pub use routing::{
     PROBE_TIMEOUT, checkout_node_in, default_serves, engine_for_path, known_cluster_nodes,

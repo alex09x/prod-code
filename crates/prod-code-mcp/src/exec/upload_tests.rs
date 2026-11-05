@@ -287,6 +287,7 @@ async fn issue_1836_untracked_site_data_json_warns_then_uploads_with_sync_includ
     let (addr1, g1) =
         spawn_mirror_exec_gateway(Arc::clone(&mirror), "site/data/benchmarks-v0.3.17.json").await;
     let res1 = crate::tools::exec_handler::handle_exec(
+        &crate::cluster::PlacementStore::default(),
         addr1,
         &root,
         &serde_json::json!({ "argv": ["python3", "scripts/site/build.py"] }),
@@ -322,6 +323,7 @@ async fn issue_1836_untracked_site_data_json_warns_then_uploads_with_sync_includ
     let (addr2, g2) =
         spawn_mirror_exec_gateway(Arc::clone(&mirror), "site/data/benchmarks-v0.3.17.json").await;
     let res2 = crate::tools::exec_handler::handle_exec(
+        &crate::cluster::PlacementStore::default(),
         addr2,
         &root,
         &serde_json::json!({ "argv": ["python3", "scripts/site/build.py"] }),

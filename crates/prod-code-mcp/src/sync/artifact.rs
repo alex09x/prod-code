@@ -25,6 +25,7 @@ pub struct PullOutcome {
 
 /// Pull from an explicit node. Never redirect or sync: ignored artifacts belong to that copy.
 pub async fn pull_remote_files_from(
+    placement: &crate::cluster::PlacementStore,
     remote: SocketAddr,
     root: &Path,
     files: &[PathBuf],
@@ -97,7 +98,7 @@ pub async fn pull_remote_files_from(
                 "artifact copy or offset changed during pull from node {remote}"
             );
             if let Some(error) = response.file.error {
-                let exec_node = crate::exec::last_exec_node(&root)
+                let exec_node = crate::exec::last_exec_node(placement, &root)
                     .filter(|node| policy.allows(*node))
                     .unwrap_or(remote);
                 anyhow::bail!(

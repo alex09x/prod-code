@@ -12,8 +12,9 @@ use anyhow::Result;
 use serde_json::Value;
 use std::path::Path;
 
+use crate::tools::dispatch_tool_with;
+
 use super::super::compile_gate::resolve_file_path;
-use super::super::dispatch_tool;
 use super::super::inspection_handlers::with_indexing_notes;
 use super::super::schemas::SYMBOL_ADDRESSABLE;
 use super::super::symbols::{
@@ -45,6 +46,7 @@ pub(super) fn is_multi_candidate_navigation_tool(tool_name: &str) -> bool {
 }
 
 pub(super) fn resolve_symbol_args<'a>(
+    placement: &'a crate::cluster::PlacementStore,
     remote: std::net::SocketAddr,
     workspace_root: &'a Path,
     tool_name: &'a str,
@@ -200,6 +202,7 @@ pub(super) fn resolve_symbol_args<'a>(
             }
             return Ok(SymbolResolution::Respond(
                 resolve_multiple_candidates(
+                    placement,
                     remote,
                     workspace_root,
                     tool_name,
@@ -229,6 +232,7 @@ pub(super) fn resolve_symbol_args<'a>(
 }
 
 async fn resolve_multiple_candidates(
+    placement: &crate::cluster::PlacementStore,
     remote: std::net::SocketAddr,
     workspace_root: &Path,
     tool_name: &str,
@@ -299,7 +303,8 @@ async fn resolve_multiple_candidates(
         ));
         match tokio::time::timeout(
             remaining,
-            Box::pin(dispatch_tool(
+            Box::pin(dispatch_tool_with(
+                placement,
                 candidate_remote,
                 workspace_root,
                 tool_name,

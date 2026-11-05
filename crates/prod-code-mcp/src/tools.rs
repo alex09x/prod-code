@@ -52,7 +52,27 @@ mod workflow;
 mod workspace_writer;
 pub use execution::*;
 pub(crate) use workspace_writer::workspace_exec_lock;
+/// [`dispatch_tool_with`] over a store that remembers nothing, for the tests that call the
+/// dispatcher directly.
+#[cfg(test)]
 pub(crate) async fn dispatch_tool(
+    remote: SocketAddr,
+    root: &Path,
+    tool_name: &str,
+    args: serde_json::Value,
+) -> Result<McpToolCallResult> {
+    dispatch_tool_with(
+        &crate::cluster::PlacementStore::default(),
+        remote,
+        root,
+        tool_name,
+        args,
+    )
+    .await
+}
+
+pub(crate) async fn dispatch_tool_with(
+    placement: &crate::cluster::PlacementStore,
     remote: SocketAddr,
     root: &Path,
     tool_name: &str,
@@ -68,9 +88,9 @@ pub(crate) async fn dispatch_tool(
             Box::pin(handle_check(remote, root, tool_name, &args)).await
         }
         "code_rename" => Box::pin(handle_rename(remote, root, &args)).await,
-        "code_exec" => Box::pin(handle_exec(remote, root, &args)).await,
-        "code_coverage" => Box::pin(handle_coverage(remote, root, &args)).await,
-        "code_pull" => Box::pin(pull_handler::handle_pull(remote, root, &args)).await,
+        "code_exec" => Box::pin(handle_exec(placement, remote, root, &args)).await,
+        "code_coverage" => Box::pin(handle_coverage(placement, remote, root, &args)).await,
+        "code_pull" => Box::pin(pull_handler::handle_pull(placement, remote, root, &args)).await,
         "code_definition" => Box::pin(handle_definition(remote, root, &args)).await,
 
         "code_callers" | "code_callees" => {

@@ -170,6 +170,12 @@ where
         if consumed > 0 {
             reader.consume(consumed);
         }
+        // A reload requested while the loop waited is in force for what that wait just read: the
+        // top of the loop has not seen it yet, and without this a request read in the same wakeup
+        // was served as ordinary work instead of being refused for the drain.
+        if reload.requested.load(std::sync::atomic::Ordering::Acquire) && reload.exe.is_some() {
+            reload_deadline.get_or_insert_with(|| tokio::time::Instant::now() + reload.timeout);
+        }
 
         while let Some(line) = hot_reload::take_line(&mut pending) {
             // A request's budgets count from here, through every retry (#1814).

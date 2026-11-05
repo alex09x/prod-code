@@ -13,7 +13,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use crate::cluster::NodePolicy;
+use crate::cluster::{NodePolicy, PlacementStore};
 
 // Execution provenance is per checkout and must survive analyzer placement changes.
 fn key(root: &Path) -> String {
@@ -21,25 +21,30 @@ fn key(root: &Path) -> String {
     format!("exec:{}", canonical.display())
 }
 
-pub fn remember_exec_node(root: &Path, node: SocketAddr) {
-    crate::cluster::remember_placement(&key(root), node);
+pub fn remember_exec_node(placement: &PlacementStore, root: &Path, node: SocketAddr) {
+    placement.remember(&key(root), node);
 }
 
-pub fn last_exec_node(root: &Path) -> Option<SocketAddr> {
-    crate::cluster::remembered_node(&key(root))
+pub fn last_exec_node(placement: &PlacementStore, root: &Path) -> Option<SocketAddr> {
+    placement.remembered(&key(root))
 }
 
 /// The node artifacts of the checkout at `root` are pulled from (#1793): `requested` when given,
 /// otherwise the node its last command ran on, otherwise `current`, and in every case only a node
 /// the checkout's pin allows. A remembered node outside the pin (from before it) is passed over;
 /// a requested one is refused.
-pub fn pull_node(root: &Path, current: SocketAddr, requested: Option<&str>) -> Result<SocketAddr> {
+pub fn pull_node(
+    placement: &PlacementStore,
+    root: &Path,
+    current: SocketAddr,
+    requested: Option<&str>,
+) -> Result<SocketAddr> {
     let policy = crate::cluster::policy_for_root(root)?;
     pull_node_with(
         &policy,
         current,
         requested,
-        last_exec_node(root),
+        last_exec_node(placement, root),
         |spec: &str| spec.to_socket_addrs().map(Iterator::collect),
     )
 }

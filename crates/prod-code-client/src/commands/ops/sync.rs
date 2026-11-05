@@ -71,7 +71,13 @@ pub async fn run_sync(remote: SocketAddr, subpath: Option<PathBuf>) -> Result<()
 }
 
 pub async fn run_pull(remote: SocketAddr, root: &Path, files: Vec<PathBuf>) -> Result<()> {
-    let outcome = prod_code_mcp::sync::pull_remote_files_from(remote, root, &files).await?;
+    let outcome = prod_code_mcp::sync::pull_remote_files_from(
+        &prod_code_mcp::cluster::PlacementStore::user(),
+        remote,
+        root,
+        &files,
+    )
+    .await?;
     let touched = outcome.files;
     if !touched.is_empty() {
         println!(

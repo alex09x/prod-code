@@ -171,7 +171,11 @@ fn a_seeded_copy_takes_a_virtualenv_with_its_links_and_its_paths_rewritten() {
     std::fs::write(seed.join("src/app.py"), "import pkg\n").unwrap();
     std::os::unix::fs::symlink(".", seed.join("src/again")).unwrap();
 
-    assert_eq!(copy_tree(&seed, &fresh).unwrap(), 1, "only src/app.py");
+    assert_eq!(
+        copy_tree(&seed, &fresh).unwrap(),
+        2,
+        "src/app.py and the src/again link; the venv is not copy_tree's"
+    );
     assert!(!copy.exists(), "the venv is not copy_tree's");
     let again = std::fs::symlink_metadata(fresh.join("src/again")).unwrap();
     assert!(again.file_type().is_symlink());

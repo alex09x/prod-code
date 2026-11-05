@@ -96,14 +96,17 @@ pub fn apply_pulled_files_with(
 
 /// Pulls files from the last execution node, falling back to `remote` before the first exec.
 pub async fn pull_remote_files(
+    placement: &crate::cluster::PlacementStore,
     remote: std::net::SocketAddr,
     root: &Path,
     files: &[PathBuf],
 ) -> Result<Vec<String>> {
-    let node = crate::exec::pull_node(root, remote, None)?;
-    Ok(super::artifact::pull_remote_files_from(node, root, files)
-        .await?
-        .files)
+    let node = crate::exec::pull_node(placement, root, remote, None)?;
+    Ok(
+        super::artifact::pull_remote_files_from(placement, node, root, files)
+            .await?
+            .files,
+    )
 }
 
 #[cfg(all(test, unix))]

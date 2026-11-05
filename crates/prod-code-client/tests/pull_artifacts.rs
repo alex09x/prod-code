@@ -9,6 +9,7 @@
  */
 
 use futures_util::{SinkExt, StreamExt};
+use prod_code_mcp::cluster::PlacementStore;
 use prod_code_protocol::{
     ExecExit, PULL_CHUNK_BYTES, ProdCodeCodec, PullFileResponse, ReadFileResponse,
     SyncProbeResponse, SyncResponse, WireMessage,
@@ -19,6 +20,14 @@ use tokio::net::TcpListener;
 use tokio_util::codec::Framed;
 
 const COPY: &str = "/remote/owned-copy";
+
+/// A placement store over a file of the test's own: what the test remembers is seen by nothing
+/// else, whatever else runs beside it. The directory lives as long as the returned guard.
+fn own_store() -> (tempfile::TempDir, PlacementStore) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = PlacementStore::at(dir.path().join("placement.json"));
+    (dir, store)
+}
 
 /// One exec connection followed by one artifact connection, with real framed binary data.
 async fn artifact_node(size: u64, missing: bool) -> (SocketAddr, tokio::task::JoinHandle<()>) {
@@ -88,8 +97,9 @@ async fn artifact_node(size: u64, missing: bool) -> (SocketAddr, tokio::task::Jo
     (node, task)
 }
 
-async fn exec(root: &std::path::Path, node: SocketAddr) {
-    let result = prod_code_mcp::tools::execute_tool(
+async fn exec(placement: &PlacementStore, root: &std::path::Path, node: SocketAddr) {
+    let result = prod_code_mcp::tools::execute_tool_with(
+        placement.clone(),
         node,
         root,
         "code_exec",
@@ -107,12 +117,14 @@ async fn pull_uses_exec_node_for_large_executable_build_output() {
     let root = tempfile::tempdir().unwrap();
     let size = 33 * 1024 * 1024 + 19;
     let (node, server) = artifact_node(size, false).await;
-    exec(root.path(), node).await;
+    let (_store_dir, placement) = own_store();
+    exec(&placement, root.path(), node).await;
     // Analyzer placement is independent; default pull must still hit the exec node.
     let other: SocketAddr = "127.0.0.1:1".parse().unwrap();
     let identity = prod_code_mcp::sync::workspace_identity(root.path());
-    prod_code_mcp::cluster::remember_placement(&identity.name, other);
+    placement.remember(&identity.name, other);
     let files = prod_code_mcp::sync::pull_remote_files(
+        &placement,
         other,
         root.path(),
         &[PathBuf::from("target/release/program")],
@@ -141,8 +153,10 @@ async fn pull_uses_exec_node_for_large_executable_build_output() {
 async fn pull_missing_file_names_actual_node_copy_and_exec_guidance() {
     let root = tempfile::tempdir().unwrap();
     let (node, server) = artifact_node(0, true).await;
-    exec(root.path(), node).await;
+    let (_store_dir, placement) = own_store();
+    exec(&placement, root.path(), node).await;
     let error = prod_code_mcp::sync::pull_remote_files(
+        &placement,
         node,
         root.path(),
         &[PathBuf::from("target/release/program")],
@@ -166,8 +180,10 @@ async fn pull_missing_file_names_actual_node_copy_and_exec_guidance() {
 async fn pull_mcp_uses_last_exec_node_and_reports_copy() {
     let root = tempfile::tempdir().unwrap();
     let (node, server) = artifact_node(7, false).await;
-    exec(root.path(), node).await;
-    let result = prod_code_mcp::tools::execute_tool(
+    let (_store_dir, placement) = own_store();
+    exec(&placement, root.path(), node).await;
+    let result = prod_code_mcp::tools::execute_tool_with(
+        placement.clone(),
         "127.0.0.1:1".parse().unwrap(),
         root.path(),
         "code_pull",
@@ -191,9 +207,15 @@ async fn pull_mcp_uses_last_exec_node_and_reports_copy() {
 async fn pull_mcp_explicit_remote_overrides_exec_record() {
     let root = tempfile::tempdir().unwrap();
     let (node, server) = artifact_node(7, false).await;
-    exec(root.path(), node).await;
-    prod_code_mcp::exec::remember_exec_node(root.path(), "127.0.0.1:1".parse().unwrap());
-    let result = prod_code_mcp::tools::execute_tool(
+    let (_store_dir, placement) = own_store();
+    exec(&placement, root.path(), node).await;
+    prod_code_mcp::exec::remember_exec_node(
+        &placement,
+        root.path(),
+        "127.0.0.1:1".parse().unwrap(),
+    );
+    let result = prod_code_mcp::tools::execute_tool_with(
+        placement.clone(),
         "127.0.0.1:1".parse().unwrap(),
         root.path(),
         "code_pull",

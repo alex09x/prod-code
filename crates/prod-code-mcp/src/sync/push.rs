@@ -365,11 +365,13 @@ async fn push_sync_round(
     // An empty delta is still sent on later rounds: the gateway's answer tells whether its
     // copy of the workspace still exists, so a pruned or never-seen node is caught here
     // instead of failing the query or command that follows.
-    if !plan.files.is_empty() || !plan.initial || !allow_probe || symlinks.is_some() {
+    // A first sync with nothing to upload and no tracked symlink has nothing to tell the gateway;
+    // an empty manifest still goes out on later rounds, where it removes links that are gone.
+    if !plan.files.is_empty() || !plan.initial || !allow_probe || requires_symlink_support {
         let files = std::mem::take(&mut plan.files);
         outcome.changed_paths = files.iter().map(|f| f.relative_path.clone()).collect();
         let mut batches = sync_batches(files, SYNC_BATCH_BYTES);
-        if batches.is_empty() && symlinks.is_some() {
+        if batches.is_empty() && symlinks.is_some() && (requires_symlink_support || !plan.initial) {
             batches.push(Vec::new());
         }
         for (i, files) in batches.into_iter().enumerate() {
@@ -399,15 +401,20 @@ async fn push_sync_round(
                     "gateway does not support tracked symlink sync; upgrade the gateway before running commands in this workspace"
                 );
             }
-            if i == 0
-                && let Some(path) = resp
+            // A link the gateway will not create (an absolute target, or one leaving the tree) is
+            // left out, as such links always were; it must not stop every command in the
+            // workspace.
+            if i == 0 {
+                for path in resp
                     .stale_paths
                     .iter()
-                    .find(|path| symlink_paths.contains(*path))
-            {
-                anyhow::bail!(
-                    "gateway could not sync tracked symlink {path}; check its target and parent path before running commands"
-                );
+                    .filter(|path| symlink_paths.contains(*path))
+                {
+                    tracing::warn!(
+                        symlink = %path,
+                        "gateway did not sync a tracked symlink; check its target and parent path"
+                    );
+                }
             }
             if resp.workspace_was_fresh && !(i == 0 && uploading_full_manifest) {
                 // The server directory was reset behind our watermark (or between probe and
@@ -430,6 +437,7 @@ async fn push_sync_round(
                 .stale_paths
                 .into_iter()
                 .filter(|path| path != prod_code_protocol::messages::sync::SYNC_SYMLINKS_ACK)
+                .filter(|path| !symlink_paths.contains(path))
                 .collect();
         }
     }

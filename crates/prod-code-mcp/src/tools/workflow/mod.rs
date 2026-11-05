@@ -40,7 +40,7 @@ mod verification_scope_tests;
 #[cfg(test)]
 mod verification_tests;
 
-use super::{execute_tool, execution::resolve_workspace_root, symbols};
+use super::{execute_tool_with, execution::resolve_workspace_root, symbols};
 use crate::protocol::{McpContentItem, McpToolCallResult};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
@@ -50,7 +50,25 @@ pub(super) fn tool_schema() -> crate::protocol::McpTool {
     schema::tool()
 }
 
+/// [`execute_with`] over a store that remembers nothing, for the tests that run a workflow
+/// directly.
+#[cfg(test)]
 pub(super) async fn execute(
+    remote: SocketAddr,
+    configured: &Path,
+    args: Value,
+) -> Result<McpToolCallResult> {
+    execute_with(
+        &crate::cluster::PlacementStore::default(),
+        remote,
+        configured,
+        args,
+    )
+    .await
+}
+
+pub(super) async fn execute_with(
+    placement: &crate::cluster::PlacementStore,
     remote: SocketAddr,
     configured: &Path,
     args: Value,
@@ -66,7 +84,8 @@ pub(super) async fn execute(
     verification::preflight(&plan, &root)?;
     let report = runner::run(plan, |tool, args| {
         let root = root.clone();
-        async move { invoke(remote, &root, &tool, args).await }
+        let placement = placement.clone();
+        async move { invoke_with(&placement, remote, &root, &tool, args).await }
     })
     .await;
     let mut result = McpToolCallResult::text(serde_json::to_string(&report)?);
@@ -76,10 +95,28 @@ pub(super) async fn execute(
     Ok(result)
 }
 
-async fn invoke(remote: SocketAddr, root: &Path, tool: &str, mut args: Value) -> Result<Value> {
+#[cfg(test)]
+async fn invoke(remote: SocketAddr, root: &Path, tool: &str, args: Value) -> Result<Value> {
+    invoke_with(
+        &crate::cluster::PlacementStore::default(),
+        remote,
+        root,
+        tool,
+        args,
+    )
+    .await
+}
+
+async fn invoke_with(
+    placement: &crate::cluster::PlacementStore,
+    remote: SocketAddr,
+    root: &Path,
+    tool: &str,
+    mut args: Value,
+) -> Result<Value> {
     prepare_arguments(root, tool, &mut args)
         .map_err(|error| operation_failure::before(tool, error))?;
-    invoke_prepared(remote, root, tool, args).await
+    invoke_prepared(placement, remote, root, tool, args).await
 }
 
 fn prepare_arguments(root: &Path, tool: &str, args: &mut Value) -> Result<()> {
@@ -111,6 +148,7 @@ fn prepare_arguments(root: &Path, tool: &str, args: &mut Value) -> Result<()> {
 }
 
 async fn invoke_prepared(
+    placement: &crate::cluster::PlacementStore,
     remote: SocketAddr,
     root: &Path,
     tool: &str,
@@ -133,7 +171,9 @@ async fn invoke_prepared(
         remote
     };
     let mut outcome = match tool {
-        "preview" | "apply" | "verify" => mutations::invoke(remote, root, tool, args).await,
+        "preview" | "apply" | "verify" => {
+            mutations::invoke(placement, remote, root, tool, args).await
+        }
         "grep" => search::grep(remote, root, args).await,
         "resolve" => {
             let symbol = args
@@ -171,7 +211,7 @@ async fn invoke_prepared(
             Ok(json!({"items":items,"truncated":truncated,"exhaustive":false}))
         }
         _ => {
-            let result = execute_tool(remote, root, tool, args).await?;
+            let result = execute_tool_with(placement.clone(), remote, root, tool, args).await?;
             let mut data = result
                 .structured_content
                 .as_ref()

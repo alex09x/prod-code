@@ -442,6 +442,7 @@ async fn pull_remote_files_reads_and_applies_remote_files() {
     .await;
 
     let pulled = prod_code_mcp::sync::pull_remote_files(
+        &prod_code_mcp::cluster::PlacementStore::default(),
         addr,
         &root,
         &[std::path::PathBuf::from("src/lib.rs")],
@@ -488,6 +489,7 @@ async fn pull_remote_files_honors_explicit_non_executable_shebang_script() {
     .await;
 
     let pulled = prod_code_mcp::sync::pull_remote_files(
+        &prod_code_mcp::cluster::PlacementStore::default(),
         addr,
         &root,
         &[std::path::PathBuf::from("script.sh")],
@@ -531,6 +533,7 @@ async fn pull_remote_files_does_not_apply_a_truncated_prefix() {
     .await;
 
     let error = prod_code_mcp::sync::pull_remote_files(
+        &prod_code_mcp::cluster::PlacementStore::default(),
         addr,
         &root,
         &[std::path::PathBuf::from("src/lib.rs")],
@@ -563,6 +566,7 @@ async fn pull_remote_files_reassembles_chunks_and_refuses_a_changed_copy() {
     ])
     .await;
     let pulled = prod_code_mcp::sync::pull_remote_files(
+        &prod_code_mcp::cluster::PlacementStore::default(),
         addr,
         &root,
         &[std::path::PathBuf::from("src/lib.rs")],
@@ -583,6 +587,7 @@ async fn pull_remote_files_reassembles_chunks_and_refuses_a_changed_copy() {
     ])
     .await;
     let error = prod_code_mcp::sync::pull_remote_files(
+        &prod_code_mcp::cluster::PlacementStore::default(),
         addr,
         &root,
         &[std::path::PathBuf::from("src/lib.rs")],

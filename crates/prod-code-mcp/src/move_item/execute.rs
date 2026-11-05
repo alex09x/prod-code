@@ -176,7 +176,7 @@ pub async fn move_item(
             (source_new, target_new, raw_item, Vec::new())
         } else {
             let (source_new, item) = cut(&source_text, start, decl_end);
-            let (target_with_imports, item, carried) = if child {
+            let (target_with_imports, item, mut carried) = if child {
                 let inherit_parent = requires_parent_scope(
                     &source_new,
                     &item,
@@ -219,7 +219,13 @@ pub async fn move_item(
                 path != file || *reference_line < start || *reference_line > decl_end
             });
             let item = if has_external_reference {
-                super::visibility::widen_private_function(&item, &name, edition)?
+                let widened = super::visibility::widen_private_function(&item, &name, edition)?;
+                if widened != item {
+                    carried.push(format!(
+                        "`{name}` is now `pub(crate)`: other modules still use it"
+                    ));
+                }
+                widened
             } else {
                 item
             };

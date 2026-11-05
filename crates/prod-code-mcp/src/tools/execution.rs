@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::path::Path;
 
-use super::dispatch_tool;
+use super::dispatch_tool_with;
 use super::inspection_handlers::with_indexing_notes;
 use super::references::references_across;
 use super::schemas::SYMBOL_ADDRESSABLE;
@@ -118,7 +118,26 @@ pub fn execute_tool<'a>(
     tool_name: &'a str,
     args: serde_json::Value,
 ) -> impl std::future::Future<Output = Result<McpToolCallResult>> + Send + 'a {
-    execute_tool_at(
+    execute_tool_with(
+        crate::cluster::PlacementStore::user(),
+        remote,
+        workspace_root,
+        tool_name,
+        args,
+    )
+}
+
+/// [`execute_tool`] remembering and reading the node of a checkout's last command in `placement`
+/// instead of the user's own store.
+pub fn execute_tool_with<'a>(
+    placement: crate::cluster::PlacementStore,
+    remote: SocketAddr,
+    workspace_root: &'a Path,
+    tool_name: &'a str,
+    args: serde_json::Value,
+) -> impl std::future::Future<Output = Result<McpToolCallResult>> + Send + 'a {
+    execute_tool_at_with(
+        placement,
         remote,
         workspace_root,
         tool_name,
@@ -136,6 +155,25 @@ pub fn execute_tool_at<'a>(
     args: serde_json::Value,
     received: tokio::time::Instant,
 ) -> impl std::future::Future<Output = Result<McpToolCallResult>> + Send + 'a {
+    execute_tool_at_with(
+        crate::cluster::PlacementStore::user(),
+        remote,
+        workspace_root,
+        tool_name,
+        args,
+        received,
+    )
+}
+
+/// [`execute_tool_at`] over the given placement store.
+pub fn execute_tool_at_with<'a>(
+    placement: crate::cluster::PlacementStore,
+    remote: SocketAddr,
+    workspace_root: &'a Path,
+    tool_name: &'a str,
+    args: serde_json::Value,
+    received: tokio::time::Instant,
+) -> impl std::future::Future<Output = Result<McpToolCallResult>> + Send + 'a {
     let configured_workspace_root = workspace_root.to_path_buf();
     let budget = definition_budget(tool_name, &args, received);
     let reference_budget = references_budget(tool_name, &args, received);
@@ -143,10 +181,17 @@ pub fn execute_tool_at<'a>(
         if tool_name == "code_workflow" {
             // Each nested operation acquires its own locks. Holding an outer workspace
             // lock while calling back into execute_tool would deadlock writers.
-            return super::workflow::execute(remote, &configured_workspace_root, args).await;
+            return super::workflow::execute_with(
+                &placement,
+                remote,
+                &configured_workspace_root,
+                args,
+            )
+            .await;
         }
         let fallback = html_fallback::request(tool_name, &args);
         let run = execute_tool_inner(
+            placement,
             remote,
             &configured_workspace_root,
             tool_name,
@@ -177,6 +222,7 @@ pub fn execute_tool_at<'a>(
 }
 
 fn execute_tool_inner<'a>(
+    placement: crate::cluster::PlacementStore,
     remote: SocketAddr,
     configured_workspace_root: &'a Path,
     tool_name: &'a str,
@@ -194,7 +240,14 @@ fn execute_tool_inner<'a>(
         crate::cluster::with_root_policy(
             &workspace_root,
             policy,
-            execute_selected(remote, &workspace_root, tool_name, args, reference_budget),
+            execute_selected(
+                placement,
+                remote,
+                &workspace_root,
+                tool_name,
+                args,
+                reference_budget,
+            ),
         )
         .await
     })
@@ -202,6 +255,7 @@ fn execute_tool_inner<'a>(
 
 /// [`execute_tool_inner`] once the call's checkout is selected and its policy scoped.
 fn execute_selected<'a>(
+    placement: crate::cluster::PlacementStore,
     remote: SocketAddr,
     workspace_root: &'a Path,
     tool_name: &'a str,
@@ -298,7 +352,7 @@ fn execute_selected<'a>(
         };
         // A pull names checkout-relative artifact paths that need not exist locally (#1145).
         if tool_name == "code_pull" {
-            return dispatch_tool(remote, workspace_root, tool_name, args).await;
+            return dispatch_tool_with(&placement, remote, workspace_root, tool_name, args).await;
         }
         // Normalize path parameter across aliases: path, file_path, file, package, crate (#673, #900)
         let mut args = args;
@@ -337,16 +391,22 @@ fn execute_selected<'a>(
             None => remote.await?,
         };
 
-        let args =
-            match resolve_symbol_args(remote, workspace_root, tool_name, args, reference_budget)
-                .await?
-            {
-                SymbolResolution::Dispatch(args, budget) => {
-                    reference_budget = budget.or(reference_budget);
-                    args
-                }
-                SymbolResolution::Respond(result) => return Ok(result),
-            };
+        let args = match resolve_symbol_args(
+            &placement,
+            remote,
+            workspace_root,
+            tool_name,
+            args,
+            reference_budget,
+        )
+        .await?
+        {
+            SymbolResolution::Dispatch(args, budget) => {
+                reference_budget = budget.or(reference_budget);
+                args
+            }
+            SymbolResolution::Respond(result) => return Ok(result),
+        };
         // Resolved symbol positions obey the same contract, including a supplied selection end.
         validate_position_arguments(tool_name, &args)?;
         // A path in a nested project of another language goes to a node that serves it (#125).
@@ -370,7 +430,7 @@ fn execute_selected<'a>(
             },
             None => remote.await?,
         };
-        let dispatch = dispatch_tool(remote, workspace_root, tool_name, args);
+        let dispatch = dispatch_tool_with(&placement, remote, workspace_root, tool_name, args);
         let result = match reference_budget {
             Some(budget) => {
                 let sync_stage = crate::sync::types::SyncStageTracker::new();

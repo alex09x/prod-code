@@ -47,3 +47,25 @@ fn runtime_paths_2_placement_updates_preserve_other_workspaces() {
     assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
     assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 2);
 }
+
+/// Two stores over two files never see each other's entries, and a store with no file remembers
+/// nothing.
+#[test]
+fn stores_over_different_files_are_independent() {
+    let temp = tempfile::tempdir().unwrap();
+    let first = PlacementStore::at(temp.path().join("first.json"));
+    let second = PlacementStore::at(temp.path().join("second.json"));
+    let a: SocketAddr = "127.0.0.1:9001".parse().unwrap();
+    let b: SocketAddr = "127.0.0.1:9002".parse().unwrap();
+    first.remember("work", a);
+    second.remember("work", b);
+    assert_eq!(first.remembered("work"), Some(a));
+    assert_eq!(second.remembered("work"), Some(b));
+    first.forget("work");
+    assert_eq!(first.remembered("work"), None);
+    assert_eq!(second.remembered("work"), Some(b));
+
+    let nowhere = PlacementStore::default();
+    nowhere.remember("work", a);
+    assert_eq!(nowhere.remembered("work"), None);
+}

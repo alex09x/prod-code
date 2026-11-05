@@ -265,10 +265,14 @@ async fn read_remote_file_and_pull_ignore_interleaved_lsp_notifications() {
     assert!(!truncated);
 
     let temp = tempfile::tempdir().unwrap();
-    let pulled =
-        crate::sync::pull_remote_files(addr, temp.path(), &[PathBuf::from("dist/out.txt")])
-            .await
-            .unwrap();
+    let pulled = crate::sync::pull_remote_files(
+        &crate::cluster::PlacementStore::default(),
+        addr,
+        temp.path(),
+        &[PathBuf::from("dist/out.txt")],
+    )
+    .await
+    .unwrap();
     assert_eq!(pulled, vec!["dist/out.txt".to_string()]);
     assert_eq!(
         std::fs::read_to_string(temp.path().join("dist/out.txt")).unwrap(),

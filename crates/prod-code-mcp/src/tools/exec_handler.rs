@@ -116,14 +116,16 @@ fn parse_exec_env(args: &serde_json::Value) -> Result<Vec<(String, String)>> {
 }
 
 pub(crate) async fn handle_exec(
+    placement: &crate::cluster::PlacementStore,
     remote: SocketAddr,
     workspace_root: &Path,
     args: &serde_json::Value,
 ) -> Result<McpToolCallResult> {
-    run_exec_command(remote, workspace_root, args, true).await
+    run_exec_command(placement, remote, workspace_root, args, true).await
 }
 
 async fn run_exec_command(
+    placement: &crate::cluster::PlacementStore,
     remote: SocketAddr,
     workspace_root: &Path,
     args: &serde_json::Value,
@@ -163,7 +165,7 @@ async fn run_exec_command(
     let upload_excluded = outcome.upload_excluded;
     let exit = outcome.exit;
     if exit.error.is_none() {
-        crate::exec::remember_exec_node(workspace_root, remote);
+        crate::exec::remember_exec_node(placement, workspace_root, remote);
     }
     // The node that ran it as the gateway confirmed on the command's own connection under a
     // strict pin, not only the address it was sent to (#1793).
@@ -254,6 +256,7 @@ async fn run_exec_command(
 const DEFAULT_COVERAGE_TOOLCHAIN: &str = "1.97.1";
 
 pub(crate) async fn handle_coverage(
+    placement: &crate::cluster::PlacementStore,
     remote: SocketAddr,
     workspace_root: &Path,
     args: &serde_json::Value,
@@ -302,5 +305,5 @@ pub(crate) async fn handle_coverage(
         "tail_bytes": args.get("tail_bytes").and_then(serde_json::Value::as_u64).unwrap_or(16 * 1024),
         "env": { "RUSTUP_TOOLCHAIN": toolchain },
     });
-    run_exec_command(remote, workspace_root, &exec_args, false).await
+    run_exec_command(placement, remote, workspace_root, &exec_args, false).await
 }
