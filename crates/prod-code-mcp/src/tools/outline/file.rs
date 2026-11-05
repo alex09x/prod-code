@@ -77,6 +77,19 @@ pub async fn outline_file(
         );
         return Ok(text);
     }
+    // No language server serves assembly; its labels and globals are read here (#1935).
+    if matches!(extension.as_deref(), Some("s" | "asm")) {
+        let text = std::fs::read_to_string(file_path).with_context(|| {
+            crate::remote_fs::missing_file_context(workspace_root, file_path, "reading")
+        })?;
+        let rendered = super::assembly::assembly_outline(&text, path_str, options);
+        let (text, _) = cut_block(
+            &rendered,
+            options.max_bytes.unwrap_or(usize::MAX),
+            options.max_items.unwrap_or(usize::MAX),
+        );
+        return Ok(text);
+    }
     let engine = crate::sync::engine_for_file(file_path);
     if !matches!(
         engine,
