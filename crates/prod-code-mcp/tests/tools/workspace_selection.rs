@@ -223,6 +223,53 @@ async fn code_test_and_exec_sync_the_explicit_caller_worktree() {
     );
 }
 
+/// #1939: `code_impact` reports one checkout's diff, so it takes the same `workspace` selector as
+/// the other read tools. A change made only in a sibling worktree is the selected worktree's
+/// impact, and is not in the configured checkout's.
+#[tokio::test]
+async fn code_impact_analyzes_the_selected_worktree() {
+    let advertised = prod_code_mcp::tools::list_tools();
+    let tool = advertised
+        .iter()
+        .find(|tool| tool.name == "code_impact")
+        .unwrap();
+    assert_eq!(
+        tool.input_schema["properties"]["workspace"]["type"],
+        "string"
+    );
+
+    let ws = rust_workspace("pub fn base() {}\n");
+    commit(&ws);
+    let alternate = std::fs::canonicalize(alternate_worktree(&ws)).unwrap();
+    std::fs::write(
+        alternate.join("src/lib.rs"),
+        "pub fn base() {}\npub fn added() {}\n",
+    )
+    .unwrap();
+
+    let remote = mock_gateway(Script::default()).await;
+    let ran = |workspace: Option<String>| {
+        let args = match workspace {
+            Some(path) => serde_json::json!({ "base": "HEAD", "depth": 1, "workspace": path }),
+            None => serde_json::json!({ "base": "HEAD", "depth": 1 }),
+        };
+        let ws_root = ws.root();
+        async move {
+            match execute_tool(remote, &ws_root, "code_impact", args).await {
+                Ok(result) => text_of(&result),
+                Err(error) => format!("{error:#}"),
+            }
+        }
+    };
+    // The worktree differs from HEAD in `src/lib.rs` (above) and `Cargo.toml` (its helper's).
+    let selected = ran(Some(alternate.to_string_lossy().into_owned())).await;
+    assert!(selected.contains("2 changed file(s)"), "{selected}");
+    assert!(selected.contains("src/lib.rs"), "{selected}");
+    let configured = ran(None).await;
+    assert!(!configured.contains("2 changed file(s)"), "{configured}");
+    assert!(!configured.contains("src/lib.rs"), "{configured}");
+}
+
 #[tokio::test]
 async fn workspace_selector_rejects_unrelated_and_invalid_nested_roots() {
     let ws = rust_workspace("pub fn base() {}\n");
