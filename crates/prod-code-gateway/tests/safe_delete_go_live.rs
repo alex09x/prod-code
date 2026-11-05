@@ -241,8 +241,16 @@ fn source_cli() -> PathBuf {
             .and_then(Path::parent)
             .expect("gateway crate below workspace")
             .to_path_buf();
-        let mut build = Command::new("cargo")
-            .args(["build", "-p", "prod-code-client", "--bin", "prod-code"])
+        let mut build = Command::new("mitts")
+            .args([
+                "build",
+                "--native",
+                "--locked",
+                "-p",
+                "prod-code-client",
+                "--bin",
+                "prod-code",
+            ])
             .current_dir(&workspace)
             .process_group(0)
             .spawn()

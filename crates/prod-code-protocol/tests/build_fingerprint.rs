@@ -85,6 +85,7 @@ mod production {
 }
 fn main() {
     use std::io::Write;
+    println!("cargo:rerun-if-env-changed=TEST_BUILD_COUNTER");
     let path = std::env::var_os("TEST_BUILD_COUNTER").unwrap();
     std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap().write_all(b"x").unwrap();
     production::run();

@@ -214,16 +214,16 @@ pub async fn same_file_inline_module_and_example_targets_get_their_trait_imports
         "{same_name_test_after}"
     );
 
-    let cargo_test = std::process::Command::new("cargo")
-        .args(["test", "--all-targets"])
+    let mitts_test = std::process::Command::new("mitts")
+        .args(["test", "--all-targets", "--offline"])
         .current_dir(apply_ws.root())
         .output()
-        .expect("run the complete fixture's Cargo targets");
+        .expect("run the complete fixture's Mitts targets");
     assert!(
-        cargo_test.status.success(),
+        mitts_test.status.success(),
         "generated trait imports did not compile:\n{}\n{}",
-        String::from_utf8_lossy(&cargo_test.stdout),
-        String::from_utf8_lossy(&cargo_test.stderr)
+        String::from_utf8_lossy(&mitts_test.stdout),
+        String::from_utf8_lossy(&mitts_test.stderr)
     );
 }
 
@@ -324,15 +324,15 @@ pub async fn migrated_external_callers_get_root_and_inline_imports() {
         2,
         "the migrated root and child module both need the trait: {example_after}"
     );
-    let cargo_test = std::process::Command::new("cargo")
-        .args(["test", "--example", "migrated"])
+    let mitts_test = std::process::Command::new("mitts")
+        .args(["test", "--all-targets", "--offline"])
         .current_dir(ws.root())
         .output()
-        .expect("compile and run the migrated example");
+        .expect("compile and run migrated targets with Mitts");
     assert!(
-        cargo_test.status.success(),
+        mitts_test.status.success(),
         "migrated example did not compile and run:\n{}\n{}",
-        String::from_utf8_lossy(&cargo_test.stdout),
-        String::from_utf8_lossy(&cargo_test.stderr)
+        String::from_utf8_lossy(&mitts_test.stdout),
+        String::from_utf8_lossy(&mitts_test.stderr)
     );
 }

@@ -6087,10 +6087,7 @@ async fn code_coverage_runs_on_the_remote_with_llvm_tools_toolchain() {
         .expect("coverage tool runs remotely");
     assert!(!result.is_error);
     let text = text_of(&result);
-    assert!(
-        text.contains("$ cargo llvm-cov --no-report --lib"),
-        "{text}"
-    );
+    assert!(text.contains("$ mitts llvm-cov --lib"), "{text}");
     assert!(text.contains("1 passed; 0 failed"), "{text}");
     assert_eq!(
         std::fs::read_to_string(ws.root().join("src/lib.rs"))

@@ -248,7 +248,7 @@ fn fan_in_gap_describes_hub_and_full_suite_fallback() {
             })
             .collect(),
         test_command: Some(vec![
-            "cargo".to_string(),
+            "mitts".to_string(),
             "test".to_string(),
             "--workspace".to_string(),
         ]),
@@ -274,7 +274,7 @@ fn test_command_falls_back_to_workspace_when_exceeding_threshold() {
         })
         .collect();
     let cmd = test_command("rust", &crate::verify::ProjectTools::default(), &tests).unwrap();
-    assert_eq!(cmd, vec!["cargo", "test", "--workspace"]);
+    assert_eq!(cmd, vec!["mitts", "test", "--workspace"]);
 }
 
 #[test]

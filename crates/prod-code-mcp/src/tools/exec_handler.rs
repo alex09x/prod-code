@@ -267,7 +267,7 @@ pub(crate) async fn handle_coverage(
         !workspace || package.is_none(),
         "choose either a package or `workspace: true`, not both"
     );
-    let mut argv = vec!["cargo".to_string(), "llvm-cov".to_string()];
+    let mut argv = vec!["mitts".to_string(), "llvm-cov".to_string()];
     if workspace {
         argv.push("--workspace".to_string());
     } else if let Some(package) = package {
@@ -275,7 +275,7 @@ pub(crate) async fn handle_coverage(
         argv.extend(["-p".to_string(), package.to_string()]);
     }
     let extra_args = match args.get("args") {
-        None => vec!["--no-report".to_string(), "--lib".to_string()],
+        None => vec!["--lib".to_string()],
         Some(serde_json::Value::Array(values)) => values
             .iter()
             .map(|value| {

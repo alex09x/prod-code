@@ -32,7 +32,7 @@ class RemoteBuildFailureTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
-            cargo = home / ".cargo" / "bin" / "cargo"
+            cargo = home / ".cargo" / "bin" / "mitts"
             cargo.parent.mkdir(parents=True)
             cargo.write_text(
                 "#!/bin/sh\necho simulated compiler failure >&2\nexit 23\n",

@@ -87,8 +87,8 @@ pub fn parse_verification_output(
     let (mut tests_passed, mut tests_failed, mut failures) = (0, 0, Vec::new());
     match (language, kind) {
         ("rust", VerifyKind::Check) | ("rust", VerifyKind::Lint) => {
-            diagnostics.extend(stdout.lines().filter_map(parse_cargo_json_line));
-            fixes.extend(stdout.lines().flat_map(crate::fixit::parse_fixes));
+            diagnostics.extend(parse_rustc_text(stderr));
+            diagnostics.extend(parse_rustc_text(stdout));
         }
         ("go", VerifyKind::Bench) => {
             diagnostics.extend(parse_go_text(stderr));

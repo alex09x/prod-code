@@ -137,6 +137,18 @@ fn rustc_text_diagnostics() {
 }
 
 #[test]
+fn mitts_rust_check_diagnostics_parse_human_readable_stderr() {
+    let tools = ProjectTools::default();
+    let stderr = "error[E0425]: cannot find value `missing` in this scope\n  --> src/lib.rs:4:9\n";
+    let (diagnostics, fixes, _, _, _, _) =
+        parse_verification_output("rust", VerifyKind::Check, "", stderr, &tools);
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code.as_deref(), Some("E0425"));
+    assert_eq!(diagnostics[0].file.as_deref(), Some("src/lib.rs"));
+    assert!(fixes.is_empty());
+}
+
+#[test]
 fn cargo_test_text() {
     let text = "running 3 tests\ntest a::ok ... ok\ntest a::bad ... FAILED\ntest a::also ... ok\n\nfailures:\n\n---- a::bad stdout ----\nthread 'a::bad' panicked at src/lib.rs:5:9:\nassertion failed: 1 == 2\n\n\nfailures:\n    a::bad\n\ntest result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n";
     let (p, f, fails) = parse_cargo_test_text(text);
@@ -314,10 +326,7 @@ fn benchmark_results_are_read_from_criterion_libtest_and_go() {
         plan_command_basic("go", VerifyKind::Bench, None).unwrap(),
         ["go", "test", "-run", "^$", "-bench", ".", "./..."]
     );
-    assert_eq!(
-        plan_command_basic("rust", VerifyKind::Bench, Some("sum")).unwrap(),
-        ["cargo", "bench", "--workspace", "sum"]
-    );
+    assert!(plan_command_basic("rust", VerifyKind::Bench, Some("sum")).is_err());
     let report = VerifyReport {
         kind: VerifyKind::Bench,
         language: "rust".into(),

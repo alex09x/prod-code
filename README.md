@@ -28,7 +28,7 @@
 A language server was designed for one human typing in one checkout. What runs on a machine
 now is a fleet: a resident agent in the main checkout, workers in their own worktrees, each
 asking the analyzer the kind of question a human asks once a minute and asking it ten times a
-second. Every worktree brings its own analyzer and its own `cargo test`, and they share the
+second. Every worktree brings its own analyzer and its own `mitts test`, and they share the
 cores with your editor.
 
 `prod-code` moves all of it one hop away. Measured on this repository, with nothing compiled
@@ -39,9 +39,9 @@ on the laptop:
 | hover on a warm workspace | 1–4 ms |
 | tool call over a persistent session | ~10 ms |
 | a one-shot CLI command from the laptop, end to end (`prod-code hover …`) | ~0.1 s |
-| `cargo clippy --workspace --all-targets` on a 32-core node, one file changed | 1 s |
-| `cargo test --workspace` — 565 tests | 5 min |
-| `cargo test --workspace --exclude prod-code-gateway` | 56 s |
+| `mitts clippy --workspace --all-targets` on a 32-core node, one file changed | 1 s |
+| `mitts test --workspace` — 565 tests | 5 min |
+| `mitts test --workspace --exclude prod-code-gateway` | 56 s |
 | first load of a Rust workspace (build scripts, proc macros) | ~45 s, once per worktree |
 
 These are recorded workloads; current test counts and timings are listed in each pull request.
@@ -101,7 +101,7 @@ flowchart TD
             Router["Placement & Gossip Router"] --> Workspaces["Per-Worktree Mirrors\n(<repo>--wt-<hash>)"]
             Workspaces --> PrimarySalsa["Primary Salsa DB\n(rust-analyzer in-proc; child LSPs)"]
             Workspaces --> ShadowValidation["Validation Engines\n(private or shared by engine)"]
-            Workspaces --> RemoteExec["Remote Builds, Lints & Tests\n(cargo, go, pytest, swift, etc.)"]
+    Workspaces --> RemoteExec["Remote Builds, Lints & Tests\n(mitts, go, pytest, swift, etc.)"]
             GatewayInternals --> Telemetry["Prometheus Scrape (:9401)\n& Pushgateway (:9091)"]
         end
     end
@@ -121,13 +121,13 @@ flowchart TD
 ## Requirements
 
 Building `prod-code` and running its development checks require Rust 1.95.0 or newer. With
-rustup, install the supported minimum and the check components with:
+rustup, install the supported minimum and the check components, then build and check with Mitts:
 
 ```sh
 rustup toolchain install 1.95.0 --profile minimal -c rustfmt -c clippy
 ```
 
-Run commands with `cargo +1.95.0` to use that toolchain without changing your default.
+Use Mitts for Rust builds, formatting, tests, and linting.
 
 ## Install
 
@@ -149,8 +149,8 @@ sudo rpm -i https://github.com/alex09x/prod-code/releases/download/v0.3.29/prod-
 # Arch Linux (.pkg.tar.gz)
 sudo pacman -U https://github.com/alex09x/prod-code/releases/download/v0.3.29/prod-code-0.3.29-1-x86_64.pkg.tar.gz
 
-# Build from source
-cargo install --path crates/prod-code-client
+# Build the client from source
+mitts build --release -p prod-code-client --bins
 ```
 
 Native notarized macOS installers ([`prod-code-0.3.29-macOS.pkg`](https://github.com/alex09x/prod-code/releases/download/v0.3.29/prod-code-0.3.29-macOS.pkg) and [`.dmg`](https://github.com/alex09x/prod-code/releases/download/v0.3.29/prod-code-0.3.29-macOS.dmg)) and standalone binaries for Linux (`x86_64`, `aarch64`) and macOS (`arm64` Apple Silicon) are available on [GitHub Releases](https://github.com/alex09x/prod-code/releases/tag/v0.3.29).
@@ -213,8 +213,8 @@ On the remote Linux or macOS worker host, install the separately packaged gatewa
 repository root before invoking the server (the client source-install step installs only `prod-code`):
 
 ```sh
-# Install the gateway on this worker host
-cargo install --path crates/prod-code-gateway
+# Build the gateway on this worker host
+mitts build --release -p prod-code-gateway --bin prod-code-server
 
 # Start gateway server directly
 prod-code-server --bind 0.0.0.0:9400 --storage /srv/prod-code/workspaces \
@@ -314,7 +314,7 @@ and SVG vector graphics are validated directly through built-in syntax parsers.
 | `code_validate_edit` · `code_validate_edits` | in-memory analyzer diagnostics and syntax validation for proposed contents across one or many files before writing; detects broken references and schema violations |
 | `code_diagnostics` | diagnostics for a file, in memory, without running a full build |
 | `code_rename` · `code_safe_delete` | semantic rename across the workspace (a field with its accessors, with `accessors`); delete declaration only when zero references exist, or parameter with arguments |
-| `code_change_signature` | Rust signature changes, including `&name` to borrow an owned parameter with every resolved call (the preview is the analyzer's check, which has no borrow checker; it is written only with `apply` and `verify: "compile"`, after `cargo check` accepts it); Go reorder/removal through gopls and typed literal additions to ordinary functions with compiler checks |
+| `code_change_signature` | Rust signature changes, including `&name` to borrow an owned parameter with every resolved call (the preview is the analyzer's check, which has no borrow checker; write with `apply` and `verify: "compile"` after a compiler check accepts it); Go reorder/removal through gopls and typed literal additions to ordinary functions with compiler checks |
 | `code_move` | a declaration moved to another module across languages, with imports it takes and leaves behind |
 | `code_move_method` · `code_move_module` | a method moved to the type of one of its parameters; a whole module moved to another parent with all referencing paths |
 | `code_extract_function` | a selection extracted into a named function across languages; duplicate replacement defaults on within the file (`duplicates: true`); cross-file search requires `other_files: true`, and parameterized matching requires `parameterize: true` (both default false) |
@@ -417,7 +417,7 @@ does not isolate all command output files. Returned stdout/stderr is a bounded t
 default, plus retained diagnostic excerpts), not a complete log.
 
 ```
-$ prod-code shadow-run spec.json -- cargo test
+$ prod-code shadow-run spec.json -- mitts test
   plus      exit 0     in 0.4s  2 passed, 0 failed  <- winner
   clamp     exit 0     in 0.4s  2 passed, 0 failed
   baseline  exit 101   in 0.0s  0 passed, 2 failed
@@ -520,7 +520,7 @@ $ prod-code cluster
 | safe-delete | yes | - | - | - | - | - |
 | custom signature changes | yes | named-parameter permutations | - | - | - | - |
 | extract parameter / parameter object | supported shapes | supported shapes | supported shapes | supported shapes | supported shapes | supported shapes |
-| check | cargo check | go build | cmake / meson / make | tsc (bunx / pnpm / yarn / npx) | basedpyright (uv / .venv aware) | swift build / xcodebuild |
+| check | mitts check | go build | cmake / meson / make | tsc (bunx / pnpm / yarn / npx) | basedpyright (uv / .venv aware) | swift build / xcodebuild |
 | lint | clippy | go vet | - | eslint / biome | ruff | - |
 | test | mitts test | go test | ctest / meson test | vitest / jest / bun test / mocha | pytest / unittest | swift test / xcodebuild test |
 

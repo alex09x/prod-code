@@ -15,11 +15,13 @@ use std::process::Command;
 
 fn configurations(ws: &Workspace) -> Value {
     let mut runs = vec![cargo(&ws.root())];
-    let output = Command::new("cargo")
+    let output = Command::new("mitts")
         .args([
             "test",
             "--offline",
-            "--all-targets",
+            "--tests",
+            "--bins",
+            "--lib",
             "--quiet",
             "--features",
             "enabled",

@@ -292,12 +292,13 @@ fn source_built_gateway() -> (tempfile::TempDir, PathBuf) {
         .parent()
         .and_then(Path::parent)
         .expect("workspace root");
-    let mut build = Command::new("cargo");
+    let mut build = Command::new("mitts");
     build
         .current_dir(root)
         .env_remove("CARGO_TARGET_DIR")
         .args([
             "build",
+            "--native",
             "--locked",
             "--quiet",
             "-p",

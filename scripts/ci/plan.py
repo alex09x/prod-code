@@ -89,7 +89,7 @@ def emit(name, value):
 
 
 def run_tests(root, row):
-    base = ["cargo", "test", "--locked", "-p", row["package"]]
+    base = ["mitts", "test", "--locked", "-p", row["package"]]
     failed = []
     for target in row["targets"]:
         selector = (
@@ -108,6 +108,15 @@ def run_tests(root, row):
     return failed
 
 
+def require_integration_targets(matrix):
+    if not any(row["kind"] == "test" for row in matrix["include"]):
+        raise SystemExit(
+            "Mitts metadata omitted integration test targets; "
+            "refusing an incomplete CI matrix"
+        )
+    return matrix
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=["tests", "release", "run-tests"])
@@ -116,16 +125,15 @@ def main():
     if args.mode == "tests":
         metadata = json.loads(
             command(
-                "cargo",
+                "mitts",
                 "metadata",
                 "--locked",
-                "--no-deps",
                 "--format-version",
                 "1",
                 cwd=args.root,
             )
         )
-        emit("matrix", test_matrix(metadata))
+        emit("matrix", require_integration_targets(test_matrix(metadata)))
     elif args.mode == "release":
         for name, value in release_input(args.root, os.environ["RELEASE_TAG"]).items():
             emit(name, value)

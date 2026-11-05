@@ -30,24 +30,24 @@ fn record(case: &str, file: &str, value: &str) {
 // references/owner hovers use the existing scripted gateway at exact field tokens.
 fn cargo_run(case: &str, stage: &str, ws: &Workspace, bin: &str) -> Result<String, String> {
     artifact(case, stage, ws);
-    let output = Command::new("cargo")
+    let output = Command::new("mitts")
         .args(["run", "--offline", "--quiet", "--bin", bin])
         .current_dir(ws.root())
         .output()
-        .expect("cargo fixture compiler/runtime");
+        .expect("Mitts fixture compiler/runtime");
     let diagnostics = String::from_utf8_lossy(&output.stderr)
         .replace(&ws.root().to_string_lossy().to_string(), "<fixture>");
     let stdout = String::from_utf8(output.stdout).unwrap();
     record(
         case,
-        &format!("{stage}/cargo-run.txt"),
+        &format!("{stage}/mitts-run.txt"),
         &format!(
-            "cargo run --offline --quiet --bin {bin}\nexit: {}\n{diagnostics}\nstdout:\n{stdout}",
+            "mitts run --offline --quiet --bin {bin}\nexit: {}\n{diagnostics}\nstdout:\n{stdout}",
             output.status
         ),
     );
     println!(
-        "{case}/{stage}: cargo run --offline --quiet --bin {bin}: {}",
+        "{case}/{stage}: mitts run --offline --quiet --bin {bin}: {}",
         output.status
     );
     if output.status.success() {

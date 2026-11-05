@@ -59,7 +59,7 @@ fn selectorless_java_group_keeps_its_project_suite_alongside_rust() {
         .expect("both projects must remain in the test plan");
     let script = plan.join(" ");
     assert!(
-        script.contains("cargo") && script.contains("rust_test"),
+        script.contains("mitts") && script.contains("rust_test"),
         "{script}"
     );
     assert!(
@@ -117,7 +117,7 @@ fn selectorless_java_group_keeps_its_project_suite_alongside_rust() {
     };
     let command = command.join(" ");
     assert!(
-        command.contains("cargo") && command.contains("gradle"),
+        command.contains("mitts") && command.contains("gradle"),
         "{command}"
     );
 }
@@ -300,7 +300,7 @@ fn non_source_changes_keep_enclosing_projects_without_bogus_engines() {
     };
     let script = command.join(" ");
     assert!(
-        script.contains("cargo")
+        script.contains("mitts")
             && script.contains("(cd web &&")
             && script.contains("vitest")
             && script.contains("(cd python &&"),
@@ -319,7 +319,7 @@ fn empty_scope_fallback_still_plans_the_root_suite() {
     let tools = crate::verify::detect_tools(root.path());
     let plan = crate::impact::test_plan::build_test_plan(root.path(), "rust", &tools, &[], &[]);
     assert!(plan.whole_is_root_only);
-    assert!(plan.whole.unwrap().contains(&"cargo".to_string()));
+    assert!(plan.whole.unwrap().contains(&"mitts".to_string()));
 }
 
 #[test]

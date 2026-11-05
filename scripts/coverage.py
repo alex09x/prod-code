@@ -17,19 +17,12 @@ reports every file and fails on the files themselves.
 
 Run it on a build node, never on the developer's machine:
 
-    prod-code exec --timeout-secs 1800 --no-pull -- \
-        bash -lc 'python3 scripts/coverage.py --min 80'
+    python3 scripts/coverage.py --report target/coverage-report.json --min 80
+    python3 scripts/coverage.py --report target/coverage-report.json --min 80 FILE
 
-    python3 scripts/coverage.py                  # report only, exit 0
-    python3 scripts/coverage.py --min 80         # fail if any file is under 80% of regions
-    python3 scripts/coverage.py --min 80 crates/prod-code-mcp/src/schema.rs   # only these
-    python3 scripts/coverage.py --report target/coverage-report.json --min 80 FILE  # reuse the last run, no rebuild
-
-Every run keeps its report at `target/coverage-report.json`. A file with no code (a crate root of
-`pub mod` and `pub use`) is listed as `no code` rather than failing the gate.
-
-`cargo llvm-cov` must be installed (`cargo install cargo-llvm-cov` plus the
-`llvm-tools-preview` component).
+Report generation is temporarily unavailable pending Mitts issue #31. Supply an existing
+LLVM JSON report with --report. A file with no code (a crate root of `pub mod` and `pub use`)
+is listed as `no code` rather than failing the gate.
 """
 
 from __future__ import annotations
@@ -42,6 +35,11 @@ import pathlib
 import re
 import subprocess
 import sys
+
+if __package__:
+    from .coverage_report import collect, validate_report
+else:
+    from coverage_report import collect, validate_report
 
 try:
     import tomllib
@@ -106,17 +104,17 @@ def is_test_file(relative: str) -> bool:
 
 
 def cargo_workspace_search_dirs(root_path: pathlib.Path) -> list[pathlib.Path]:
-    """Use Cargo's resolved workspace membership when Python cannot parse TOML."""
+    """Use Mitts metadata for workspace membership when Python cannot parse TOML."""
     try:
         out = subprocess.run(
-            ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+            ["mitts", "metadata", "--format-version", "1"],
             cwd=root_path,
             capture_output=True,
             text=True,
             check=True,
         )
     except (OSError, subprocess.CalledProcessError) as err:
-        raise ValueError(f"cannot determine Cargo workspace members: {err}") from err
+        raise ValueError(f"cannot determine workspace members with Mitts: {err}") from err
     try:
         metadata = json.loads(out.stdout)
         members = set(metadata["workspace_members"])
@@ -127,9 +125,9 @@ def cargo_workspace_search_dirs(root_path: pathlib.Path) -> list[pathlib.Path]:
             if package["id"] in members
         ))
     except (KeyError, TypeError, json.JSONDecodeError) as err:
-        raise ValueError(f"invalid Cargo metadata while resolving workspace members: {err}") from err
+        raise ValueError(f"invalid Mitts metadata while resolving workspace members: {err}") from err
     if not dirs:
-        raise ValueError("Cargo metadata returned no workspace member packages")
+        raise ValueError("Mitts metadata returned no workspace member packages")
     return dirs
 
 
@@ -236,75 +234,6 @@ def find_rust_source_files(root: str) -> set[str]:
     return source_files
 
 
-def validate_report(report: dict) -> None:
-    """Require measurements, including explicit zeroes; absence is not zero coverage."""
-    if not isinstance(report, dict):
-        raise ValueError("coverage report must be a JSON object")
-    data = report.get("data")
-    if not isinstance(data, list):
-        raise ValueError("coverage report missing 'data' list")
-    if not data:
-        raise ValueError("coverage report 'data' is empty")
-    count = 0
-    for item in data:
-        if not isinstance(item, dict) or not isinstance(item.get("files"), list):
-            raise ValueError("each coverage data record must contain a files list")
-        for entry in item["files"]:
-            if not isinstance(entry, dict):
-                raise ValueError("each coverage file entry must be an object")
-            filename = entry.get("filename")
-            if not isinstance(filename, str) or not filename.strip():
-                raise ValueError("coverage file entry has no valid filename")
-            summary = entry.get("summary")
-            regions = summary.get("regions") if isinstance(summary, dict) else None
-            if not isinstance(regions, dict):
-                raise ValueError(f"missing region measurements for {filename}")
-            total, covered = regions.get("count"), regions.get("covered")
-            if (type(total) is not int or type(covered) is not int
-                    or total < 0 or covered < 0 or covered > total):
-                raise ValueError(f"invalid region measurements for {filename}")
-            count += 1
-    if not count:
-        raise ValueError("coverage report contains no valid file entries")
-
-
-def collect(report_path: str | None, root: str) -> dict:
-    if report_path:
-        try:
-            with open(report_path, "r", encoding="utf-8") as handle:
-                report = json.load(handle)
-        except OSError as err:
-            raise ValueError(f"cannot read coverage report {report_path}: {err}") from err
-        except json.JSONDecodeError as err:
-            raise ValueError(f"invalid JSON in coverage report {report_path}: {err}") from err
-        validate_report(report)
-        return report
-    # Kept, not temporary: an instrumented build takes minutes, and a rerun over other files can
-    # read this with `--report` instead of building again.
-    out_path = os.path.join(root, "target", "coverage-report.json")
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    subprocess.run(
-        [
-            "cargo",
-            "llvm-cov",
-            "--workspace",
-            "--json",
-            "--summary-only",
-            "--output-path",
-            out_path,
-        ],
-        check=True,
-    )
-    print(f"report kept at {out_path} (reuse it with --report)", file=sys.stderr)
-    try:
-        with open(out_path, "r", encoding="utf-8") as handle:
-            report = json.load(handle)
-    except (OSError, json.JSONDecodeError) as err:
-        raise ValueError(f"cannot read generated coverage report {out_path}: {err}") from err
-    validate_report(report)
-    return report
-
-
 def parse_coverage_entries(
     report: dict, root: str
 ) -> tuple[list[tuple[str, float, int, int]], set[str]]:
@@ -370,7 +299,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--report",
         default=None,
-        help="an existing `cargo llvm-cov --json` report to read instead of running one",
+        help="an existing LLVM coverage JSON report to read",
     )
     parser.add_argument(
         "paths",
