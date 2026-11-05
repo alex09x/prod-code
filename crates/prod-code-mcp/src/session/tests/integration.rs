@@ -262,6 +262,52 @@ async fn established_session_migrates_when_placement_is_rebalanced() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pinned_semantic_query_ignores_remembered_node_outside_pin() {
+    let ws = prod_code_testkit::Workspace::new(&[("src/lib.rs", "pub fn a() {}\n")]);
+    let pinned = prod_code_testkit::ScriptedGateway::start(|_, _| serde_json::json!([])).await;
+    let remembered = prod_code_testkit::ScriptedGateway::start(|_, _| serde_json::json!([])).await;
+    let root = ws.root();
+    let file = ws.path("src/lib.rs");
+    let identity = workspace_identity(&root);
+
+    pooled_query(
+        pinned.addr(),
+        &root,
+        &file,
+        "textDocument/documentSymbol",
+        serde_json::json!({}),
+    )
+    .await
+    .unwrap();
+    crate::cluster::remember_placement(&identity.name, remembered.addr());
+
+    let policy = crate::cluster::pin::NodePolicy {
+        mode: crate::cluster::pin::PinMode::Strict,
+        endpoints: vec![crate::cluster::pin::Endpoint {
+            name: pinned.addr().to_string(),
+            addrs: vec![pinned.addr()],
+        }],
+        source: "issue-1903-test".to_string(),
+    };
+    crate::cluster::with_root_policy(
+        &root,
+        policy,
+        pooled_query(
+            pinned.addr(),
+            &root,
+            &file,
+            "textDocument/documentSymbol",
+            serde_json::json!({}),
+        ),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(pinned.calls(), 2);
+    assert_eq!(remembered.calls(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn established_session_retries_on_mid_session_redirect() {
     let ws = prod_code_testkit::Workspace::new(&[("src/lib.rs", "pub fn a() {}\n")]);
     let gateway2 = prod_code_testkit::ScriptedGateway::start(|_, _| serde_json::json!([])).await;

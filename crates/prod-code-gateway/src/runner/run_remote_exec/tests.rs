@@ -28,10 +28,13 @@ impl Run {
         }
     }
 
+    /// What the command itself wrote. The gateway's own notes, such as the low-disk warning on
+    /// a nearly full runner, are not the command's output (#1928).
     fn output(&self, stderr: bool) -> String {
         let bytes: Vec<u8> = self
             .messages
             .iter()
+            .filter(|m| !is_gateway_note(m))
             .filter_map(|m| match m {
                 WireMessage::RemoteExecStream(RemoteExecStream::Chunk(c)) if c.stderr == stderr => {
                     c.data.clone()
@@ -42,6 +45,22 @@ impl Run {
             .collect();
         String::from_utf8(bytes).unwrap()
     }
+
+    /// The frames the request produced besides the gateway's notes.
+    fn frames(&self) -> usize {
+        self.messages.iter().filter(|m| !is_gateway_note(m)).count()
+    }
+}
+
+/// The low-disk warning the gateway adds before the command's output
+/// (`[prod-code exec] WARNING: …`). Its other `[prod-code exec]` lines are part of the answer.
+fn is_gateway_note(message: &WireMessage) -> bool {
+    matches!(
+        message,
+        WireMessage::RemoteExecStream(RemoteExecStream::Chunk(c))
+            if c.stderr
+                && c.data.as_deref().is_some_and(|d| d.starts_with(b"[prod-code exec] WARNING"))
+    )
 }
 
 fn request(command: &str, args: &[&str]) -> RemoteExecRequest {
@@ -136,7 +155,7 @@ async fn a_request_that_cannot_run_is_refused_with_its_reason() {
         assert_eq!(result.exit_code, None, "{name}");
         assert!(!result.timed_out, "{name}");
         assert_eq!(result.duration_ms, 0, "{name}");
-        assert_eq!(run.messages.len(), 1, "{name}: nothing else is sent");
+        assert_eq!(run.frames(), 1, "{name}: nothing else is sent");
     }
     // An unusable subdirectory falls back to the workspace root rather than escaping it.
     let run = run(

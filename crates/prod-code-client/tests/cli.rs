@@ -3219,19 +3219,37 @@ async fn cli_takes_a_file_to_tell_same_named_symbols_apart() {
 #[tokio::test]
 async fn cli_outline_of_a_file_no_server_serves_is_an_error() {
     let ws = make_workspace();
-    ws.write("scripts/build.sh", "#!/bin/sh\necho hi\n");
+    ws.write("scripts/build.zig", "pub fn main() void {}\n");
     let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
 
-    let out = run_cli(&ws, gw.addr, &["outline", "scripts/build.sh"]).await;
+    let out = run_cli(&ws, gw.addr, &["outline", "scripts/build.zig"]).await;
     assert!(!out.status.success(), "{}", stdout_of(&out));
     let stderr = stderr_of(&out);
-    // Since #1067 the node is refused before the query: it lists no shell server.
+    // Since #1067 the node is refused before the query: it lists no zig server.
     assert!(
-        stderr.contains("no reachable gateway serves shell")
-            && stderr.contains("add a node with the shell language server installed"),
+        stderr.contains("no reachable gateway serves zig")
+            && stderr.contains("add a node with the zig language server installed"),
         "{stderr}"
     );
     assert!(!stdout_of(&out).contains("null"), "{}", stdout_of(&out));
+}
+
+/// A shell script's outline is read from the file, so a cluster with no shell language server
+/// still answers it (#1851).
+#[tokio::test]
+async fn cli_outline_of_a_shell_script_needs_no_shell_server() {
+    let ws = make_workspace();
+    ws.write(
+        "scripts/build.sh",
+        "#!/bin/sh\nbuild() {\n  echo hi\n}\nfunction deploy {\n  :\n}\n",
+    );
+    let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+
+    let out = run_cli(&ws, gw.addr, &["outline", "scripts/build.sh"]).await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let text = stdout_of(&out);
+    assert!(text.contains("[Function] build (line 2)"), "{text}");
+    assert!(text.contains("[Function] deploy (line 5)"), "{text}");
 }
 
 /// The command line takes the outline's filters and budget (#368).
