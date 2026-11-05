@@ -14,7 +14,6 @@
 use prod_code_mcp::tools::{execute_tool, resolve_symbol};
 use prod_code_testkit::{ScriptedGateway, Workspace, answers};
 use serde_json::{Value, json};
-use std::path::PathBuf;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -31,36 +30,38 @@ fn workspace(source: &str) -> Workspace {
     ])
 }
 
-// Use a dependency already required by this checkout, without fetching another crate.
+/// The text of a dependency's source file as the node serves it. It is written here, not read
+/// from the machine's crate cache: the cache is `$CARGO_HOME/registry/src` for Cargo and
+/// somewhere else for Mitts, and what the test needs is only a file with a documented item.
 fn registry_source() -> String {
-    let lock = include_str!("../../../Cargo.lock");
-    let version = lock
-        .split("[[package]]")
-        .find_map(|package| {
-            package.contains("name = \"tokio\"\n").then(|| {
-                package
-                    .lines()
-                    .find_map(|line| {
-                        line.strip_prefix("version = \"")
-                            .and_then(|v| v.strip_suffix('"'))
-                    })
-                    .unwrap()
-            })
-        })
-        .unwrap();
-    let cargo_home = std::env::var_os("CARGO_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap()).join(".cargo"));
-    std::fs::read_dir(cargo_home.join("registry/src"))
-        .unwrap()
-        .find_map(|entry| {
-            let path = entry
-                .ok()?
-                .path()
-                .join(format!("tokio-{version}/src/task/yield_now.rs"));
-            std::fs::read_to_string(path).ok()
-        })
-        .expect("locked tokio source must be available after compiling this test")
+    concat!(
+        "use core::future::Future;\n",
+        "use core::pin::Pin;\n",
+        "use core::task::{Context, Poll};\n",
+        "\n",
+        "/// Yields execution back to the runtime.\n",
+        "pub async fn yield_now() {\n",
+        "    struct YieldNow {\n",
+        "        yielded: bool,\n",
+        "    }\n",
+        "\n",
+        "    impl Future for YieldNow {\n",
+        "        type Output = ();\n",
+        "\n",
+        "        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {\n",
+        "            if self.yielded {\n",
+        "                return Poll::Ready(());\n",
+        "            }\n",
+        "            self.yielded = true;\n",
+        "            cx.waker().wake_by_ref();\n",
+        "            Poll::Pending\n",
+        "        }\n",
+        "    }\n",
+        "\n",
+        "    YieldNow { yielded: false }.await;\n",
+        "}\n",
+    )
+    .to_string()
 }
 
 #[tokio::test]

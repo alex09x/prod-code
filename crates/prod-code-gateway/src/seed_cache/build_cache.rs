@@ -200,6 +200,14 @@ pub fn disk_space(path: &std::path::Path) -> Option<DiskSpace> {
 /// `compile_commands.json` pointed clangd at the other copy's sources (#416). The caches that are
 /// safe to move are seeded on purpose: `seed_build_cache` and `seed_dependency_trees`.
 pub fn copy_tree(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<usize> {
+    copy_tree_with_root(src, src, dst)
+}
+
+fn copy_tree_with_root(
+    workspace_root: &std::path::Path,
+    src: &std::path::Path,
+    dst: &std::path::Path,
+) -> std::io::Result<usize> {
     let mut copied = 0;
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -210,15 +218,19 @@ pub fn copy_tree(src: &std::path::Path, dst: &std::path::Path) -> std::io::Resul
         }
         let from = entry.path();
         let to = dst.join(&name);
-        if entry.file_type()?.is_symlink() && from.is_dir() {
-            // A directory symlink stays one: walking it copied its target a second time, or
-            // without end when it points at a parent (#414).
-            std::os::unix::fs::symlink(std::fs::read_link(&from)?, &to)?;
+        if entry.file_type()?.is_symlink() {
+            // Keep tracked links as links, including links whose generated target is not present
+            // yet (#1889). Only copy links whose target stays in the seed tree.
+            let target = std::fs::read_link(&from)?;
+            if symlink_target_stays_in_tree(workspace_root, &from, &target) {
+                std::os::unix::fs::symlink(target, &to)?;
+                copied += 1;
+            }
         } else if from.is_dir() {
             // A virtual environment is copied whole, its symlinks kept, by
             // `seed_dependency_trees`.
             if !is_virtualenv(&from) {
-                copied += copy_tree(&from, &to)?;
+                copied += copy_tree_with_root(workspace_root, &from, &to)?;
             }
         } else if from.is_file() {
             std::fs::copy(&from, &to)?;
@@ -226,6 +238,70 @@ pub fn copy_tree(src: &std::path::Path, dst: &std::path::Path) -> std::io::Resul
         }
     }
     Ok(copied)
+}
+
+fn symlink_target_stays_in_tree(
+    root: &std::path::Path,
+    link: &std::path::Path,
+    target: &std::path::Path,
+) -> bool {
+    use std::path::Component;
+
+    if target.is_absolute() {
+        return false;
+    }
+    let Ok(root) = std::fs::canonicalize(root) else {
+        return false;
+    };
+    let Some(parent) = link
+        .parent()
+        .and_then(|parent| std::fs::canonicalize(parent).ok())
+        .and_then(|parent| {
+            parent
+                .strip_prefix(&root)
+                .ok()
+                .map(std::path::Path::to_path_buf)
+        })
+    else {
+        return false;
+    };
+    let mut components: Vec<std::ffi::OsString> = parent
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(name) => Some(name.to_os_string()),
+            _ => None,
+        })
+        .collect();
+    for component in target.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(name) => components.push(name.to_os_string()),
+            Component::ParentDir => {
+                if components.pop().is_none() {
+                    return false;
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => return false,
+        }
+    }
+    let mut resolved = root.clone();
+    for component in components {
+        resolved.push(component);
+        match std::fs::symlink_metadata(&resolved) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                let Ok(canonical) = std::fs::canonicalize(&resolved) else {
+                    return false;
+                };
+                if !canonical.starts_with(&root) {
+                    return false;
+                }
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(_) => return false,
+        }
+    }
+    true
 }
 
 /// Build products, dependency trees and virtual environments: per-node caches, not sources. They
@@ -257,6 +333,7 @@ pub fn is_node_cache(name: &str) -> bool {
             | ".gradle"
     ) || name == workspace::LAST_USED_MARKER
         || name == workspace::STALE_MARKER
+        || name == workspace::EXEC_CREATED_MARKER
 }
 
 pub fn walk_files(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, PathBuf)>) {

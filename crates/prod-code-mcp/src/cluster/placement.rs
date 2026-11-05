@@ -29,6 +29,46 @@ pub(crate) fn placement_path() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".local/share/prod_code/placement.json"))
 }
 
+/// Where the node a checkout last used is remembered. The entry point of a process makes the
+/// user's store and hands it down; a test makes one over a temporary file, so that what it
+/// remembers is seen by nothing else.
+#[derive(Debug, Clone, Default)]
+pub struct PlacementStore {
+    path: Option<PathBuf>,
+}
+
+impl PlacementStore {
+    /// The user's own store, under `$HOME`; remembers nothing when there is no home.
+    pub fn user() -> Self {
+        Self {
+            path: placement_path(),
+        }
+    }
+
+    /// A store over the file at `path`.
+    pub fn at(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: Some(path.into()),
+        }
+    }
+
+    pub fn remember(&self, workspace_name: &str, node: SocketAddr) {
+        remember_placement_at(self.path.as_deref(), workspace_name, node);
+    }
+
+    pub fn forget(&self, workspace_name: &str) {
+        forget_placement_at(self.path.as_deref(), workspace_name);
+    }
+
+    pub fn remembered(&self, workspace_name: &str) -> Option<SocketAddr> {
+        let _guard = placement_lock().lock().unwrap_or_else(|e| e.into_inner());
+        load_placement_unlocked(self.path.as_deref()?)
+            .workspaces
+            .get(workspace_name)
+            .copied()
+    }
+}
+
 static PLACEMENT_FILE_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
 static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 

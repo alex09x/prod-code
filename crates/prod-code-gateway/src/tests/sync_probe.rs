@@ -17,6 +17,7 @@ async fn test_delta_sync_reports_fresh_until_probed() {
     let manager = WorkspaceManager::new();
     let delta = || SyncRequest {
         client_workspace_root: "/tmp/ws".to_string(),
+        symlinks: None,
         files: vec![FileDelta {
             relative_path: "src/lib.rs".to_string(),
             content: Some(b"fn a() {}".to_vec()),
@@ -55,6 +56,67 @@ async fn test_delta_sync_reports_fresh_until_probed() {
 }
 
 #[tokio::test]
+async fn manifest_probe_keeps_exec_artifacts_and_removes_client_files() {
+    let storage = tempfile::tempdir().unwrap();
+    let manager = WorkspaceManager::new();
+    let client_file = b"client content";
+    let stamp = || FileStamp {
+        relative_path: "src/client.txt".to_string(),
+        size: client_file.len() as u64,
+        hash: content_hash(client_file),
+        is_executable: None,
+    };
+    let request = |files| SyncProbeRequest {
+        client_workspace_root: "/tmp/manifest-ownership".to_string(),
+        base_workspace_name: Some("manifest-ownership".to_string()),
+        seed_from: None,
+        files,
+    };
+    let first = apply_sync_probe(storage.path(), &manager, request(vec![stamp()])).await;
+    assert_eq!(first.missing, ["src/client.txt"]);
+
+    apply_sync(
+        storage.path(),
+        &manager,
+        SyncRequest {
+            client_workspace_root: "/tmp/manifest-ownership".to_string(),
+            base_workspace_name: Some("manifest-ownership".to_string()),
+            symlinks: None,
+            clean_others: false,
+            files: vec![FileDelta {
+                relative_path: "src/client.txt".to_string(),
+                content: Some(client_file.to_vec()),
+                is_executable: false,
+            }],
+        },
+    )
+    .await;
+
+    let root = workspace::server_workspace_path(
+        storage.path(),
+        "/tmp/manifest-ownership",
+        Some("manifest-ownership"),
+    );
+    let before_exec = crate::runner::snapshot::snapshot_tree(&root);
+    let _active_exec = crate::workspace::register_active_exec(
+        &root,
+        std::time::Instant::now(),
+        std::sync::Arc::new(before_exec.stamps),
+    );
+    std::fs::create_dir_all(root.join(".mitts")).unwrap();
+    std::fs::write(root.join(".mitts/generated.tar"), b"exec artifact").unwrap();
+
+    let second = apply_sync_probe(storage.path(), &manager, request(vec![stamp()])).await;
+    assert!(second.missing.is_empty());
+    assert!(root.join(".mitts/generated.tar").exists());
+
+    let removed = apply_sync_probe(storage.path(), &manager, request(Vec::new())).await;
+    assert_eq!(removed.files_deleted, 1);
+    assert!(!root.join("src/client.txt").exists());
+    assert!(root.join(".mitts/generated.tar").exists());
+}
+
+#[tokio::test]
 async fn test_sync_probe_seeds_and_reconciles() {
     let storage = tempfile::tempdir().unwrap();
     let origin = storage.path().join("repo");
@@ -63,6 +125,25 @@ async fn test_sync_probe_seeds_and_reconciles() {
     std::fs::write(origin.join("src/lib.rs"), "pub fn a() {}").unwrap();
     std::fs::write(origin.join("src/only_in_origin.rs"), "pub fn gone() {}").unwrap();
     let manager = WorkspaceManager::new();
+    crate::sync::apply_sync(
+        storage.path(),
+        &manager,
+        SyncRequest {
+            client_workspace_root: "/tmp/repo".to_string(),
+            base_workspace_name: Some("repo".to_string()),
+            symlinks: None,
+            files: ["Cargo.toml", "src/lib.rs", "src/only_in_origin.rs"]
+                .into_iter()
+                .map(|relative_path| FileDelta {
+                    relative_path: relative_path.to_string(),
+                    content: Some(std::fs::read(origin.join(relative_path)).unwrap()),
+                    is_executable: false,
+                })
+                .collect(),
+            clean_others: false,
+        },
+    )
+    .await;
 
     let req = SyncProbeRequest {
         client_workspace_root: "/tmp/wt".to_string(),

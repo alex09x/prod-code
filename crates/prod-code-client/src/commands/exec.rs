@@ -304,7 +304,11 @@ pub async fn run_exec(
     if let Some(err) = &exit.error {
         anyhow::bail!("remote exec failed: {err}");
     }
-    prod_code_mcp::exec::remember_exec_node(&root, remote);
+    prod_code_mcp::exec::remember_exec_node(
+        &prod_code_mcp::cluster::PlacementStore::user(),
+        &root,
+        remote,
+    );
     if !outcome.pulled_files.is_empty() {
         eprintln!(
             "[prod-code exec] {} file(s) changed by the command written back: {}",

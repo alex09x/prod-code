@@ -176,7 +176,7 @@ pub async fn move_item(
             (source_new, target_new, raw_item, Vec::new())
         } else {
             let (source_new, item) = cut(&source_text, start, decl_end);
-            let (target_with_imports, item, carried) = if child {
+            let (target_with_imports, item, mut carried) = if child {
                 let inherit_parent = requires_parent_scope(
                     &source_new,
                     &item,
@@ -214,6 +214,20 @@ pub async fn move_item(
             } else {
                 let (text, carried) = carry_imports(&source_text, &item, &target_text);
                 (text, item, carried)
+            };
+            let has_external_reference = refs.iter().any(|(path, reference_line, _)| {
+                path != file || *reference_line < start || *reference_line > decl_end
+            });
+            let item = if has_external_reference {
+                let widened = super::visibility::widen_private_function(&item, &name, edition)?;
+                if widened != item {
+                    carried.push(format!(
+                        "`{name}` is now `pub(crate)`: other modules still use it"
+                    ));
+                }
+                widened
+            } else {
+                item
             };
             let target_new = if target_with_imports.trim().is_empty() {
                 let ending = source_text
@@ -261,6 +275,23 @@ pub async fn move_item(
         .into_iter()
         .map(|note| format!("{}: {note}", display(root, target)))
         .collect();
+    // A private function or type moved to a sibling module stays private there, while another
+    // module still names it; `pub(crate)` is the narrowest visibility that reaches a sibling
+    // (#1933). A move into a child keeps its own rules, and a method its `impl`'s.
+    if enclosing_impl.is_none()
+        && !extracted_inline_mod
+        && !child
+        && by_file.keys().any(|path| path != target)
+        && let Some(widened) = super::visibility::with_crate_visibility(&item, edition)
+        && let Some(text) = rewritten.get_mut(target)
+        && text.contains(&item)
+    {
+        *text = text.replacen(&item, &widened, 1);
+        imports.push(format!(
+            "{}: `{name}` is now `pub(crate)`: other modules still use it",
+            display(root, target)
+        ));
+    }
     let left_alone = Vec::new();
     let mut unmatched = Vec::new();
     let mut callers: Vec<PathBuf> = Vec::new();

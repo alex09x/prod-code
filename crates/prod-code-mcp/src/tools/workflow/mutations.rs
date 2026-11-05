@@ -27,6 +27,7 @@ struct ApplyArgs {
 }
 
 pub(super) async fn invoke(
+    placement: &crate::cluster::PlacementStore,
     remote: SocketAddr,
     root: &Path,
     tool: &str,
@@ -38,7 +39,7 @@ pub(super) async fn invoke(
             Ok(serde_json::to_value(edits::preview(root, &request.edits)?)?)
         }
         "apply" => apply(root, args).await,
-        "verify" => verify(remote, root, args).await,
+        "verify" => verify(placement, remote, root, args).await,
         _ => bail!("unsupported mutation operation"),
     }
 }
@@ -92,11 +93,20 @@ async fn apply(root: &Path, args: Value) -> Result<Value> {
     )
 }
 
-async fn verify(remote: SocketAddr, root: &Path, args: Value) -> Result<Value> {
+async fn verify(
+    placement: &crate::cluster::PlacementStore,
+    remote: SocketAddr,
+    root: &Path,
+    args: Value,
+) -> Result<Value> {
     let (tool, args) = super::verification::request(root, args)
         .map_err(|error| super::operation_failure::before("verify", error))?;
-    let result = crate::verify::plan::scoped::with_narrow_scope(super::super::execute_tool(
-        remote, root, tool, args,
+    let result = crate::verify::plan::scoped::with_narrow_scope(super::super::execute_tool_with(
+        placement.clone(),
+        remote,
+        root,
+        tool,
+        args,
     ))
     .await
     .context("verification request failed")

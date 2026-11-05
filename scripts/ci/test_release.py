@@ -18,7 +18,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from plan import release_input, run_tests, test_matrix
+from plan import release_input, require_integration_targets, run_tests, test_matrix
 from publish import EXPECTED, collect
 
 
@@ -75,6 +75,9 @@ class ReleaseBoundaries(unittest.TestCase):
         with patch("plan.subprocess.run", side_effect=results) as run:
             self.assertEqual(run_tests(self.root, row), ["first"])
         self.assertEqual(run.call_count, 2)
+        self.assertEqual(
+            run.call_args_list[0].args[0][:4], ["mitts", "test", "--locked", "-p"]
+        )
         self.assertEqual(run.call_args_list[1].args[0][-2:], ["--test", "second"])
 
     def test_only_heavy_live_gateway_fixtures_are_serialized(self):
@@ -88,10 +91,23 @@ class ReleaseBoundaries(unittest.TestCase):
         ) as run:
             self.assertEqual(run_tests(self.root, row), [])
         self.assertEqual(
-            run.call_args_list[0].args[0][-4:],
-            ["--test", "live", "--", "--test-threads=1"],
+            run.call_args_list[0].args[0][-3:],
+            ["--concurrency=1", "--test", "live"],
         )
-        self.assertEqual(run.call_args_list[1].args[0][-2:], ["--test", "wire"])
+        self.assertEqual(
+            run.call_args_list[1].args[0][-3:], ["--concurrency", "--test", "wire"]
+        )
+
+    def test_every_shard_runs_its_tests_in_one_pool_as_wide_as_the_runner(self):
+        row = {"package": "demo", "kind": "lib", "targets": ["demo"]}
+        with patch(
+            "plan.subprocess.run", return_value=subprocess.CompletedProcess([], 0)
+        ) as run:
+            self.assertEqual(run_tests(self.root, row), [])
+        self.assertEqual(
+            run.call_args_list[0].args[0],
+            ["mitts", "test", "--locked", "-p", "demo", "--concurrency", "--lib"],
+        )
 
     def native_build(self, banner="prod-code-server 1.2.3", version_exit=0):
         work = Path(tempfile.mkdtemp(dir=self.root))
@@ -101,7 +117,15 @@ class ReleaseBoundaries(unittest.TestCase):
         commands.mkdir()
         runner.mkdir()
         stubs = {
-            "cargo": "#!/bin/sh\nexit 0\n",
+            "mitts": (
+                "#!/bin/sh\n"
+                '[ "$MITTS_JOBS" = 2 ] || exit 1\n'
+                'case "$*" in\n'
+                "  'build --native --release --locked -p prod-code-client --bins'|"
+                "'build --native --release --locked -p prod-code-gateway --bins') exit 0 ;;\n"
+                "  *) exit 1 ;;\n"
+                "esac\n"
+            ),
             "rustc": "#!/bin/sh\nprintf 'host: aarch64-unknown-linux-gnu\\n'\n",
             "uname": "#!/bin/sh\nprintf 'Linux\\n'\n",
             "file": "#!/bin/sh\nexit 0\n",
@@ -238,6 +262,12 @@ class ReleaseBoundaries(unittest.TestCase):
         extra.linkname = "/tmp/escape"
         with self.assertRaisesRegex(ValueError, "unsafe"):
             collect(self.fixture_archive(extra), self.root / "release")
+
+    def test_matrix_rejects_missing_integration_targets(self):
+        with self.assertRaisesRegex(SystemExit, "omitted integration test targets"):
+            require_integration_targets({"include": [{"kind": "lib"}]})
+        matrix = {"include": [{"kind": "test"}]}
+        self.assertIs(require_integration_targets(matrix), matrix)
 
     def test_test_matrix_covers_every_target_once_and_bounds_linked_binaries(self):
         targets = [{"name": "demo", "kind": ["lib"]}]

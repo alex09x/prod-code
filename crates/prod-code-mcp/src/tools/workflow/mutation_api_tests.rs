@@ -37,7 +37,9 @@ async fn stale_preview_is_a_structured_zero_write_refusal() {
     let root = temp.path();
     std::fs::write(root.join("sample.rs"), "old\n").unwrap();
     let remote = "127.0.0.1:1".parse().unwrap();
+    let placement = crate::cluster::PlacementStore::default();
     let preview = mutations::invoke(
+        &placement,
         remote,
         root,
         "preview",
@@ -46,9 +48,15 @@ async fn stale_preview_is_a_structured_zero_write_refusal() {
     .await
     .unwrap();
     std::fs::write(root.join("sample.rs"), "old\n// external change\n").unwrap();
-    let error = mutations::invoke(remote, root, "apply", json!({"files":preview["files"]}))
-        .await
-        .unwrap_err();
+    let error = mutations::invoke(
+        &placement,
+        remote,
+        root,
+        "apply",
+        json!({"files":preview["files"]}),
+    )
+    .await
+    .unwrap_err();
     let failure = error
         .downcast_ref::<operation_failure::OperationFailure>()
         .unwrap();
@@ -67,6 +75,7 @@ async fn cancelled_lock_wait_does_not_leave_a_pending_write() {
     std::fs::write(root.join("sample.rs"), "old\n").unwrap();
     let remote = "127.0.0.1:1".parse().unwrap();
     let preview = mutations::invoke(
+        &crate::cluster::PlacementStore::default(),
         remote,
         root,
         "preview",
@@ -104,7 +113,9 @@ async fn replacement_preserves_existing_executable_permission_bits() {
     std::fs::write(&path, "#!/usr/bin/env python3\nprint(1)\n").unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     let remote = "127.0.0.1:1".parse().unwrap();
+    let placement = crate::cluster::PlacementStore::default();
     let preview = mutations::invoke(
+        &placement,
         remote,
         temp.path(),
         "preview",
@@ -113,6 +124,7 @@ async fn replacement_preserves_existing_executable_permission_bits() {
     .await
     .unwrap();
     mutations::invoke(
+        &placement,
         remote,
         temp.path(),
         "apply",

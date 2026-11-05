@@ -18,13 +18,52 @@ use crate::protocol::{
 };
 use crate::server::call::run_tool_call;
 use crate::server::failover::rediscover_node;
-use crate::tools::list_tools;
 
 /// Server-safe default timeout for MCP tool call execution when `timeout_secs` is omitted.
 pub const MCP_TOOL_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(150);
 
 /// Upper ceiling for MCP tool call execution to prevent unbounded resource hold (24 hours).
 pub const MAX_TOOL_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+pub(crate) fn list_tool_values() -> anyhow::Result<Vec<serde_json::Value>> {
+    const READ_ONLY_NAVIGATION: &[&str] = &[
+        "code_callers",
+        "code_callees",
+        "code_implementations",
+        "code_supertypes",
+        "code_definition",
+        "code_references",
+        "code_source",
+        "code_outline",
+        "code_symbols",
+        "code_hover",
+        "code_type_at",
+        "code_search",
+        "code_grep",
+        "code_slice",
+    ];
+    crate::tools::list_tools()
+        .into_iter()
+        .map(|tool| {
+            let name = tool.name.clone();
+            let mut value = serde_json::to_value(tool)?;
+            if READ_ONLY_NAVIGATION.contains(&name.as_str())
+                && let Some(object) = value.as_object_mut()
+            {
+                object.insert(
+                    "annotations".to_string(),
+                    serde_json::json!({
+                        "readOnlyHint": true,
+                        "destructiveHint": false,
+                        "idempotentHint": true,
+                        "openWorldHint": false
+                    }),
+                );
+            }
+            Ok(value)
+        })
+        .collect()
+}
 
 /// Resolve effective tool call execution timeout from arguments.
 /// When caller provides `timeout_secs` (> 0), that timeout governs execution with a small margin,
@@ -171,7 +210,7 @@ where
         }
 
         "tools/list" => {
-            let tools = list_tools();
+            let tools = list_tool_values()?;
             let resp = JsonRpcResponse::success(
                 id,
                 serde_json::json!({

@@ -256,6 +256,29 @@ async fn push_sync_round(
     let node = gateway_node(framed);
     let mut plan = prepare_workspace_sync_for(root, &node, subpath)?;
     let root_str = root.to_string_lossy().to_string();
+    let mut symlinks = subpath
+        .is_none()
+        .then(|| super::git_symlink::tracked_symlink_manifest(root));
+    let requires_symlink_support = symlinks.as_ref().is_some_and(|links| !links.is_empty());
+    if let Some(links) = &symlinks {
+        plan.files
+            .retain(|file| !super::git_symlink::is_alias_path(&file.relative_path, links));
+        plan.state
+            .files
+            .retain(|path, _| !super::git_symlink::is_alias_path(path, links));
+        plan.state
+            .resend
+            .retain(|path| !super::git_symlink::is_alias_path(path, links));
+        plan.state
+            .include_paths
+            .retain(|path| !super::git_symlink::is_alias_path(path, links));
+    }
+    let symlink_paths: HashSet<String> = symlinks
+        .as_ref()
+        .into_iter()
+        .flatten()
+        .map(|link| link.relative_path.clone())
+        .collect();
     let mut outcome = SyncOutcome {
         planned: plan.files.len(),
         omitted: std::mem::take(&mut plan.omitted),
@@ -308,6 +331,12 @@ async fn push_sync_round(
         let existing: HashSet<String> =
             plan.files.iter().map(|f| f.relative_path.clone()).collect();
         for missing_rel in &keep {
+            if symlinks
+                .as_ref()
+                .is_some_and(|links| super::git_symlink::is_alias_path(missing_rel, links))
+            {
+                continue;
+            }
             if !existing.contains(missing_rel) {
                 let full = canonical_root.join(missing_rel);
                 if let Ok(Some((content, is_exec, meta))) =
@@ -336,18 +365,22 @@ async fn push_sync_round(
     // An empty delta is still sent on later rounds: the gateway's answer tells whether its
     // copy of the workspace still exists, so a pruned or never-seen node is caught here
     // instead of failing the query or command that follows.
-    if !plan.files.is_empty() || !plan.initial || !allow_probe {
+    // A first sync with nothing to upload and no tracked symlink has nothing to tell the gateway;
+    // an empty manifest still goes out on later rounds, where it removes links that are gone.
+    if !plan.files.is_empty() || !plan.initial || !allow_probe || requires_symlink_support {
         let files = std::mem::take(&mut plan.files);
         outcome.changed_paths = files.iter().map(|f| f.relative_path.clone()).collect();
-        for (i, files) in sync_batches(files, SYNC_BATCH_BYTES)
-            .into_iter()
-            .enumerate()
-        {
+        let mut batches = sync_batches(files, SYNC_BATCH_BYTES);
+        if batches.is_empty() && symlinks.is_some() && (requires_symlink_support || !plan.initial) {
+            batches.push(Vec::new());
+        }
+        for (i, files) in batches.into_iter().enumerate() {
             on_phase("uploading workspace sync batch");
             framed
                 .send(WireMessage::SyncRequest(SyncRequest {
                     client_workspace_root: root_str.clone(),
                     files,
+                    symlinks: if i == 0 { symlinks.take() } else { None },
                     clean_others: false,
                     base_workspace_name: Some(identity.name.clone()),
                 }))
@@ -359,6 +392,30 @@ async fn push_sync_round(
             })
             .await
             .context("workspace sync was not acknowledged")?;
+            let symlink_acknowledged = resp
+                .stale_paths
+                .iter()
+                .any(|path| path == prod_code_protocol::messages::sync::SYNC_SYMLINKS_ACK);
+            if i == 0 && requires_symlink_support && !symlink_acknowledged {
+                anyhow::bail!(
+                    "gateway does not support tracked symlink sync; upgrade the gateway before running commands in this workspace"
+                );
+            }
+            // A link the gateway will not create (an absolute target, or one leaving the tree) is
+            // left out, as such links always were; it must not stop every command in the
+            // workspace.
+            if i == 0 {
+                for path in resp
+                    .stale_paths
+                    .iter()
+                    .filter(|path| symlink_paths.contains(*path))
+                {
+                    tracing::warn!(
+                        symlink = %path,
+                        "gateway did not sync a tracked symlink; check its target and parent path"
+                    );
+                }
+            }
             if resp.workspace_was_fresh && !(i == 0 && uploading_full_manifest) {
                 // The server directory was reset behind our watermark (or between probe and
                 // upload): forget it and start over with a manifest probe on the same connection.
@@ -376,7 +433,12 @@ async fn push_sync_round(
             // Each answer carries the gateway's whole stale set, failed writes included: the last
             // one is current, and a file an earlier answer named that a later batch delivered is
             // not stale any more (#1475).
-            outcome.stale_paths = resp.stale_paths;
+            outcome.stale_paths = resp
+                .stale_paths
+                .into_iter()
+                .filter(|path| path != prod_code_protocol::messages::sync::SYNC_SYMLINKS_ACK)
+                .filter(|path| !symlink_paths.contains(path))
+                .collect();
         }
     }
 

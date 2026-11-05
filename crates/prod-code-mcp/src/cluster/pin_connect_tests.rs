@@ -136,11 +136,16 @@ async fn issue_1793_session_search_shadow_sync_and_exec_confirm_before_any_frame
 #[tokio::test]
 async fn issue_1793_artifact_pull_and_list_confirm_before_any_request() {
     let (said, frames) = against_old(|addr, root| async move {
-        crate::sync::pull_remote_files_from(addr, &root, &[PathBuf::from("target/out.bin")])
-            .await
-            .err()
-            .map(|e| format!("{e:#}"))
-            .unwrap_or_default()
+        crate::sync::pull_remote_files_from(
+            &crate::cluster::PlacementStore::default(),
+            addr,
+            &root,
+            &[PathBuf::from("target/out.bin")],
+        )
+        .await
+        .err()
+        .map(|e| format!("{e:#}"))
+        .unwrap_or_default()
     })
     .await;
     assert_refused_before_anything("pull", &said, &frames);

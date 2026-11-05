@@ -95,79 +95,7 @@ pub fn prune_empty_dirs(root: &std::path::Path, dir: &std::path::Path) -> bool {
 /// Compares the workspace directory with the client's manifest: deletes files the client does
 /// not have, and the directories that leaves empty, and returns `(missing, deleted)` where
 /// `missing` are manifest paths the server lacks or holds with different content.
-pub fn reconcile_manifest(
-    root: &std::path::Path,
-    stamps: &[FileStamp],
-) -> (Vec<String>, Vec<String>) {
-    let active_exec = workspace::active_exec_snapshot(root);
-    let synced_during_exec = active_exec
-        .as_ref()
-        .map(|(started, _)| workspace::synced_since(root, *started))
-        .unwrap_or_default();
-    let wanted: std::collections::HashMap<&str, &FileStamp> = stamps
-        .iter()
-        .map(|s| (s.relative_path.as_str(), s))
-        .collect();
-    let mut present = Vec::new();
-    walk_files(root, root, &mut present);
-    let mut missing = Vec::new();
-    let mut deleted = Vec::new();
-    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    for (rel, path) in &present {
-        match wanted.get(rel.as_str()) {
-            None => {
-                if active_exec
-                    .as_ref()
-                    .is_some_and(|(_, before)| !before.contains_key(rel.as_str()))
-                    && !synced_during_exec.contains_key(rel.as_str())
-                {
-                    continue;
-                }
-                if std::fs::remove_file(path).is_ok() {
-                    let _ = crate::sync::config_meta::forget_sync(root, path);
-                    deleted.push(rel.clone());
-                }
-            }
-            Some(stamp) => {
-                seen.insert(stamp.relative_path.as_str());
-                let same = std::fs::read(path).is_ok_and(|bytes| {
-                    let server_size = bytes.len() as u64;
-                    let server_hash = content_hash(&bytes);
-                    (server_size == stamp.size && server_hash == stamp.hash)
-                        || (active_exec.as_ref().is_some_and(|(_, before)| {
-                            before.get(rel.as_str()) == Some(&(stamp.size, stamp.hash))
-                        }) && !synced_during_exec.contains_key(rel.as_str()))
-                        || crate::sync::config_meta::matches(
-                            root,
-                            path,
-                            stamp.size,
-                            stamp.hash,
-                            server_size,
-                            server_hash,
-                        )
-                });
-                // Equal bytes with another executable bit are still a different file: without
-                // this, a script made executable after its first upload stays 0644 here (#1823).
-                // A stamp from an older client carries no bit and is judged by content alone.
-                let same_mode = stamp
-                    .is_executable
-                    .is_none_or(|wanted| crate::sync::file_write::is_executable(path) == wanted);
-                if !same || !same_mode {
-                    missing.push(rel.clone());
-                }
-            }
-        }
-    }
-    for stamp in stamps {
-        if !seen.contains(stamp.relative_path.as_str()) {
-            missing.push(stamp.relative_path.clone());
-        }
-    }
-    prune_empty_dirs(root, root);
-    missing.sort();
-    missing.dedup();
-    (missing, deleted)
-}
+pub use super::manifest::{reconcile_manifest, reconcile_manifest_with_ownership};
 
 /// A probe that takes this long is logged as a warning (#1155).
 const SLOW_PROBE: std::time::Duration = std::time::Duration::from_secs(20);
@@ -200,6 +128,12 @@ pub async fn apply_sync_probe(
             let incoming = req.files.clone();
             match tokio::task::spawn_blocking(move || {
                 let files = copy_tree(&from, &to)?;
+                let seed_manifest = super::manifest::load(&from);
+                if !seed_manifest.is_empty()
+                    && let Err(error) = super::manifest::save(&to, &seed_manifest)
+                {
+                    tracing::warn!(error = %error, "failed to copy client sync ownership from seed workspace");
+                }
                 if let Err(error) = crate::sync::config_meta::copy_workspace(&from, &to) {
                     tracing::warn!(error = %error, "failed to seed coordinated config metadata");
                 }
@@ -315,7 +249,15 @@ pub async fn apply_sync_probe(
         .collect();
     let manifest_len = stamps.len();
     let (mut missing, deleted) = tokio::task::spawn_blocking(move || {
-        let reconciled = reconcile_manifest(&root, &stamps);
+        let previously_managed = super::manifest::load(&root);
+        let reconciled = reconcile_manifest_with_ownership(&root, &stamps, &previously_managed);
+        let current_manifest = stamps
+            .iter()
+            .map(|stamp| stamp.relative_path.clone())
+            .collect();
+        if let Err(error) = super::manifest::save(&root, &current_manifest) {
+            tracing::warn!(error = %error, "failed to persist client sync manifest");
+        }
         workspace::forget_stale_paths(&root);
         reconciled
     })

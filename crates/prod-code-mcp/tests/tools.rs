@@ -1638,6 +1638,41 @@ async fn code_outline_outlines_a_directory_skipping_files_it_cannot_outline() {
 }
 
 #[tokio::test]
+async fn swift_callers_explains_when_the_server_has_no_call_hierarchy() {
+    let ws = Workspace::new(&[
+        ("Package.swift", "// swift-tools-version: 5.9\n"),
+        (
+            "Sources/App/TerminalController.swift",
+            "struct TerminalController {\n    func newWindow() {}\n}\n",
+        ),
+    ]);
+    let remote = scripted_gateway(Arc::new(|method, _| match method {
+        "textDocument/prepareCallHierarchy" => serde_json::Value::Null,
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_callers",
+        serde_json::json!({
+            "path": "Sources/App/TerminalController.swift",
+            "line": 2,
+            "character": 10
+        }),
+    )
+    .await
+    .expect("the Swift capability limitation should be actionable");
+    let text = text_of(&result);
+    assert!(
+        text.contains("Swift language server returned no call hierarchy"),
+        "{text}"
+    );
+    assert!(text.contains("code_references"), "{text}");
+    assert!(!text.starts_with("No function"), "{text}");
+}
+
+#[tokio::test]
 async fn code_hover_and_type_at_render_markdown_or_say_there_is_none() {
     let ws = workspace();
     write(&ws, "src/lib.rs", "pub fn a() {}\n");
@@ -1715,6 +1750,52 @@ async fn a_symbol_argument_is_resolved_before_the_tool_runs() {
     .await
     .expect("the symbol resolves and the definition query runs");
     assert!(text_of(&result).contains(":9:1"), "{}", text_of(&result));
+}
+
+#[tokio::test]
+async fn stale_go_symbol_location_does_not_return_a_sibling_function() {
+    let ws = workspace();
+    let source = write(
+        &ws,
+        "src/lib.go",
+        "package sample\nfunc sibling() { target() }\nfunc target() {}\n",
+    );
+    commit(&ws);
+    let symbol_path = source.clone();
+    let def_path = source.clone();
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" => serde_json::json!([
+            answers::symbol("target", 12, &symbol_path, 2, 24)
+        ]),
+        "textDocument/definition" => {
+            let line = params
+                .pointer("/position/line")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(1);
+            if line == 1 {
+                answers::locations(&def_path, &[(2, 23)])
+            } else {
+                answers::locations(&def_path, &[(3, 6)])
+            }
+        }
+        "textDocument/documentSymbol" => serde_json::json!([
+            {"name":"sibling","kind":12,"range":{"start":{"line":1,"character":0},"end":{"line":1,"character":32}},"selectionRange":{"start":{"line":1,"character":5},"end":{"line":1,"character":12}}},
+            {"name":"target","kind":12,"range":{"start":{"line":2,"character":0},"end":{"line":2,"character":17}},"selectionRange":{"start":{"line":2,"character":5},"end":{"line":2,"character":11}}}
+        ]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({ "symbol": "target" }),
+    )
+    .await
+    .expect("the stale symbol location should be detected");
+    let output = text_of(&result);
+    assert!(output.contains("func target()"), "{output}");
+    assert!(!output.contains("func sibling()"), "{output}");
 }
 
 #[tokio::test]
@@ -2244,6 +2325,56 @@ async fn candidate_nested_project_fast_path_avoids_unrelated_projects_and_outlin
         1,
         "only the declaring file was outlined"
     );
+}
+
+#[tokio::test]
+async fn qualified_swift_symbol_uses_nested_engine_when_root_engine_is_unavailable() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"mixed\"\nversion = \"0.1.0\"\n",
+        ),
+        ("src/lib.rs", "pub fn root() {}\n"),
+        ("swift/Package.swift", "// swift-tools-version: 5.9\n"),
+        (
+            "swift/Sources/App/ExampleController.swift",
+            "public struct ExampleController {\n    public func newItem() {}\n}\n",
+        ),
+    ]);
+    let swift_path = ws.root().join("swift/Sources/App/ExampleController.swift");
+    let definition_path = swift_path.clone();
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "prod-code/handshake"
+            if params
+                .get("preferred_engine")
+                .and_then(serde_json::Value::as_str)
+                == Some("rust") =>
+        {
+            serde_json::json!({"refuse_handshake":"no reachable gateway serves rust"})
+        }
+        "workspace/symbol" => {
+            serde_json::json!([answers::symbol("ExampleController.newItem", 6, &swift_path, 2, 21)])
+        }
+        "textDocument/definition" => answers::locations(&definition_path, &[(2, 17)]),
+        "textDocument/documentSymbol" => serde_json::json!([
+            {"name":"ExampleController","kind":23,"range":{"start":{"line":0,"character":0},"end":{"line":2,"character":1}},"selectionRange":{"start":{"line":0,"character":14},"end":{"line":0,"character":32}},"children":[
+                {"name":"newItem","kind":6,"range":{"start":{"line":1,"character":4},"end":{"line":1,"character":28}},"selectionRange":{"start":{"line":1,"character":18},"end":{"line":1,"character":25}}}
+            ]}
+        ]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({ "symbol": "ExampleController.newItem" }),
+    )
+    .await
+    .expect("the Swift nested project should resolve without the root Rust backend");
+    let text = text_of(&result);
+    assert!(text.contains("ExampleController.swift"), "{text}");
+    assert!(text.contains("newItem"), "{text}");
 }
 
 /// Five functions per Go file, `<Stem>1` to `<Stem>5`, as a server outlines them.
@@ -6514,6 +6645,34 @@ async fn code_source_reads_local_workspace_file_directly() {
 }
 
 #[tokio::test]
+async fn code_source_explains_cross_repository_workspace_scope_on_external_read_failure() {
+    let ws = workspace();
+    let other = tempfile::tempdir().unwrap();
+    let path = other.path().join("src/lib.rs");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "pub fn source() {}\n").unwrap();
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+    let error = execute_tool(
+        remote,
+        &ws.root(),
+        "code_source",
+        serde_json::json!({ "path": path.to_string_lossy() }),
+    )
+    .await
+    .expect_err("a failed cross-repository read should explain its supported scope");
+    let text = format!("{error:#}");
+    assert!(text.contains("another local checkout"), "{text}");
+    assert!(
+        text.contains("session rooted in the target repository"),
+        "{text}"
+    );
+    assert!(
+        text.contains("cross-repository reads are not supported"),
+        "{text}"
+    );
+}
+
+#[tokio::test]
 async fn code_status_reports_health() {
     let ws = workspace();
     let remote = mock_gateway(Script::default()).await;
@@ -6710,6 +6869,137 @@ async fn move_module_reports_then_moves_the_file() {
     assert_eq!(ws.read("src/c/b.rs"), "pub fn f() {}\n");
     assert_eq!(ws.read("src/c.rs"), "pub mod b;\n\npub fn g() {}\n");
     assert_eq!(ws.read("src/a.rs"), "");
+}
+
+#[tokio::test]
+async fn python_move_keeps_module_header_before_inserted_import() {
+    let source = "#!/usr/bin/env python3\n# coding: utf-8\n\"\"\"Example module.\"\"\"\nfrom __future__ import annotations\ndef helper():\n    return 1\nvalue = helper()\n";
+    let ws = Workspace::new(&[("src/example.py", source), ("src/extracted.py", "")]);
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+    execute_tool(
+        remote,
+        &ws.root(),
+        "code_move",
+        serde_json::json!({
+            "path": "src/example.py",
+            "line": 5,
+            "character": 5,
+            "to": "src/extracted.py",
+            "apply": true,
+            "force": true
+        }),
+    )
+    .await
+    .expect("move should succeed");
+    let result = std::fs::read_to_string(ws.path("src/example.py")).unwrap();
+    assert!(result.starts_with("#!/usr/bin/env python3\n# coding: utf-8\n\"\"\"Example module.\"\"\"\nfrom __future__ import annotations\nfrom src.extracted import helper\n"), "{result}");
+    assert!(result.contains("value = helper()"), "{result}");
+    let parsed = std::process::Command::new("python3")
+        .args([
+            "-c",
+            "import ast, sys; ast.parse(open(sys.argv[1], encoding='utf-8').read())",
+        ])
+        .arg(ws.path("src/example.py"))
+        .output()
+        .expect("python3 should be available for the Python move test");
+    assert!(
+        parsed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&parsed.stderr)
+    );
+}
+
+#[tokio::test]
+async fn python_move_refuses_uncarried_module_level_dependencies() {
+    let ws = Workspace::new(&[
+        (
+            "src/example.py",
+            "LIMIT = 10\ndef helper(x):\n    return x + 1\ndef entry(x):\n    return helper(x) + LIMIT\n",
+        ),
+        ("src/extracted.py", ""),
+    ]);
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+    let error = execute_tool(
+        remote,
+        &ws.root(),
+        "code_move",
+        serde_json::json!({
+            "path": "src/example.py",
+            "line": 5,
+            "character": 5,
+            "to": "src/extracted.py",
+            "apply": false
+        }),
+    )
+    .await
+    .expect_err("the unsupported dependency boundary should refuse an invalid move");
+    let text = format!("{error:#}");
+    assert!(
+        text.contains("module-level declarations not carried"),
+        "{text}"
+    );
+    assert!(text.contains("LIMIT"), "{text}");
+    assert!(text.contains("helper"), "{text}");
+    assert_eq!(
+        std::fs::read_to_string(ws.path("src/example.py")).unwrap(),
+        "LIMIT = 10\ndef helper(x):\n    return x + 1\ndef entry(x):\n    return helper(x) + LIMIT\n"
+    );
+}
+
+#[tokio::test]
+async fn moving_a_private_rust_function_to_a_sibling_module_widens_its_visibility() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"private_move_visibility\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        ),
+        ("src/lib.rs", "mod parent;\nmod sibling;\n"),
+        (
+            "src/parent.rs",
+            "fn caller() { helper(); }\nfn helper() {}\n",
+        ),
+        ("src/sibling.rs", ""),
+    ]);
+    let source = ws.path("src/parent.rs");
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "textDocument/documentSymbol" => {
+            let uri = params
+                .pointer("/textDocument/uri")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if uri.ends_with("parent.rs") {
+                serde_json::json!([
+                    answers::document_symbol("caller", 12, 1, 1, 26),
+                    answers::document_symbol("helper", 12, 2, 2, 15)
+                ])
+            } else {
+                serde_json::Value::Null
+            }
+        }
+        "textDocument/references" => answers::locations(&source, &[(1, 15)]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_move",
+        serde_json::json!({
+            "path": "src/parent.rs",
+            "line": 2,
+            "character": 4,
+            "to": "src/sibling.rs",
+            "apply": false
+        }),
+    )
+    .await
+    .expect("the move preview should be returned");
+    let text = text_of(&result);
+    assert!(text.contains("pub(crate) fn helper()"), "{text}");
+    assert!(text.contains("use crate::sibling::helper;"), "{text}");
+    assert!(!text.contains("E0432"), "{text}");
+    assert!(!text.contains("E0425"), "{text}");
 }
 
 const TRAIT_ONE: &str = "pub trait T {\n    fn f(&self, a: u8, b: u8) -> u8;\n}\n\npub struct S;\n\nimpl T for S {\n    fn f(&self, a: u8, _b: u8) -> u8 {\n        a\n    }\n}\n\npub fn g(s: &S) -> u8 {\n    s.f(1, 2)\n}\n";
@@ -8316,6 +8606,34 @@ async fn code_definition_positional_on_outline_definition_falls_back_when_lsp_re
     .await
     .expect("positional definition runs");
     assert_eq!(text_of(&after_token), "No definition found.");
+}
+
+#[tokio::test]
+async fn swift_definition_uses_a_labelled_local_outline_when_lsp_returns_empty() {
+    let ws = Workspace::new(&[
+        ("Package.swift", "// swift-tools-version: 5.9\n"),
+        (
+            "Sources/App/TerminalController.swift",
+            "struct TerminalController {\n    func newWindow() { print(\"ok\") }\n}\n",
+        ),
+    ]);
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({
+            "path": "Sources/App/TerminalController.swift",
+            "line": 2,
+            "character": 15
+        }),
+    )
+    .await
+    .expect("a local syntax-only Swift declaration should remain readable");
+    let text = text_of(&result);
+    assert!(text.contains("syntax-only local Swift outline"), "{text}");
+    assert!(text.contains("func newWindow()"), "{text}");
+    assert!(text.contains("print(\"ok\")"), "{text}");
 }
 
 #[tokio::test]

@@ -44,7 +44,7 @@ fn git(root: &Path, args: &[&str]) -> String {
 }
 
 fn run(root: &Path) -> String {
-    let result = Command::new("cargo")
+    let result = Command::new("mitts")
         .args(["run", "--offline", "--quiet"])
         .current_dir(root)
         .env("CARGO_TARGET_DIR", root.join("target"))
@@ -53,10 +53,10 @@ fn run(root: &Path) -> String {
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env_remove("PROD_CODE_GIT_COMMIT")
         .output()
-        .expect("fixture Cargo starts");
+        .expect("fixture Mitts starts");
     assert!(
         result.status.success(),
-        "fixture Cargo: {}",
+        "fixture Mitts: {}",
         String::from_utf8_lossy(&result.stderr)
     );
     String::from_utf8(result.stdout).unwrap().trim().to_owned()
@@ -85,6 +85,7 @@ mod production {
 }
 fn main() {
     use std::io::Write;
+    println!("cargo:rerun-if-env-changed=TEST_BUILD_COUNTER");
     let path = std::env::var_os("TEST_BUILD_COUNTER").unwrap();
     std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap().write_all(b"x").unwrap();
     production::run();

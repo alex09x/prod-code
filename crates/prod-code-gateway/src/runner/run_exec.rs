@@ -127,6 +127,16 @@ pub async fn run_exec_with_ram(
     } else {
         TreeSnapshot::default()
     });
+    // The files that are there before the command, so that those it creates are told apart: a
+    // manifest probe deletes what the client lacks, but not what a command made (#1895).
+    let paths_before: std::collections::BTreeSet<String> = if req.pull_changes {
+        before.stamps.keys().cloned().collect()
+    } else {
+        let root = workspace.clone();
+        tokio::task::spawn_blocking(move || workspace::present_paths(&root))
+            .await
+            .unwrap_or_default()
+    };
     let _active_exec = req.pull_changes.then(|| {
         workspace::register_active_exec(
             &workspace,
@@ -325,6 +335,13 @@ pub async fn run_exec_with_ram(
         if !files.is_empty() {
             refresh_engines(workspace_manager, &workspace, &files).await;
         }
+    }
+    {
+        let root = workspace.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            workspace::record_exec_created(&root, &paths_before)
+        })
+        .await;
     }
     crate::sync::artifact_target::record(&workspace, ram_target.as_deref(), &req.env);
     framed

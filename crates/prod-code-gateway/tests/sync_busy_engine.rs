@@ -66,6 +66,7 @@ async fn sync_and_probe_answer_while_a_query_holds_the_rust_engine() {
             &manager,
             SyncRequest {
                 client_workspace_root: client_root.clone(),
+                symlinks: None,
                 files: vec![FileDelta {
                     relative_path: "src/lib.rs".to_string(),
                     content: Some(SYNCED.as_bytes().to_vec()),

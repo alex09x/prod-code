@@ -137,26 +137,7 @@ pub(crate) fn py_from_module(line: &str) -> Option<&str> {
     line.trim().strip_prefix("from ")?.split_whitespace().next()
 }
 
-pub fn insert_or_merge_py_import(content: &str, sym: &str, mod_spec: &str) -> (String, bool) {
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if py_from_module(trimmed) == Some(mod_spec) && trimmed.contains(" import ") {
-            if is_symbol_used(line, sym) {
-                return (content.to_string(), false);
-            }
-            let new_line = format!("{line}, {sym}");
-            let replaced = content.replace(line, &new_line);
-            return (replaced, true);
-        }
-    }
-    let import_line = format!("from {mod_spec} import {sym}\n");
-    let insert_pos = top_import_insertion_pos(content);
-    let mut out = String::with_capacity(content.len() + import_line.len());
-    out.push_str(&content[..insert_pos]);
-    out.push_str(&import_line);
-    out.push_str(&content[insert_pos..]);
-    (out, true)
-}
+pub use super::python_header::insert_or_merge_py_import;
 
 pub(crate) fn remove_from_braced_ts_import(line: &str, sym: &str) -> (String, bool) {
     let Some(open) = line.find('{') else {
@@ -196,36 +177,7 @@ pub(crate) fn remove_from_braced_ts_import(line: &str, sym: &str) -> (String, bo
     (rejoined, true)
 }
 
-pub(crate) fn remove_from_py_from_import(line: &str, sym: &str) -> (String, bool) {
-    let Some(pos) = line.find(" import ") else {
-        return (line.to_string(), false);
-    };
-    let before = &line[..pos + 8];
-    let after = &line[pos + 8..];
-    let items: Vec<&str> = after
-        .split(',')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .collect();
-    let mut new_items = Vec::new();
-    let mut removed = false;
-    for item in items {
-        let first_word = item.split_whitespace().next().unwrap_or("");
-        if first_word == sym {
-            removed = true;
-        } else {
-            new_items.push(item);
-        }
-    }
-    if !removed {
-        return (line.to_string(), false);
-    }
-    if new_items.is_empty() {
-        return (String::new(), true);
-    }
-    let rejoined = format!("{before}{}", new_items.join(", "));
-    (rejoined, true)
-}
+pub(crate) use super::python_header::remove_from_py_from_import;
 
 pub fn carry_imports_polyglot(
     source_text: &str,

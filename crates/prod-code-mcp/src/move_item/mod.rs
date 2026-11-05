@@ -36,6 +36,7 @@ mod tests;
 #[cfg(test)]
 mod tests_report;
 mod types;
+mod visibility;
 
 pub(crate) use budget::document_symbols;
 pub use execute::move_item;

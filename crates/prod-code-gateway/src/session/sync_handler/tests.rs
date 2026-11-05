@@ -44,6 +44,7 @@ async fn session_sync_rejects_absolute_parent_and_symlink_paths() {
     handle_session_sync(
         SyncRequest {
             client_workspace_root: "/tmp/ws".to_string(),
+            symlinks: None,
             files: vec![
                 FileDelta {
                     relative_path: "../parent-escape.txt".to_string(),
@@ -138,6 +139,7 @@ async fn session_sync_writes_deletes_and_reports_what_it_could_not_write() {
     handle_session_sync(
         SyncRequest {
             client_workspace_root: "/tmp/ws".to_string(),
+            symlinks: None,
             files: vec![
                 delta("new/dir/created.txt", Some("fresh"), false),
                 delta("exists.txt", Some("newer text"), false),
@@ -218,6 +220,7 @@ async fn syncing_a_project_manifest_retires_the_session_after_its_response() {
     handle_session_sync(
         SyncRequest {
             client_workspace_root: "/tmp/ws".to_string(),
+            symlinks: None,
             files: vec![delta(
                 "Cargo.toml",
                 Some("[package]\nname = \"ws\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),

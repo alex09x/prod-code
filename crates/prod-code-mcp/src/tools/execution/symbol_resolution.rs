@@ -12,8 +12,9 @@ use anyhow::Result;
 use serde_json::Value;
 use std::path::Path;
 
+use crate::tools::dispatch_tool_with;
+
 use super::super::compile_gate::resolve_file_path;
-use super::super::dispatch_tool;
 use super::super::inspection_handlers::with_indexing_notes;
 use super::super::schemas::SYMBOL_ADDRESSABLE;
 use super::super::symbols::{
@@ -44,166 +45,194 @@ pub(super) fn is_multi_candidate_navigation_tool(tool_name: &str) -> bool {
     )
 }
 
-pub(super) async fn resolve_symbol_args(
+pub(super) fn resolve_symbol_args<'a>(
+    placement: &'a crate::cluster::PlacementStore,
     remote: std::net::SocketAddr,
-    workspace_root: &Path,
-    tool_name: &str,
+    workspace_root: &'a Path,
+    tool_name: &'a str,
     args: Value,
     reference_budget: Option<DefinitionBudget>,
-) -> Result<SymbolResolution> {
-    // An explicit path and line select the exact declaration for code_wrap_return. Resolving its
-    // duplicate name through the workspace index would discard that selection and reject ties.
-    let explicit_wrap_return_position = tool_name == "code_wrap_return"
-        && args
+) -> impl std::future::Future<Output = Result<SymbolResolution>> + Send + 'a {
+    Box::pin(async move {
+        // An explicit path and line select the exact declaration for code_wrap_return. Resolving its
+        // duplicate name through the workspace index would discard that selection and reject ties.
+        let explicit_wrap_return_position = tool_name == "code_wrap_return"
+            && args
+                .get("path")
+                .and_then(Value::as_str)
+                .is_some_and(|path| !path.trim().is_empty())
+            && args.get("line").and_then(Value::as_u64).is_some();
+        if !SYMBOL_ADDRESSABLE.contains(&tool_name) || explicit_wrap_return_position {
+            return Ok(SymbolResolution::Dispatch(args, None));
+        }
+        let Some(symbol) = args.get("symbol").and_then(Value::as_str) else {
+            return Ok(SymbolResolution::Dispatch(args, None));
+        };
+        let symbol_trimmed = symbol.trim().to_string();
+        if symbol_trimmed.is_empty() {
+            return Ok(SymbolResolution::Dispatch(args, None));
+        }
+
+        let hint = args
             .get("path")
             .and_then(Value::as_str)
-            .is_some_and(|path| !path.trim().is_empty())
-        && args.get("line").and_then(Value::as_u64).is_some();
-    if !SYMBOL_ADDRESSABLE.contains(&tool_name) || explicit_wrap_return_position {
-        return Ok(SymbolResolution::Dispatch(args, None));
-    }
-    let Some(symbol) = args.get("symbol").and_then(Value::as_str) else {
-        return Ok(SymbolResolution::Dispatch(args, None));
-    };
-    let symbol_trimmed = symbol.trim().to_string();
-    if symbol_trimmed.is_empty() {
-        return Ok(SymbolResolution::Dispatch(args, None));
-    }
-
-    let hint = args
-        .get("path")
-        .and_then(Value::as_str)
-        .filter(|path| !path.trim().is_empty())
-        .map(|path| resolve_file_path(workspace_root, path));
-    let lookup = async {
-        if is_multi_candidate_navigation_tool(tool_name) {
-            let max_candidates = args
-                .get("max_candidates")
-                .and_then(Value::as_u64)
-                .map(|n| n as usize)
-                .unwrap_or(DEFAULT_AMBIGUOUS_CANDIDATE_LIMIT);
-            Box::pin(resolve_symbol_candidates(
-                remote,
-                workspace_root,
-                &symbol_trimmed,
-                hint.as_deref(),
-                max_candidates,
-            ))
-            .await
-        } else {
-            Ok(vec![
-                Box::pin(resolve_symbol(
+            .filter(|path| !path.trim().is_empty())
+            .map(|path| resolve_file_path(workspace_root, path));
+        let lookup = async {
+            if is_multi_candidate_navigation_tool(tool_name) {
+                let max_candidates = args
+                    .get("max_candidates")
+                    .and_then(Value::as_u64)
+                    .map(|n| n as usize)
+                    .unwrap_or(DEFAULT_AMBIGUOUS_CANDIDATE_LIMIT);
+                Box::pin(resolve_symbol_candidates(
                     remote,
                     workspace_root,
                     &symbol_trimmed,
                     hint.as_deref(),
+                    max_candidates,
                 ))
-                .await?,
-            ])
-        }
-    };
-    let candidates = match (reference_budget, tool_name == "code_references") {
-        (Some(budget), true) => {
-            let sync_stage = crate::sync::types::SyncStageTracker::new();
-            let tracked =
-                crate::sync::types::scope_sync_stage(std::sync::Arc::clone(&sync_stage), lookup);
-            match tokio::time::timeout_at(budget.deadline, tracked).await {
-                Ok(Ok(candidates)) => candidates,
-                Ok(Err(error)) if super::budgets::is_timeout_error(&error) => {
-                    return Ok(SymbolResolution::Respond(McpToolCallResult::error(
-                        references_subrequest_timeout_message(budget, &error),
-                    )));
-                }
-                Ok(Err(error)) => return Err(error),
-                Err(_) => {
-                    return Ok(SymbolResolution::Respond(McpToolCallResult::error(
-                        references_busy_message(budget, sync_stage.get()),
-                    )));
-                }
+                .await
+            } else {
+                Ok(vec![
+                    Box::pin(resolve_symbol(
+                        remote,
+                        workspace_root,
+                        &symbol_trimmed,
+                        hint.as_deref(),
+                    ))
+                    .await?,
+                ])
             }
-        }
-        _ => match lookup.await {
-            Ok(candidates) => candidates,
-            Err(error)
-                if tool_name == "code_definition"
-                    && !super::budgets::is_timeout_error(&error)
-                    && !crate::session::is_connection_error(&error) =>
-            {
-                let unindexed_hits = super::super::definition::find_unindexed_rust_declarations(
-                    workspace_root,
-                    &symbol_trimmed,
-                    hint.as_deref(),
+        };
+        let mut candidates = match (reference_budget, tool_name == "code_references") {
+            (Some(budget), true) => {
+                let sync_stage = crate::sync::types::SyncStageTracker::new();
+                let tracked = crate::sync::types::scope_sync_stage(
+                    std::sync::Arc::clone(&sync_stage),
+                    lookup,
                 );
-                if unindexed_hits.len() == 1 {
-                    let hit = &unindexed_hits[0];
-                    let mut owned = args;
-                    if let Some(obj) = owned.as_object_mut() {
-                        obj.insert(
-                            "path".into(),
-                            Value::String(hit.path.to_string_lossy().into_owned()),
-                        );
-                        obj.insert("line".into(), serde_json::json!(hit.line));
-                        obj.insert("character".into(), serde_json::json!(hit.col));
-                        obj.insert("syntax_only_unindexed".into(), Value::Bool(true));
+                match tokio::time::timeout_at(budget.deadline, tracked).await {
+                    Ok(Ok(candidates)) => candidates,
+                    Ok(Err(error)) if super::budgets::is_timeout_error(&error) => {
+                        return Ok(SymbolResolution::Respond(McpToolCallResult::error(
+                            references_subrequest_timeout_message(budget, &error),
+                        )));
                     }
-                    return Ok(SymbolResolution::Dispatch(owned, None));
-                } else if unindexed_hits.len() > 1 {
-                    return Ok(SymbolResolution::Respond(McpToolCallResult::text(
-                        super::super::symbols::matching::ambiguous_candidates_error(
-                            workspace_root,
-                            &symbol_trimmed,
-                            &unindexed_hits,
-                        )
-                        .to_string(),
-                    )));
+                    Ok(Err(error)) => return Err(error),
+                    Err(_) => {
+                        return Ok(SymbolResolution::Respond(McpToolCallResult::error(
+                            references_busy_message(budget, sync_stage.get()),
+                        )));
+                    }
                 }
-                return Err(error);
             }
-            Err(error) => return Err(error),
-        },
-    };
+            _ => match lookup.await {
+                Ok(candidates) => candidates,
+                Err(error)
+                    if tool_name == "code_definition"
+                        && !super::budgets::is_timeout_error(&error)
+                        && !crate::session::is_connection_error(&error) =>
+                {
+                    let unindexed_hits = super::super::definition::find_unindexed_rust_declarations(
+                        workspace_root,
+                        &symbol_trimmed,
+                        hint.as_deref(),
+                    );
+                    if unindexed_hits.len() == 1 {
+                        let hit = &unindexed_hits[0];
+                        let mut owned = args;
+                        if let Some(obj) = owned.as_object_mut() {
+                            obj.insert(
+                                "path".into(),
+                                Value::String(hit.path.to_string_lossy().into_owned()),
+                            );
+                            obj.insert("line".into(), serde_json::json!(hit.line));
+                            obj.insert("character".into(), serde_json::json!(hit.col));
+                            obj.insert("syntax_only_unindexed".into(), Value::Bool(true));
+                        }
+                        return Ok(SymbolResolution::Dispatch(owned, None));
+                    } else if unindexed_hits.len() > 1 {
+                        return Ok(SymbolResolution::Respond(McpToolCallResult::text(
+                            super::super::symbols::matching::ambiguous_candidates_error(
+                                workspace_root,
+                                &symbol_trimmed,
+                                &unindexed_hits,
+                            )
+                            .to_string(),
+                        )));
+                    }
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            },
+        };
 
-    if candidates.len() > 1 {
-        if tool_name == "code_definition" {
-            return Ok(SymbolResolution::Respond(McpToolCallResult::text(
-                super::super::symbols::matching::ambiguous_candidates_error(
-                    workspace_root,
-                    &symbol_trimmed,
-                    &candidates,
-                )
-                .to_string(),
-            )));
-        }
-        return Ok(SymbolResolution::Respond(
-            resolve_multiple_candidates(
+        // An indexed Go hit can be a sibling declaration; the file's own declarations decide (#1910).
+        if candidates.len() == 1
+            && candidates[0]
+                .path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                == Some("go")
+        {
+            let indexed = &candidates[0];
+            let declarations = crate::tools::symbols::search::declarations_in(
                 remote,
                 workspace_root,
-                tool_name,
-                args,
-                candidates,
-                reference_budget.filter(|_| tool_name == "code_references"),
+                std::slice::from_ref(&indexed.path),
+                &symbol_trimmed,
             )
-            .await?,
-        ));
-    }
+            .await?;
+            if declarations.len() == 1 {
+                candidates = declarations;
+            }
+        }
 
-    let hit = &candidates[0];
-    let mut owned = args;
-    if let Some(obj) = owned.as_object_mut() {
-        obj.insert(
-            "path".into(),
-            Value::String(hit.path.to_string_lossy().into_owned()),
-        );
-        obj.insert("line".into(), serde_json::json!(hit.line));
-        obj.insert("character".into(), serde_json::json!(hit.col));
-    }
-    Ok(SymbolResolution::Dispatch(
-        owned,
-        reference_budget.filter(|_| tool_name == "code_references"),
-    ))
+        if candidates.len() > 1 {
+            if tool_name == "code_definition" {
+                return Ok(SymbolResolution::Respond(McpToolCallResult::text(
+                    super::super::symbols::matching::ambiguous_candidates_error(
+                        workspace_root,
+                        &symbol_trimmed,
+                        &candidates,
+                    )
+                    .to_string(),
+                )));
+            }
+            return Ok(SymbolResolution::Respond(
+                resolve_multiple_candidates(
+                    placement,
+                    remote,
+                    workspace_root,
+                    tool_name,
+                    args,
+                    candidates,
+                    reference_budget.filter(|_| tool_name == "code_references"),
+                )
+                .await?,
+            ));
+        }
+
+        let hit = &candidates[0];
+        let mut owned = args;
+        if let Some(obj) = owned.as_object_mut() {
+            obj.insert(
+                "path".into(),
+                Value::String(hit.path.to_string_lossy().into_owned()),
+            );
+            obj.insert("line".into(), serde_json::json!(hit.line));
+            obj.insert("character".into(), serde_json::json!(hit.col));
+        }
+        Ok(SymbolResolution::Dispatch(
+            owned,
+            reference_budget.filter(|_| tool_name == "code_references"),
+        ))
+    })
 }
 
 async fn resolve_multiple_candidates(
+    placement: &crate::cluster::PlacementStore,
     remote: std::net::SocketAddr,
     workspace_root: &Path,
     tool_name: &str,
@@ -274,7 +303,8 @@ async fn resolve_multiple_candidates(
         ));
         match tokio::time::timeout(
             remaining,
-            Box::pin(dispatch_tool(
+            Box::pin(dispatch_tool_with(
+                placement,
                 candidate_remote,
                 workspace_root,
                 tool_name,

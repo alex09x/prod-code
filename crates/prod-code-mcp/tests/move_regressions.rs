@@ -237,3 +237,38 @@ async fn move_to_child_rebases_paths_widens_visibility_and_preserves_preamble() 
     assert!(child.contains("r#\"super::inputs\"#"), "{child}");
     compile_test(&ws.root(), &ws.path("src/lib.rs"));
 }
+
+/// #1933: a private function moved to a sibling module is still named by the module it left, so
+/// it becomes `pub(crate)` there; the result compiles and the test passes.
+#[tokio::test]
+async fn a_private_function_moved_to_a_sibling_becomes_crate_visible() {
+    let source = "fn helper() -> u32 { 7 }\n\npub fn caller() -> u32 { helper() }\n";
+    let lib = "mod a;\nmod b;\n#[test]\nfn caller_still_works() { assert_eq!(a::caller(), 7); }\n";
+    let ws = Workspace::new(&[
+        ("Cargo.toml", MANIFEST),
+        ("src/lib.rs", lib),
+        ("src/a.rs", source),
+        ("src/b.rs", ""),
+    ]);
+    let file = ws.path("src/a.rs");
+    let target = ws.path("src/b.rs");
+    let column = source.lines().nth(2).unwrap().find("helper").unwrap() as u32 + 1;
+    let remote = gateway(&file, "helper", 1, 1, Some((3, column))).await;
+    let moved = move_item(remote.addr(), &ws.root(), &file, 1, 4, &target, true, false)
+        .await
+        .unwrap();
+    assert!(moved.applied, "{moved:?}");
+    let sibling = ws.read("src/b.rs");
+    assert!(sibling.contains("pub(crate) fn helper"), "{sibling}");
+    let origin = ws.read("src/a.rs");
+    assert!(origin.contains("helper"), "{origin}");
+    assert!(
+        moved
+            .imports
+            .iter()
+            .any(|note| note.contains("`helper` is now `pub(crate)`")),
+        "{:?}",
+        moved.imports
+    );
+    compile_test(&ws.root(), &ws.path("src/lib.rs"));
+}

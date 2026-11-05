@@ -206,9 +206,12 @@ async fn run_cli() -> Result<()> {
             cli.command,
             Some(Commands::Pull { .. } | Commands::Sync { pull: true, .. })
         ) {
-        cwd_root
-            .as_deref()
-            .and_then(prod_code_mcp::exec::last_exec_node)
+        cwd_root.as_deref().and_then(|root| {
+            prod_code_mcp::exec::last_exec_node(
+                &prod_code_mcp::cluster::PlacementStore::user(),
+                root,
+            )
+        })
     } else {
         None
     };

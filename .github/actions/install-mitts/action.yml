@@ -1,0 +1,20 @@
+# prod-code — Remote code intelligence
+# Copyright (c) 2026 Alexander Panasenko
+# Contact: alex@prod.codes
+# Author: https://prod.codes/about/
+# Project: https://github.com/alex09x/prod-code
+# SPDX-License-Identifier: MIT OR Apache-2.0
+name: Install Mitts
+description: Install the latest stable verified Mitts release
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
+          https://raw.githubusercontent.com/alex09x/mitts/646e32a7675fe062e7cdce8260b65e279557742b/site/install.sh \
+          -o "$RUNNER_TEMP/install-mitts.sh"
+        MITTS_INSTALL_ROOT="$RUNNER_TEMP/mitts" sh "$RUNNER_TEMP/install-mitts.sh"
+        "$RUNNER_TEMP/mitts/bin/mitts" --version
+        echo "$RUNNER_TEMP/mitts/bin" >> "$GITHUB_PATH"
+        echo "MITTS_CACHE_DIR=$RUNNER_TEMP/mitts-cache" >> "$GITHUB_ENV"

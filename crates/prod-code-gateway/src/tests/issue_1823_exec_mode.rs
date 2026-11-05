@@ -25,6 +25,7 @@ fn mode(path: &std::path::Path) -> u32 {
 fn upload(files: Vec<FileDelta>) -> SyncRequest {
     SyncRequest {
         client_workspace_root: "/tmp/ws".to_string(),
+        symlinks: None,
         files,
         clean_others: false,
         base_workspace_name: Some("ws".to_string()),

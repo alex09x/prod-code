@@ -92,13 +92,13 @@ jobs:
           ref: ${{ needs.plan.outputs.commit }}
           path: source
           persist-credentials: false
+      - uses: ./automation/.github/actions/install-mitts
       - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-registry-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('source/Cargo.lock') }}
+            ${{ runner.temp }}/mitts-cache
+          key: mitts-cache-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('source/Cargo.lock') }}
       - name: Native build, version, architecture and GLIBC gate
         working-directory: source
         env:

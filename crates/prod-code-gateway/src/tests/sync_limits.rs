@@ -68,6 +68,7 @@ async fn a_file_past_the_snapshot_limits_is_removed_and_reported_stale() {
     // The next sync answers with what it still lacks until the client has sent both.
     let sync = |files: Vec<FileDelta>| SyncRequest {
         client_workspace_root: "/tmp/ws".to_string(),
+        symlinks: None,
         files,
         clean_others: false,
         base_workspace_name: Some("ws".to_string()),
@@ -114,6 +115,7 @@ async fn a_sync_write_that_fails_keeps_the_old_text_and_asks_for_it_again() {
     let manager = WorkspaceManager::new();
     let sync = |text: &str| SyncRequest {
         client_workspace_root: "/tmp/ws".to_string(),
+        symlinks: None,
         files: vec![FileDelta {
             relative_path: "src/lib.rs".to_string(),
             content: Some(text.as_bytes().to_vec()),
@@ -206,6 +208,7 @@ async fn concurrent_sync_during_active_exec_preserves_formatted_new_go_files() {
         &manager,
         SyncRequest {
             client_workspace_root: "/client/gofmt-ws".to_string(),
+            symlinks: None,
             base_workspace_name: Some(ws_name.to_string()),
             clean_others: false,
             files: vec![
@@ -238,6 +241,7 @@ async fn concurrent_sync_during_active_exec_preserves_formatted_new_go_files() {
         &manager,
         SyncRequest {
             client_workspace_root: "/client/gofmt-ws".to_string(),
+            symlinks: None,
             base_workspace_name: Some(ws_name.to_string()),
             clean_others: false,
             files: vec![FileDelta {
@@ -263,4 +267,22 @@ async fn concurrent_sync_during_active_exec_preserves_formatted_new_go_files() {
         root.join("internal/server/cmd_generated.go").exists(),
         "command-created file must be preserved during active exec"
     );
+}
+
+#[test]
+fn manifest_probe_preserves_command_files_and_deletes_removed_client_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join(".mitts")).unwrap();
+    std::fs::write(root.join("tracked.txt"), b"client file").unwrap();
+    std::fs::write(root.join(".mitts/generated.tar"), b"command output").unwrap();
+
+    let previously_managed = ["tracked.txt".to_string()].into_iter().collect();
+    let (missing, deleted) =
+        crate::sync::sync_fs::reconcile_manifest_with_ownership(root, &[], &previously_managed);
+
+    assert!(missing.is_empty());
+    assert_eq!(deleted, ["tracked.txt"]);
+    assert!(!root.join("tracked.txt").exists());
+    assert!(root.join(".mitts/generated.tar").exists());
 }

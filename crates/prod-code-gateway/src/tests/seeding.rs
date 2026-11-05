@@ -171,7 +171,11 @@ fn a_seeded_copy_takes_a_virtualenv_with_its_links_and_its_paths_rewritten() {
     std::fs::write(seed.join("src/app.py"), "import pkg\n").unwrap();
     std::os::unix::fs::symlink(".", seed.join("src/again")).unwrap();
 
-    assert_eq!(copy_tree(&seed, &fresh).unwrap(), 1, "only src/app.py");
+    assert_eq!(
+        copy_tree(&seed, &fresh).unwrap(),
+        2,
+        "src/app.py and the src/again link; the venv is not copy_tree's"
+    );
     assert!(!copy.exists(), "the venv is not copy_tree's");
     let again = std::fs::symlink_metadata(fresh.join("src/again")).unwrap();
     assert!(again.file_type().is_symlink());
@@ -231,6 +235,34 @@ fn a_seeded_copy_takes_no_build_directory_holding_the_seeds_paths() {
     for cache in ["build", ".cache", "lib/.build", "tests/__pycache__"] {
         assert!(!fresh.join(cache).exists(), "{cache} was copied");
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_seeded_copy_preserves_dangling_contained_symlinks_and_skips_escapes() {
+    let dir = tempfile::tempdir().unwrap();
+    let seed = dir.path().join("seed");
+    let fresh = dir.path().join("fresh");
+    let link_parent = seed.join("swift/Sources/TakoApp");
+    std::fs::create_dir_all(&link_parent).unwrap();
+    std::os::unix::fs::symlink("../../../target/bindings", link_parent.join("_bindings")).unwrap();
+    std::os::unix::fs::symlink("../../../../outside", link_parent.join("escape")).unwrap();
+    assert!(!seed.join("target/bindings").exists());
+
+    crate::seed_cache::build_cache::copy_tree(&seed, &fresh).unwrap();
+
+    let bindings = fresh.join("swift/Sources/TakoApp/_bindings");
+    assert!(
+        std::fs::symlink_metadata(&bindings)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(
+        std::fs::read_link(&bindings).unwrap(),
+        std::path::PathBuf::from("../../../target/bindings")
+    );
+    assert!(!fresh.join("swift/Sources/TakoApp/escape").exists());
 }
 
 /// Room for a seed with plenty to spare.
