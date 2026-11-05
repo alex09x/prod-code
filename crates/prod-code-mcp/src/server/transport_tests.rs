@@ -142,6 +142,53 @@ fn navigation_tools_are_advertised_as_read_only_in_the_mcp_tool_catalog() {
     assert!(mutation.get("annotations").is_none());
 }
 
+/// A host with approval policy `never` refuses any tool not marked read-only (#1887, #1890,
+/// #1905). Every tool the server treats as read-only whatever its arguments says so in the
+/// catalog, and nothing is marked read-only that the server would let write or run a command.
+#[test]
+fn the_catalog_marks_exactly_the_tools_the_server_treats_as_read_only() {
+    use crate::server::dispatch::READ_ONLY_NAVIGATION;
+    let empty = serde_json::json!({});
+    for name in READ_ONLY_NAVIGATION {
+        assert!(
+            crate::tools::execution::is_read_only_tool(name, &empty),
+            "{name} is advertised as read-only but the server does not treat it so"
+        );
+    }
+    for tool in super::dispatch::list_tool_values().unwrap() {
+        let name = tool["name"].as_str().unwrap().to_string();
+        let advertised = tool.get("annotations").is_some();
+        assert_eq!(
+            advertised,
+            READ_ONLY_NAVIGATION.contains(&name.as_str()),
+            "{name}: annotations must follow the list"
+        );
+    }
+    for name in [
+        "code_impact",
+        "code_diagnostics",
+        "code_dependencies",
+        "code_status",
+        "code_assists",
+    ] {
+        let tools = super::dispatch::list_tool_values().unwrap();
+        let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
+        assert_eq!(tool["annotations"]["readOnlyHint"], true, "{name}");
+    }
+    for name in [
+        "code_exec",
+        "code_pull",
+        "code_check",
+        "code_test",
+        "code_report_issue",
+        "code_workflow",
+    ] {
+        let tools = super::dispatch::list_tool_values().unwrap();
+        let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
+        assert!(tool.get("annotations").is_none(), "{name} can write or run");
+    }
+}
+
 #[tokio::test]
 async fn cluster_rebalance_tick_ignores_filesystem_root() {
     let mut remote: std::net::SocketAddr = "127.0.0.1:9000".parse().unwrap();

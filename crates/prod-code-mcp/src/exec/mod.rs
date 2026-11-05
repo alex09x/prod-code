@@ -16,6 +16,7 @@ mod layout;
 pub mod platform;
 mod progress;
 pub mod runner;
+mod silence;
 pub mod types;
 mod writeback;
 
@@ -32,4 +33,5 @@ pub use destination::{last_exec_node, pull_node, pull_node_with, remember_exec_n
 pub use layout::layout_only;
 pub use platform::{platform_warning, subdir_of};
 pub use runner::{run_polyglot_remote, run_remote, run_remote_rooted};
+pub use silence::silent_timeout_hint;
 pub use types::{Executor, PolyglotRemoteOutcome, RemoteOutcome, TailBuffer};

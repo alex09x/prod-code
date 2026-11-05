@@ -277,6 +277,7 @@ pub async fn run_exec(
         env_pairs.push((key.to_string(), value.to_string()));
     }
     let started = std::time::Instant::now();
+    let mut printed = 0usize;
     let outcome = prod_code_mcp::exec::run_remote(
         remote,
         &root,
@@ -286,6 +287,7 @@ pub async fn run_exec(
         timeout_secs,
         pull_changes,
         |is_stderr, data| {
+            printed += data.len();
             if is_stderr {
                 let mut e = std::io::stderr().lock();
                 let _ = e.write_all(data);
@@ -328,6 +330,9 @@ pub async fn run_exec(
     }
     if let Some(warning) = upload_warning {
         eprintln!("[prod-code exec] {warning}");
+    }
+    if let Some(hint) = prod_code_mcp::exec::silent_timeout_hint(exit.timed_out, printed) {
+        eprintln!("[prod-code exec] {hint}");
     }
     // The node that ran it, as the gateway confirmed on this command's connection (#1793).
     let ran_on = outcome.executor.render();

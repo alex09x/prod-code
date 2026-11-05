@@ -35,6 +35,8 @@ use tokio_util::codec::Framed;
 
 #[path = "tools/definition_body.rs"]
 mod definition_body;
+#[path = "tools/swift_rename.rs"]
+mod swift_rename;
 #[path = "tools/workspace_selection.rs"]
 mod workspace_selection;
 

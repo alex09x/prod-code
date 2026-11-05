@@ -341,3 +341,73 @@ fn external_paths_do_not_become_executable_project_scopes() {
     assert!(plan.whole.is_none());
     assert_eq!(plan.unsupported_whole, ["../outside/Cargo.toml (unknown)"]);
 }
+
+/// An Xcode project's UI-test target is not a Swift package: `swift test` in its directory
+/// fails, so no command is named for it (#1951). A real package beside it keeps its selector.
+#[test]
+fn xcode_ui_tests_are_unsupported_while_a_swift_package_keeps_its_selector() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("Cargo.toml"),
+        "[package]\nname='demo'\nversion='0.1.0'\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.path().join("macos_uitests/App.xcodeproj")).unwrap();
+    std::fs::create_dir_all(root.path().join("macos_uitests/UITests")).unwrap();
+    std::fs::write(
+        root.path().join("macos_uitests/UITests/AppUITests.swift"),
+        "import XCTest\nfinal class AppUITests: XCTestCase {\n    func testLaunch() {}\n}\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.path().join("pkg/Tests/PkgTests")).unwrap();
+    std::fs::write(
+        root.path().join("pkg/Package.swift"),
+        "// swift-tools-version: 5.9\nimport PackageDescription\nlet package = Package(name: \"pkg\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.path().join("pkg/Tests/PkgTests/PkgTests.swift"),
+        "import XCTest\nfinal class PkgTests: XCTestCase {\n    func testWorks() {}\n}\n",
+    )
+    .unwrap();
+    let symbol = |name: &str, file: &str| Symbol {
+        name: name.into(),
+        file: file.into(),
+        line: 1,
+        col: 1,
+    };
+    let tools = crate::verify::detect_tools(root.path());
+
+    let ui = vec![symbol(
+        "testLaunch",
+        "macos_uitests/UITests/AppUITests.swift",
+    )];
+    let plan = crate::impact::test_plan::build_test_plan(
+        root.path(),
+        "rust",
+        &tools,
+        &ui,
+        &["macos_uitests/UITests/AppUITests.swift".into()],
+    );
+    assert_eq!(
+        plan.unsupported_selected,
+        ["macos_uitests (swift); Xcode project, not a Swift package"]
+    );
+    assert!(plan.selected.is_none(), "{:?}", plan.selected);
+    assert!(
+        plan.unsupported_whole.len() == 1,
+        "{:?}",
+        plan.unsupported_whole
+    );
+
+    let package = vec![symbol("testWorks", "pkg/Tests/PkgTests/PkgTests.swift")];
+    let plan =
+        crate::impact::test_plan::build_test_plan(root.path(), "rust", &tools, &package, &[]);
+    assert!(plan.unsupported_selected.is_empty(), "{plan:?}");
+    let command = plan.selected.expect("the package has a selector").join(" ");
+    assert!(command.contains("cd pkg"), "{command}");
+    assert!(
+        command.contains("swift test --filter testWorks"),
+        "{command}"
+    );
+}

@@ -25,23 +25,40 @@ pub const MCP_TOOL_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from
 /// Upper ceiling for MCP tool call execution to prevent unbounded resource hold (24 hours).
 pub const MAX_TOOL_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
 
+/// Tools that never write and never run a command, whatever their arguments. A host whose
+/// approval policy is `never` refuses a tool it cannot tell is read-only (#1887, #1890, #1905),
+/// so each of these says so in the catalog. A tool that is read-only only for some arguments
+/// (`code_pull` with `list`, `code_check` without `fix`) or that runs commands on a node is
+/// left out. `is_read_only_tool` must agree with every name here; a test holds them together.
+pub(crate) const READ_ONLY_NAVIGATION: &[&str] = &[
+    "code_callers",
+    "code_callees",
+    "code_implementations",
+    "code_supertypes",
+    "code_definition",
+    "code_references",
+    "code_source",
+    "code_outline",
+    "code_symbols",
+    "code_hover",
+    "code_type_at",
+    "code_search",
+    "code_grep",
+    "code_slice",
+    "code_impact",
+    "code_diagnostics",
+    "code_validate_edit",
+    "code_validate_edits",
+    "code_assists",
+    "code_dead_code",
+    "code_dependencies",
+    "code_find_duplicates",
+    "code_structural_search",
+    "code_propose_expression",
+    "code_status",
+];
+
 pub(crate) fn list_tool_values() -> anyhow::Result<Vec<serde_json::Value>> {
-    const READ_ONLY_NAVIGATION: &[&str] = &[
-        "code_callers",
-        "code_callees",
-        "code_implementations",
-        "code_supertypes",
-        "code_definition",
-        "code_references",
-        "code_source",
-        "code_outline",
-        "code_symbols",
-        "code_hover",
-        "code_type_at",
-        "code_search",
-        "code_grep",
-        "code_slice",
-    ];
     crate::tools::list_tools()
         .into_iter()
         .map(|tool| {

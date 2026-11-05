@@ -134,11 +134,20 @@ pub(super) fn resolve_symbol_args<'a>(
                         && !super::budgets::is_timeout_error(&error)
                         && !crate::session::is_connection_error(&error) =>
                 {
-                    let unindexed_hits = super::super::definition::find_unindexed_rust_declarations(
-                        workspace_root,
-                        &symbol_trimmed,
-                        hint.as_deref(),
-                    );
+                    let mut unindexed_hits =
+                        super::super::definition::find_unindexed_rust_declarations(
+                            workspace_root,
+                            &symbol_trimmed,
+                            hint.as_deref(),
+                        );
+                    // No language server answers a shell symbol; the scripts are read (#1940).
+                    if unindexed_hits.is_empty() {
+                        unindexed_hits = super::super::definition::shell::find_shell_declarations(
+                            workspace_root,
+                            &symbol_trimmed,
+                            hint.as_deref(),
+                        );
+                    }
                     if unindexed_hits.len() == 1 {
                         let hit = &unindexed_hits[0];
                         let mut owned = args;

@@ -218,6 +218,9 @@ async fn run_exec_command(
     if let Some(warning) = upload_warning {
         text.push_str(&format!("[{warning}]\n"));
     }
+    if let Some(hint) = crate::exec::silent_timeout_hint(exit.timed_out, tail.total) {
+        text.push_str(&format!("[{hint}]\n"));
+    }
     text.push_str(&tail.text());
     let mut result = if exit.error.is_none() && !exit.timed_out && exit.exit_code.is_some() {
         McpToolCallResult::text(text)

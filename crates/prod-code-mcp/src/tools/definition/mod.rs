@@ -22,6 +22,7 @@ use crate::protocol::McpToolCallResult;
 pub(crate) mod body;
 pub(crate) mod html_fallback;
 pub(crate) mod range;
+pub(crate) mod shell;
 
 pub(crate) use body::*;
 pub(crate) use range::*;
