@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## v0.3.52 — 2026-11-05
+
 ### Fixed
 - **`code_source` Reads a Dependency's Source With an Explicit `workspace`** (`crates/prod-code-mcp`, #1955): `code_source` with the path of a Cargo registry file that `code_definition` returned worked without `workspace` and failed with `path or cwd '…' is outside the selected workspace` once `workspace` was given. The selected checkout confines the paths a call may change or run in; a source viewer reads a file outside it, and the gateway, not the checkout's confinement, decides whether that file is a dependency cache or toolchain source it will serve. `code_source` now passes an absolute path outside the checkout on to the gateway, with or without `workspace`; a path with `..` segments is still refused, and every other tool keeps the confinement.
 - **Every Tool That Never Writes Says So in the MCP Catalog** (`crates/prod-code-mcp`, #1887, #1890, #1900, #1905): a host whose approval policy is `never` refuses a tool it cannot tell is read-only (`MCP tool call requires approval, but approval policy is never`) and the caller falls back to the command line. Only the navigation tools were marked. `code_impact`, `code_diagnostics`, `code_validate_edit`, `code_validate_edits`, `code_assists`, `code_dead_code`, `code_dependencies`, `code_find_duplicates`, `code_structural_search`, `code_propose_expression` and `code_status` now carry `readOnlyHint` too. Tools that write, run a command, or are read-only only for some arguments stay unmarked, and a test holds the marked list to the server's own definition of a read-only tool.
