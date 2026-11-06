@@ -193,12 +193,17 @@ async fn without_another_node_the_connection_error_is_what_the_caller_sees() {
     assert_eq!(remote, dead);
     assert_eq!(response["result"]["isError"], true);
     let text = response["result"]["content"][0]["text"].as_str().unwrap();
+    // The connection failure is named after the address, as the cause of that sentence, and the
+    // report hint follows (#1958).
     assert!(
-        text.starts_with(&format!(
-            "Failed to connect to gateway at {dead}{REPORT_HINT}"
-        )),
+        text.starts_with(&format!("Failed to connect to gateway at {dead}: ")),
         "{text}"
     );
+    assert!(
+        text.to_lowercase().contains("connection refused"),
+        "the cause is in the text: {text}"
+    );
+    assert!(text.contains(REPORT_HINT), "{text}");
 
     // A command is never replayed on another node: no search is made for it.
     let exec = json!({

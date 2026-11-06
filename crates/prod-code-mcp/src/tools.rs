@@ -124,7 +124,10 @@ pub(crate) async fn dispatch_tool_with(
         "code_impact" => {
             let base = args.get("base").and_then(|v| v.as_str());
             let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(4) as usize;
-            let report = crate::impact::analyze(remote, root, base, depth).await?;
+            let budget =
+                crate::impact::budget_from_secs(args.get("budget_secs").and_then(|v| v.as_u64()))?;
+            let report =
+                crate::impact::analyze_with_budget(remote, root, base, depth, budget).await?;
             Ok(McpToolCallResult::text(report.render()))
         }
         "code_diagnose_failure" => Box::pin(handle_diagnose_failure(remote, root, &args)).await,

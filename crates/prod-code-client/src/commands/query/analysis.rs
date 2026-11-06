@@ -56,6 +56,7 @@ pub async fn run_impact(
     remote: SocketAddr,
     base: Option<&str>,
     depth: usize,
+    budget_secs: u64,
     run: bool,
     ci: bool,
     json: bool,
@@ -64,7 +65,9 @@ pub async fn run_impact(
     let cwd = env::current_dir()?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
     let started = std::time::Instant::now();
-    let report = prod_code_mcp::impact::analyze(remote, &root, base, depth).await?;
+    let budget = prod_code_mcp::impact::budget_from_secs(Some(budget_secs))?;
+    let report =
+        prod_code_mcp::impact::analyze_with_budget(remote, &root, base, depth, budget).await?;
     if json {
         println!(
             "{}",

@@ -38,7 +38,8 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
-pub use analyze::analyze;
+pub use analyze::{analyze, analyze_with_budget};
+pub use budget::budget_from_secs;
 pub use diff::changed_lines;
 pub use incoming::{suspects_for, unreadable};
 pub use output::{MAX_IMPACT_OUTPUT_ITEMS, bounded_json_value};

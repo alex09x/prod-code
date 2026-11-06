@@ -82,6 +82,19 @@ pub(crate) fn list_tool_values() -> anyhow::Result<Vec<serde_json::Value>> {
         .collect()
 }
 
+/// The text a failed tool call answers with: the whole chain of causes, outermost first, and
+/// how to report it. Only the outermost context used to be shown, so a failed sync read
+/// "workspace sync on the open session failed" with nothing of why (#1958, #1959).
+pub(crate) fn tool_error_text(error: &anyhow::Error) -> String {
+    format!(
+        "{error:#}\n\n\
+         💡 If this is an unexpected error or a bug in prod-code, please report it:\n\
+         - Via MCP: call `code_report_issue` with `title` and `body` (automatically sanitizes hostnames, LAN addresses, and home paths)\n\
+         - Via CLI: `prod-code report-issue --title \"...\" --body \"...\"` (automatically sanitizes hostnames, LAN addresses, and home paths)\n\
+         - On GitHub: https://github.com/alex09x/prod-code/issues (manually remove hostnames, LAN addresses, home paths, and credentials before posting)"
+    )
+}
+
 /// Resolve effective tool call execution timeout from arguments.
 /// When caller provides `timeout_secs` (> 0), that timeout governs execution with a small margin,
 /// clamped to `MAX_TOOL_CALL_TIMEOUT` (24h).
@@ -285,14 +298,7 @@ where
                     Ok(Some(serde_json::to_value(resp)?))
                 }
                 Err(e) => {
-                    let err_msg = format!(
-                        "{e}\n\n\
-                         💡 If this is an unexpected error or a bug in prod-code, please report it:\n\
-                         - Via MCP: call `code_report_issue` with `title` and `body` (automatically sanitizes hostnames, LAN addresses, and home paths)\n\
-                         - Via CLI: `prod-code report-issue --title \"...\" --body \"...\"` (automatically sanitizes hostnames, LAN addresses, and home paths)\n\
-                         - On GitHub: https://github.com/alex09x/prod-code/issues (manually remove hostnames, LAN addresses, home paths, and credentials before posting)"
-                    );
-                    let call_result = protocol::McpToolCallResult::error(err_msg);
+                    let call_result = protocol::McpToolCallResult::error(tool_error_text(&e));
                     let resp = JsonRpcResponse::success(id, serde_json::to_value(call_result)?);
                     Ok(Some(serde_json::to_value(resp)?))
                 }

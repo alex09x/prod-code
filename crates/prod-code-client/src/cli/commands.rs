@@ -216,6 +216,11 @@ pub enum Commands {
         /// Caller levels to follow
         #[arg(long, default_value_t = 4)]
         depth: usize,
+        /// Seconds the whole analysis may take (1 to 600). A language server of another
+        /// language than the project's, such as Swift in a Rust repository, can need longer
+        /// than the default to read a project cold.
+        #[arg(long, default_value_t = 15, value_parser = clap::value_parser!(u64).range(1..=600))]
+        budget_secs: u64,
         /// Run the affected tests afterwards
         #[arg(long)]
         run: bool,
