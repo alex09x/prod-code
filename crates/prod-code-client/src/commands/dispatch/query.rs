@@ -212,10 +212,22 @@ pub async fn dispatch_query(cmd: Commands, cx: &DispatchContext<'_>) -> Result<(
         Commands::Impact {
             base,
             depth,
+            budget_secs,
             run,
             ci,
             json,
-        } => run_impact(cx.remote, base.as_deref(), depth, run, ci, json).await,
+        } => {
+            run_impact(
+                cx.remote,
+                base.as_deref(),
+                depth,
+                budget_secs,
+                run,
+                ci,
+                json,
+            )
+            .await
+        }
         Commands::DeadCode {
             include_exported,
             reachability,

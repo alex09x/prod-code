@@ -56,6 +56,7 @@ pub(super) async fn scan_changed_files(
     let mut adjusted_signatures = Vec::new();
     let mut incomplete = Vec::new();
     let mut timed_out = false;
+    let budget = deadline.saturating_duration_since(started_at);
 
     for (file, change) in changes {
         if budget_expired(started_at, deadline, &mut incomplete) {
@@ -114,7 +115,7 @@ pub(super) async fn scan_changed_files(
                 continue;
             }
             Err(_) => {
-                record_timeout(started_at, &mut incomplete);
+                record_timeout(started_at, budget, &mut incomplete);
                 timed_out = true;
                 break;
             }
@@ -134,7 +135,7 @@ pub(super) async fn scan_changed_files(
         {
             Ok(result) => result,
             Err(_) => {
-                record_timeout(started_at, &mut incomplete);
+                record_timeout(started_at, budget, &mut incomplete);
                 timed_out = true;
                 break;
             }

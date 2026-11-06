@@ -30,8 +30,20 @@ pub async fn analyze(
     base: Option<&str>,
     depth: usize,
 ) -> Result<ImpactReport> {
+    analyze_with_budget(remote, root, base, depth, IMPACT_BUDGET).await
+}
+
+/// [`analyze`] with `budget` as the time the whole analysis may take, so a language server that
+/// needs longer to read a project cold than the default allows can be given the time (#1960).
+pub async fn analyze_with_budget(
+    remote: SocketAddr,
+    root: &Path,
+    base: Option<&str>,
+    depth: usize,
+    budget: std::time::Duration,
+) -> Result<ImpactReport> {
     let analysis_started = tokio::time::Instant::now();
-    let deadline = analysis_started + IMPACT_BUDGET;
+    let deadline = analysis_started + budget;
     let language = crate::sync::expected_engine(root)
         .ok_or_else(|| anyhow!("no project manifest at {}", root.display()))?
         .to_string();
@@ -43,7 +55,7 @@ pub async fn analyze(
         match within_deadline(deadline, swift_index_build(remote, root)).await {
             Ok(index) => index,
             Err(_) => {
-                record_timeout(analysis_started, &mut incomplete);
+                record_timeout(analysis_started, budget, &mut incomplete);
                 timed_out = true;
                 None
             }
@@ -72,7 +84,7 @@ pub async fn analyze(
     let adjusted_signatures = scan.adjusted_signatures;
     incomplete.extend(scan.incomplete);
     if timed_out || scan.timed_out {
-        record_timeout(analysis_started, &mut incomplete);
+        record_timeout(analysis_started, budget, &mut incomplete);
     }
     timed_out |= scan.timed_out;
 
@@ -132,7 +144,7 @@ pub async fn analyze(
                 Ok(Ok(session)) => Some(session),
                 Ok(Err(_)) => None,
                 Err(_) => {
-                    record_timeout(analysis_started, &mut incomplete);
+                    record_timeout(analysis_started, budget, &mut incomplete);
                     timed_out = true;
                     None
                 }
@@ -156,7 +168,7 @@ pub async fn analyze(
                 }
                 let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
                 if remaining.is_zero() {
-                    record_timeout(analysis_started, &mut incomplete);
+                    record_timeout(analysis_started, budget, &mut incomplete);
                     timed_out = true;
                     break;
                 }
@@ -170,13 +182,37 @@ pub async fn analyze(
                     Ok(Ok(session)) => session,
                     Ok(Err(_)) => break,
                     Err(_) => {
-                        record_timeout(analysis_started, &mut incomplete);
+                        record_timeout(analysis_started, budget, &mut incomplete);
                         timed_out = true;
                         break;
                     }
                 };
                 answer =
                     incoming_calls(first_session, root, first_lang, first, Some(deadline)).await;
+            }
+            // sourcekit-lsp finds callers only through a built index of its target, and this
+            // analysis builds one only when the project itself is Swift. In another project, a
+            // Rust repository with a Swift package, its empty answer is not "no callers"; the
+            // report says what is missing instead of only that the time ran out (#1960). A
+            // server that needs no index (TypeScript, Go) may well have no callers to report.
+            if first_lang == "swift"
+                && language != "swift"
+                && matches!(&answer, Incoming::Callers(found) if found.is_empty())
+            {
+                note(
+                    &mut incomplete,
+                    Gap::Callers {
+                        symbol: first.clone(),
+                        error: format!(
+                            "the {first_lang} language server answered no callers: it reads a \
+                             built index of its own target, and this analysis builds one only \
+                             when the project is {first_lang} (here it is {language}). Build the \
+                             {first_lang} target on the node and run it again, allow longer with \
+                             a larger `budget_secs` (`--budget-secs`), or ask `code_callers` for \
+                             the function directly"
+                        ),
+                    },
+                );
             }
             cache.insert(key(first), answer);
         }
@@ -215,7 +251,7 @@ pub async fn analyze(
                     }
                     Ok(Err(e)) => Incoming::Failed(format!("{e:#}")),
                     Err(_) => {
-                        record_timeout(analysis_started, &mut incomplete);
+                        record_timeout(analysis_started, budget, &mut incomplete);
                         timed_out = true;
                         break;
                     }
@@ -299,7 +335,7 @@ pub async fn analyze(
         {
             Ok(warnings) => warnings,
             Err(_) => {
-                record_timeout(analysis_started, &mut incomplete);
+                record_timeout(analysis_started, budget, &mut incomplete);
                 Vec::new()
             }
         }
@@ -309,7 +345,7 @@ pub async fn analyze(
         .await
         .is_err()
     {
-        record_timeout(analysis_started, &mut incomplete);
+        record_timeout(analysis_started, budget, &mut incomplete);
     }
     let tests: Vec<Symbol> = tests.into_iter().collect();
     let test_plan =

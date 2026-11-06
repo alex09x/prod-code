@@ -205,6 +205,50 @@ async fn test_mcp_tools_call_reports_a_failed_tool_as_a_normal_response() {
     assert!(text.to_lowercase().contains("failed to connect"), "{text}");
 }
 
+/// A failed call answers with every cause in the chain, not only the outermost context: a failed
+/// sync read "workspace sync on the open session failed" and nothing of why (#1958, #1959).
+#[test]
+fn a_failed_tool_call_text_carries_the_whole_chain_of_causes() {
+    let error = anyhow::anyhow!("the node closed the connection while pulling a.bin")
+        .context("cannot pull from node 10.0.0.1:9400")
+        .context("workspace sync on the open session failed");
+    let text = super::dispatch::tool_error_text(&error);
+    assert!(
+        text.starts_with(
+            "workspace sync on the open session failed: cannot pull from node 10.0.0.1:9400: \
+             the node closed the connection while pulling a.bin"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("code_report_issue"), "{text}");
+}
+
+/// The same through a whole request: the connection failure under the call's context is in the
+/// text the caller reads. Port 1 is refused, as in the test above (and `code_exec` does not
+/// consult the user's remembered nodes).
+#[tokio::test]
+async fn a_failed_call_names_why_the_node_could_not_be_reached() {
+    let mut closed_port: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let req = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "tools/call",
+        "params": { "name": "code_exec", "arguments": { "argv": ["true"] } }
+    });
+    let resp = handle_mcp_request(&mut closed_port, temp.path(), req)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resp["result"]["isError"], true);
+    let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.to_lowercase().contains("failed to connect"), "{text}");
+    assert!(
+        text.to_lowercase().contains("connection refused"),
+        "the cause under the context is shown: {text}"
+    );
+}
+
 /// Wires `serve_mcp_requests` to an in-memory duplex stream: the returned handle is the
 /// client's end (write requests into it, read responses back out of it), and the join
 /// handle resolves once the client end (or its clone) is dropped, which the server reads

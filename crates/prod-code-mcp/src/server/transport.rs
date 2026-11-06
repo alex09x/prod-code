@@ -298,8 +298,11 @@ pub(super) fn format_handled_response(
         }
         Ok(Ok(None)) => None,
         Ok(Err(e)) => {
-            tracing::error!(error = %e, "MCP request handler internal error");
-            error_line(req_id, -32603, &format!("Internal error: {e}"))
+            tracing::error!(
+                error = format!("{e:#}"),
+                "MCP request handler internal error"
+            );
+            error_line(req_id, -32603, &format!("Internal error: {e:#}"))
         }
         Err(panic_payload) => {
             let msg = panic_payload

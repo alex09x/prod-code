@@ -21,7 +21,8 @@ pub fn analysis_tools() -> Vec<McpTool> {
                 "type": "object",
                 "properties": {
                     "base": { "type": "string", "description": "Git ref to diff against (default: the working tree against HEAD)" },
-                    "depth": { "type": "integer", "description": "How many caller levels to follow (default 4)" }
+                    "depth": { "type": "integer", "description": "How many caller levels to follow (default 4)" },
+                    "budget_secs": { "type": "integer", "description": "How long the whole analysis may take, 1 to 600 seconds (default 15). A language server of another language than the project's, such as Swift in a Rust repository, can need longer to read a project cold; a timeout in the answer names the budget that ran out." }
                 }
             }),
         },
