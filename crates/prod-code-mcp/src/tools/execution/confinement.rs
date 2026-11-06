@@ -55,9 +55,25 @@ pub(super) fn validate_workspace_paths(
         if trimmed.is_empty() {
             continue;
         }
+        if reads_external_source(root, tool_name, trimmed) {
+            continue;
+        }
         validate_single_workspace_path(root, trimmed)?;
     }
     Ok(())
+}
+
+/// `code_source` shows a dependency's source, a file outside the checkout such as a Cargo
+/// registry file that `code_definition` returned (#1955). The gateway reads it, and refuses a
+/// file that is not a dependency cache or toolchain source; the checkout's confinement is for
+/// the paths a call may change or run in. A path with `..` segments is still checked.
+fn reads_external_source(root: &Path, tool_name: &str, raw: &str) -> bool {
+    tool_name == "code_source"
+        && Path::new(raw).is_absolute()
+        && !Path::new(raw)
+            .components()
+            .any(|part| part == Component::ParentDir)
+        && crate::remote_fs::is_external(root, raw)
 }
 
 fn validate_single_workspace_path(root: &Path, raw: &str) -> Result<()> {
@@ -200,6 +216,35 @@ mod workspace_confinement_regressions {
             let err = validate_single_workspace_path(&root, &raw).unwrap_err();
             assert!(format!("{err:#}").contains("file URI"), "{raw}: {err:#}");
         }
+    }
+
+    /// A dependency's source, outside the checkout, is read with an explicit `workspace` as it is
+    /// without one; only `code_source` reads it, and a `..` segment is still refused (#1955).
+    #[test]
+    fn code_source_may_read_a_path_outside_the_selected_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let registry = "/home/someone/.cargo/registry/src/index.crates.io-1/tokio-1/src/lib.rs";
+        let args = serde_json::json!({ "path": registry });
+        validate_workspace_paths(&root, "code_source", &args, true)
+            .expect("an external dependency path is not refused by the selected workspace");
+
+        for tool in ["code_outline", "code_exec", "code_test"] {
+            let key = if tool == "code_exec" { "cwd" } else { "path" };
+            let args = serde_json::json!({ key: registry });
+            let err = validate_workspace_paths(&root, tool, &args, true).unwrap_err();
+            assert!(
+                format!("{err:#}").contains("outside the selected workspace"),
+                "{tool}: {err:#}"
+            );
+        }
+
+        let escaping = serde_json::json!({ "path": "/home/someone/../../etc/passwd" });
+        let err = validate_workspace_paths(&root, "code_source", &escaping, true).unwrap_err();
+        assert!(format!("{err:#}").contains(".."), "{err:#}");
+
+        let inside = serde_json::json!({ "path": "src/lib.rs" });
+        validate_workspace_paths(&root, "code_source", &inside, true).unwrap();
     }
 
     #[test]
