@@ -39,6 +39,10 @@ pub fn plan_command_with(
     filter: Option<&str>,
 ) -> Result<Vec<String>> {
     let filter = filter.filter(|f| !f.is_empty());
+    // The command the project names is the plan (#1961).
+    if let Some(custom) = tools.run.command_for(language, kind, filter)? {
+        return Ok(custom);
+    }
     if language == "zig" && kind == VerifyKind::Test && tools.zig_test_step && filter.is_some() {
         return Err(anyhow!(
             "Zig build test steps do not support the generic test-name filter; rerun without a filter"

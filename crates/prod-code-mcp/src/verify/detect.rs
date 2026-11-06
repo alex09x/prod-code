@@ -147,6 +147,7 @@ fn has_zig_test_step(root: &Path) -> bool {
 pub fn detect_tools(root: &Path) -> ProjectTools {
     let mut tools = ProjectTools {
         zig_test_step: has_zig_test_step(root),
+        run: super::run_config::RunConfig::load(root),
         ..ProjectTools::default()
     };
     tools.java_gradle_wrapper = root.join("gradlew").is_file();

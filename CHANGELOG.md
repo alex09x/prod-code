@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **A Project Names Its Commands, Its Rust Toolchain and Whether Rust Is Built With Cargo or Mitts** (`crates/prod-code-mcp`, #1961): `check`, `lint`, `test` and `benchmarks` ran the command the planner picked from the language and the files it found, and a project could change none of it; asking Mitts of every project broke 147 tests, since Mitts takes other flags. `prod-code.toml` now says it per project. `[commands.<language>]` with `test`, `check`, `lint` or `bench` is the argv to run, with `{filter}` for the test filter, and it is run as written: the planner's scope narrowing, which rewrites the flags of its own Cargo and Go commands, is not applied to it. `[rust] toolchain = "1.97.1"` runs the Rust command as `env RUSTUP_TOOLCHAIN=1.97.1 …`. `[rust] runner = "mitts"` plans `mitts check`, `mitts clippy` and `mitts test`; their output is read by the readers that read Cargo's (checked against output captured from Mitts 0.3.28 on a node), and a test argument Mitts would drop, anything but one name after `--`, is refused. A mistake in these keys is an error that names the key; without the file or the keys nothing changes. Not applied to the commands `impact` suggests or to `code_coverage`.
+
 ## v0.3.52 — 2026-11-05
 
 ### Fixed

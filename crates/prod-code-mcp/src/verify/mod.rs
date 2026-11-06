@@ -14,6 +14,7 @@ pub mod go_shadow;
 pub mod parse;
 pub mod plan;
 mod render;
+pub mod run_config;
 mod tooling;
 pub mod types;
 
