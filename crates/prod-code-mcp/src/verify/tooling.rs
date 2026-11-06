@@ -93,6 +93,10 @@ pub struct ProjectTools {
     /// A golangci-lint config (`.golangci.yml` and the like) at the root: the project expects
     /// golangci-lint, and `lint --fix` runs its fix mode.
     pub golangci_config: bool,
+    /// What the project's `prod-code.toml` says about the commands, the Rust toolchain and the
+    /// Rust runner (#1961).
+    #[serde(skip)]
+    pub run: super::run_config::RunConfig,
 }
 
 impl Default for ProjectTools {
@@ -108,6 +112,7 @@ impl Default for ProjectTools {
             python_tests: PythonTestRunner::Pytest,
             cpp: CppBuild::CMake,
             golangci_config: false,
+            run: super::run_config::RunConfig::default(),
         }
     }
 }

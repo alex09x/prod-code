@@ -129,14 +129,19 @@ fn plan_inner(
         .as_ref()
         .map_or_else(|| root.to_path_buf(), |sub| root.join(sub));
     let tools = detect_tools(&project_dir);
-    let mut command = if language == "swift" && has_xcode_project(&project_dir) {
+    // A command the project wrote is run as written: the narrowing below rewrites the flags of
+    // the planner's own Cargo and Go commands, which it would corrupt (#1961).
+    let custom = tools.run.has_command(language, kind);
+    let mut command = if custom {
+        plan_command_with(&tools, language, kind, filter)?
+    } else if language == "swift" && has_xcode_project(&project_dir) {
         plan_xcode_command(kind, filter)?
     } else if language == "swift" && is_xcodegen_spec(&project_dir) {
         plan_xcodegen_command(kind, filter)?
     } else {
         plan_command_with(&tools, language, kind, filter)?
     };
-    if let Some(hint) = project_hint {
+    if let Some(hint) = project_hint.filter(|_| !custom) {
         let missing_test_file = !hint.exists()
             && hint.extension().is_some_and(|extension| extension == "rs")
             && super::member_dir_named(&project_dir, hint).is_none();
@@ -167,6 +172,8 @@ fn plan_inner(
             }
         }
     }
+    // The project's Rust runner and toolchain apply last, to the command as narrowed.
+    let command = tools.run.finish(language, custom, command)?;
     Ok(ScopedVerification {
         subdir,
         language,

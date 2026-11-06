@@ -621,6 +621,25 @@ sysroot = true              # standard library from rust-src (default: true)
 
 Use `features = "all"` when the same module tree is compiled into several crates behind feature flags: rust-analyzer attaches each file to one crate, and a module behind a disabled feature is otherwise dead there.
 
+### Commands, Rust Toolchain and Rust Runner (`prod-code.toml`)
+
+`check`, `lint`, `test` and `benchmarks` run the command the planner picks from the language and the files it finds. A project can name its own, the Rust toolchain to run it with, and whether Rust is built with Cargo or Mitts:
+
+```toml
+[rust]
+toolchain = "1.97.1"   # sets RUSTUP_TOOLCHAIN for the Rust commands; it must already be on the node
+runner = "mitts"       # "cargo" (default) or "mitts"
+
+[commands.python]      # a language the planner names: rust, python, go, typescript, ...
+test = ["python3", "-m", "pytest", "-q", "-k", "{filter}"]
+check = ["mypy", "."]  # test, check, lint or bench
+```
+
+- A `[commands.<language>]` entry is the argv to run. It replaces the planned command and is run as written: the planner's scope narrowing (a path argument becoming `-p package`) is not applied to it. `{filter}` stands for the test filter; an argument that names it is left out when there is none, and a filter given to a command that has no `{filter}` is refused instead of dropped.
+- `runner = "mitts"` plans `mitts check`, `mitts clippy` and `mitts test` in place of the Cargo commands, and the same readers parse the output. Mitts takes the test filter as a name, not after `--`, and passes nothing after `--` to the tests, so a test argument other than one name is refused. `bench` stays on Cargo.
+- `toolchain` runs the Rust command as `env RUSTUP_TOOLCHAIN=<name> …`. Prod-code does not install toolchains; the node must have it (`rustup toolchain list` there).
+- A mistake in these keys (an unknown runner, an empty command) is an error that names the key. Without the file, or without these keys, nothing changes. They apply to `check`, `lint`, `test` and `benchmarks`; the commands `impact` suggests and `code_coverage` are not changed.
+
 ### Pinning a Workspace to One Node
 
 By default the cluster places a checkout and may move it: per-call routing, failover, background

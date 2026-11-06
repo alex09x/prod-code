@@ -396,3 +396,39 @@ fn test_toolchain_msrv_rejection_detection() {
     report.exit_code = Some(0);
     assert!(!report.is_toolchain_msrv_rejection());
 }
+
+/// What `mitts test` prints for a failing test, as captured on a node: the libtest text, then
+/// Mitts's own footer. The Cargo reader takes it as it is, which is why the planner can name
+/// Mitts as the Rust runner without a reader of its own (#1961).
+#[test]
+fn mitts_test_output_is_read_as_cargo_test_output() {
+    let text = "test tests::fails_one ... FAILED\ntest tests::passes_two ... ok\ntest tests::passes_one ... ok\n\nfailures:\n\n---- tests::fails_one stdout ----\n\nthread 'tests::fails_one' (3742318) panicked at src/lib.rs:10:22:\nassertion `left == right` failed: two is not three\n  left: 2\n right: 3\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    tests::fails_one\n\ntest result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n└─ ❌ dev profile failed in 0.12s (Test harness failed: Compiled probe@0.1.0::test:probe_unit_test)\n";
+    let (passed, failed, failures) = parse_cargo_test_text(text);
+    assert_eq!((passed, failed), (2, 1));
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert_eq!(failures[0].name, "tests::fails_one");
+    assert!(
+        failures[0].output.contains("two is not three"),
+        "{:?}",
+        failures[0]
+    );
+}
+
+/// A `mitts check --message-format=json` diagnostic, as captured on a node: the same shape as
+/// Cargo's, with a shorter `package_id`.
+#[test]
+fn mitts_check_json_is_read_as_a_cargo_diagnostic() {
+    let line = r#"{"reason":"compiler-message","package_id":"probe@0.1.0","manifest_path":"/work/probe/Cargo.toml","target":{"crate_types":["lib"],"edition":"2021","kind":["lib"],"name":"probe","src_path":"/work/probe/src/lib.rs"},"message":{"$message_type":"diagnostic","children":[],"code":{"code":"E0308","explanation":null},"level":"error","message":"mismatched types","rendered":"error[E0308]: mismatched types\n","spans":[{"byte_end":40,"byte_start":36,"column_end":24,"column_start":20,"expansion":null,"file_name":"src/lib.rs","is_primary":true,"label":"expected `u32`, found `&str`","line_end":2,"line_start":2,"suggested_replacement":null,"suggestion_applicability":null,"text":[{"highlight_end":24,"highlight_start":20,"text":"    let x: u32 = \"no\";"}]}]}}"#;
+    let diagnostic = parse_cargo_json_line(line).expect("the diagnostic is read");
+    assert_eq!(diagnostic.file.as_deref(), Some("src/lib.rs"));
+    assert!(
+        diagnostic.render().contains("mismatched types"),
+        "{}",
+        diagnostic.render()
+    );
+    // The build summary and Mitts's own status lines are not diagnostics.
+    assert!(parse_cargo_json_line(r#"{"reason":"build-finished","success":false}"#).is_none());
+    assert!(
+        parse_cargo_json_line("[mitts::stats] compiled=2 cached=0 tainted=0 total=2").is_none()
+    );
+}

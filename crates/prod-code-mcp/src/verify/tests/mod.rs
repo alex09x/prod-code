@@ -17,5 +17,6 @@ mod parse;
 mod plan;
 mod plan_summary;
 mod render;
+mod run_config_plan;
 mod wave2;
 mod wave2_js;
