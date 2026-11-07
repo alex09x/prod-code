@@ -94,6 +94,13 @@ def end_indexing():
     INDEXED[0] = True
     send({"jsonrpc": "2.0", "method": "$/progress", "params": {"token": "index", "value": {"kind": "end"}}})
 
+def start_indexing():
+    send({"jsonrpc": "2.0", "id": 7000, "method": "window/workDoneProgress/create", "params": {"token": "index"}})
+    send({"jsonrpc": "2.0", "method": "$/progress", "params": {"token": "index", "value": {"kind": "begin", "title": "indexing", "percentage": 0}}})
+    send({"jsonrpc": "2.0", "method": "$/progress", "params": {"token": "index", "value": {"kind": "report", "message": "1/2", "percentage": 50}}})
+    if os.environ["FAKE_INDEXING"] != "forever":
+        threading.Timer(float(os.environ["FAKE_INDEXING"]), end_indexing).start()
+
 while True:
     message = read()
     if message is None:
@@ -131,13 +138,14 @@ while True:
         # Keep the process alive but abandon stdin, as a wedged language server can.
         threading.Event().wait()
     elif method == "initialized" and os.environ.get("FAKE_INDEXING"):
-        # As clangd does: create a progress token, begin indexing, report, and end it after
-        # FAKE_INDEXING seconds (or never), answering workspace/symbol with nothing until then.
-        send({"jsonrpc": "2.0", "id": 7000, "method": "window/workDoneProgress/create", "params": {"token": "index"}})
-        send({"jsonrpc": "2.0", "method": "$/progress", "params": {"token": "index", "value": {"kind": "begin", "title": "indexing", "percentage": 0}}})
-        send({"jsonrpc": "2.0", "method": "$/progress", "params": {"token": "index", "value": {"kind": "report", "message": "1/2", "percentage": 50}}})
-        if os.environ["FAKE_INDEXING"] != "forever":
-            threading.Timer(float(os.environ["FAKE_INDEXING"]), end_indexing).start()
+        # As clangd or sourcekit-lsp does: create a progress token, begin indexing, report, and
+        # end it after FAKE_INDEXING seconds (or never), optionally starting after
+        # FAKE_INDEXING_DELAY seconds to model sourcekit-lsp 6.2.4 (~1.4 s gap after initialized).
+        delay = os.environ.get("FAKE_INDEXING_DELAY")
+        if delay:
+            threading.Timer(float(delay), start_indexing).start()
+        else:
+            start_indexing()
     elif method == "workspace/symbol":
         found = [{"name": "indexed", "kind": 12, "location": {"uri": "file:///wherever/a.txt",
                   "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 5}}}}]
@@ -437,6 +445,161 @@ async fn a_server_still_indexing_when_the_wait_ends_is_asked_with_a_note() {
         ),
         ("indexing", Some("1/2"), Some(50))
     );
+}
+
+/// A server that begins its first progress item 1.5 s after `initialized` (as `sourcekit-lsp`
+/// 6.2.4 does at ~1.4 s) slips past the 500 ms default settle window, returning an empty answer
+/// with no busy note; a 3 s settle window holds across the 1.5 s gap and either attaches the
+/// real indexing note when `index_wait` ends or returns the indexed symbols once done (#1969).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_that_begins_progress_after_one_and_a_half_seconds_is_held_by_its_settle_window() {
+    // 1. Default 500 ms settle misses progress begun at 1.5 s: empty result, no busy note.
+    let (dir_short, script_short) = workspace();
+    let mut short_settings = config(&script_short);
+    short_settings
+        .env
+        .insert("FAKE_INDEXING".to_string(), "forever".to_string());
+    short_settings
+        .env
+        .insert("FAKE_INDEXING_DELAY".to_string(), "1.5".to_string());
+    short_settings.ready = prod_code_protocol::readiness::ReadySignal::Progress;
+    let short_engine = GenericLspEngine::spawn(dir_short.path(), short_settings)
+        .await
+        .expect("the server starts");
+    let asked_short = std::time::Instant::now();
+    let short_answer = short_engine
+        .send_request(
+            "workspace/symbol",
+            serde_json::json!({ "query": "indexed" }),
+        )
+        .await
+        .expect("an answer");
+    assert!(
+        asked_short.elapsed() < Duration::from_millis(1200),
+        "500 ms settle gave up before 1.5 s: {:?}",
+        asked_short.elapsed()
+    );
+    assert_eq!(short_answer["result"], serde_json::json!([]));
+    assert!(
+        short_answer
+            .get(prod_code_protocol::readiness::BUSY_MEMBER)
+            .is_none(),
+        "default 500 ms settle missed the 1.5 s progress gap: {short_answer}"
+    );
+
+    // 2. A 3 s settle window holds across the 1.5 s gap: when indexing is still running at
+    // index_wait (2 s), the answer carries the server's active indexing progress note.
+    let (dir_busy, script_busy) = workspace();
+    let mut busy_settings = config(&script_busy);
+    busy_settings
+        .env
+        .insert("FAKE_INDEXING".to_string(), "forever".to_string());
+    busy_settings
+        .env
+        .insert("FAKE_INDEXING_DELAY".to_string(), "1.5".to_string());
+    busy_settings.ready = prod_code_protocol::readiness::ReadySignal::Progress;
+    busy_settings.settle = Duration::from_secs(3);
+    busy_settings.index_wait = Duration::from_secs(2);
+    let busy_engine = GenericLspEngine::spawn(dir_busy.path(), busy_settings)
+        .await
+        .expect("the server starts");
+    let busy_answer = busy_engine
+        .send_request(
+            "workspace/symbol",
+            serde_json::json!({ "query": "indexed" }),
+        )
+        .await
+        .expect("an answer");
+    assert_eq!(busy_answer["result"], serde_json::json!([]));
+    let busy: prod_code_protocol::readiness::Busy =
+        serde_json::from_value(busy_answer[prod_code_protocol::readiness::BUSY_MEMBER].clone())
+            .expect("3 s settle bridged the 1.5 s gap and attached the indexing note");
+    assert_eq!(
+        (
+            busy.title.as_str(),
+            busy.message.as_deref(),
+            busy.percentage
+        ),
+        ("indexing", Some("1/2"), Some(50))
+    );
+    assert!(busy_engine.readiness_known());
+
+    // 3. When indexing finishes within index_wait (1.5 s delay + 0.4 s indexing < 4 s wait),
+    // the 3 s settle window holds until the indexed answer is ready.
+    let (dir_done, script_done) = workspace();
+    let mut done_settings = config(&script_done);
+    done_settings
+        .env
+        .insert("FAKE_INDEXING".to_string(), "0.4".to_string());
+    done_settings
+        .env
+        .insert("FAKE_INDEXING_DELAY".to_string(), "1.5".to_string());
+    done_settings.ready = prod_code_protocol::readiness::ReadySignal::Progress;
+    done_settings.settle = Duration::from_secs(3);
+    done_settings.index_wait = Duration::from_secs(4);
+    let done_engine = GenericLspEngine::spawn(dir_done.path(), done_settings)
+        .await
+        .expect("the server starts");
+    let done_answer = done_engine
+        .send_request(
+            "workspace/symbol",
+            serde_json::json!({ "query": "indexed" }),
+        )
+        .await
+        .expect("an answer");
+    assert_eq!(
+        done_answer["result"].as_array().map(Vec::len),
+        Some(1),
+        "{done_answer}"
+    );
+    assert!(
+        done_answer
+            .get(prod_code_protocol::readiness::BUSY_MEMBER)
+            .is_none(),
+        "{done_answer}"
+    );
+    assert_eq!(
+        done_engine.readiness_state(),
+        prod_code_protocol::readiness::ReadyState::Ready
+    );
+    assert!(done_engine.readiness_known());
+}
+
+/// A progress-configured server that never emits progress (such as `sourcekit-lsp` 5.10, which
+/// has no background indexing) moves from starting to `ReadyState::Unknown` once its settle
+/// window ends: it attaches no bogus starting note and stops claiming its empty answers are
+/// proven final (#1969).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_progress_server_that_never_reports_moves_to_unknown_once_its_settle_window_ends() {
+    let (dir, script) = workspace();
+    let mut settings = config(&script);
+    settings.ready = prod_code_protocol::readiness::ReadySignal::Progress;
+    settings.settle = Duration::from_millis(200);
+    settings.index_wait = Duration::from_secs(2);
+    let engine = GenericLspEngine::spawn(dir.path(), settings)
+        .await
+        .expect("the server starts");
+    assert!(engine.readiness_known());
+
+    let answer = engine
+        .send_request(
+            "workspace/symbol",
+            serde_json::json!({ "query": "indexed" }),
+        )
+        .await
+        .expect("an answer");
+    assert!(
+        answer
+            .get(prod_code_protocol::readiness::BUSY_MEMBER)
+            .is_none(),
+        "settle ended before index_wait, so no bogus starting note: {answer}"
+    );
+    assert_eq!(engine.busy(), None);
+    assert_eq!(
+        engine.readiness_state(),
+        prod_code_protocol::readiness::ReadyState::Unknown
+    );
+    assert!(!engine.readiness_known());
 }
 
 /// Writes the server and a workspace for it to serve.

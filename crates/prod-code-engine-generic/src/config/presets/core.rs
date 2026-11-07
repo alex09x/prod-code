@@ -8,9 +8,10 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use prod_code_protocol::readiness::{INDEX_WAIT, ReadySignal, pyright_found_sources};
+use prod_code_protocol::readiness::{INDEX_WAIT, ReadySignal, SETTLE, pyright_found_sources};
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::time::Duration;
 
 use crate::config::discovery::which_bin;
 use crate::config::types::{
@@ -92,6 +93,7 @@ impl GenericLspConfig {
             initialization_options,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             ready,
+            settle: SETTLE,
             index_wait: INDEX_WAIT,
             retain_open_documents: cmd.contains("pyright"),
             max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
@@ -119,6 +121,7 @@ impl GenericLspConfig {
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             // `backgroundIndexProgress`: begun at once, ended when the index is complete.
             ready: ReadySignal::Progress,
+            settle: SETTLE,
             index_wait: INDEX_WAIT,
             retain_open_documents: false,
             max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
@@ -184,10 +187,14 @@ impl GenericLspConfig {
             working_dir: None,
             initialization_options: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
-            // It reports reloading the package as progress; bound initial index wait to 4s so
-            // cold Swift semantic queries return promptly with an indexing note (#1113).
+            // It reports reloading the package as progress; `sourcekit-lsp` 6.2.4 begins its
+            // first `Indexing` item ~1.4 s after `initialized`, past the 500 ms default (#1969).
+            // Bound initial index wait to 4 s so cold Swift semantic queries return promptly with
+            // an indexing note (#1113), while `sourcekit-lsp` 5.10 (no progress) settles out at
+            // 3 s as `ReadyState::Unknown` without a bogus starting note.
             ready: ReadySignal::Progress,
-            index_wait: std::time::Duration::from_secs(4),
+            settle: Duration::from_secs(3),
+            index_wait: Duration::from_secs(4),
             retain_open_documents: false,
             max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
             health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
@@ -226,6 +233,7 @@ impl GenericLspConfig {
             })),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             ready: ReadySignal::Progress,
+            settle: SETTLE,
             index_wait: INDEX_WAIT,
             retain_open_documents: false,
             max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
@@ -243,6 +251,7 @@ impl GenericLspConfig {
             initialization_options: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             ready: ReadySignal::Progress,
+            settle: SETTLE,
             index_wait: INDEX_WAIT,
             retain_open_documents: false,
             max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
@@ -272,6 +281,7 @@ impl GenericLspConfig {
             initialization_options: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             ready: ReadySignal::Progress,
+            settle: SETTLE,
             index_wait: INDEX_WAIT,
             retain_open_documents: false,
             max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,

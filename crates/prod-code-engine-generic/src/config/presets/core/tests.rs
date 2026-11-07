@@ -103,6 +103,7 @@ fn cpp_has_a_background_index_and_validation_drops_it() {
         ])
     );
     assert!(matches!(c.ready, ReadySignal::Progress));
+    assert_eq!(c.settle, SETTLE);
     assert_eq!(c.index_wait, INDEX_WAIT);
     let v = GenericLspConfig::for_cpp_validation();
     assert_eq!(v.command, "clangd");
@@ -136,6 +137,7 @@ fn swift_falls_back_to_xcrun_only_on_macos() {
         );
         assert!(c.env.is_empty());
         assert!(matches!(c.ready, ReadySignal::Progress));
+        assert_eq!(c.settle, Duration::from_secs(3));
         assert_eq!(c.index_wait, Duration::from_secs(4));
     }
     let c = GenericLspConfig::swift_with(
