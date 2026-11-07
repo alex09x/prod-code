@@ -1754,6 +1754,58 @@ async fn a_symbol_argument_is_resolved_before_the_tool_runs() {
     assert!(text_of(&result).contains(":9:1"), "{}", text_of(&result));
 }
 
+/// The first `workspace/symbol` is answered empty by a server that does not report its indexing,
+/// the search asks again, finds the symbol, and the tool answers: the empty first answer was about
+/// the lookup, and the answer does not say that an empty list is not proven final (#1969).
+#[tokio::test]
+async fn an_empty_lookup_on_the_way_does_not_mark_an_answer_that_was_found() {
+    let ws = workspace();
+    let lib = write(&ws, "src/lib.rs", "pub fn record() {}\n");
+    commit(&ws);
+    let path = lib.clone();
+    let def_path = lib.clone();
+    let symbol_answers = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let notes_given = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        // The first question about symbols carries the note of a server that does not report.
+        "prod-code/busy"
+            if params["method"] == "workspace/symbol"
+                && notes_given.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 =>
+        {
+            serde_json::json!({ "title": "not reporting", "unreported": true, "for_ms": 1000 })
+        }
+        "workspace/symbol" => {
+            if symbol_answers.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                serde_json::json!([])
+            } else {
+                serde_json::Value::Array(vec![answers::symbol("record", 12, &path, 1, 8)])
+            }
+        }
+        "textDocument/definition" => answers::locations(&def_path, &[(9, 1)]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({ "symbol": "record" }),
+    )
+    .await
+    .expect("the symbol resolves and the definition query runs");
+    let text = text_of(&result);
+    assert!(text.contains(":9:1"), "{text}");
+    assert!(!text.contains("not proven final"), "{text}");
+    assert!(
+        result
+            .structured_content
+            .as_ref()
+            .is_none_or(|data| data.get("answer_final").is_none()),
+        "{:?}",
+        result.structured_content
+    );
+}
+
 #[tokio::test]
 async fn stale_go_symbol_location_does_not_return_a_sibling_function() {
     let ws = workspace();
@@ -3187,6 +3239,49 @@ async fn an_answer_given_while_the_server_indexes_says_so() {
         .expect("the references"),
     );
     assert!(!text.contains("still"), "{text}");
+}
+
+/// A server that should say when it has indexed and says nothing, and answers with an empty list:
+/// the answer says that the list is not proven final, without a time to come back at, since there
+/// is no work to wait for (#1969).
+#[tokio::test]
+async fn an_empty_answer_from_a_server_that_does_not_report_is_not_proven_final() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        ),
+        ("src/lib.rs", "pub fn a() {}\n"),
+    ]);
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "prod-code/busy" => serde_json::json!({
+            "title": "not reporting", "unreported": true, "for_ms": 4000
+        }),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_references",
+        serde_json::json!({ "path": "src/lib.rs", "line": 1, "character": 8 }),
+    )
+    .await
+    .expect("the references");
+    let text = text_of(&result);
+    assert!(
+        text.contains(
+            "does not say whether it is still indexing, so an empty list is not proven final"
+        ),
+        "{text}"
+    );
+    assert!(
+        !text.contains("Ask again"),
+        "no time to come back at: {text}"
+    );
+    let structured = result.structured_content.expect("structured content");
+    assert_eq!(structured["answer_final"], false);
+    assert!(structured.get("retry_after_secs").is_none(), "{structured}");
 }
 
 /// A name the index lacks but a source file declares is answered with that declaration and why

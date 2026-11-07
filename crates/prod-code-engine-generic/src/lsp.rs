@@ -9,7 +9,7 @@
  */
 
 use anyhow::{Context, Result};
-use prod_code_protocol::readiness::{BUSY_MEMBER, Busy, ReadyState, needs_index};
+use prod_code_protocol::readiness::{BUSY_MEMBER, Busy, ReadyState, is_empty_answer, needs_index};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -261,6 +261,13 @@ impl GenericLspEngine {
                 // A delivered response remains valid even if the reader has since observed EOF.
                 if let Some(busy) = busy {
                     val[BUSY_MEMBER] = serde_json::to_value(busy)?;
+                } else if needs_index(method)
+                    && is_empty_answer(&val)
+                    && let Some(unreported) = self.readiness.unreported()
+                {
+                    // A server that should say when it has indexed, and has not, answered with
+                    // nothing: that is not proven to be the whole answer (#1969).
+                    val[BUSY_MEMBER] = serde_json::to_value(unreported)?;
                 }
                 Ok(val)
             }

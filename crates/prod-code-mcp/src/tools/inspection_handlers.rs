@@ -126,10 +126,14 @@ pub(crate) fn with_indexing_notes(
 /// The text under an answer given while the server was busy: what it was doing, that the answer
 /// may be incomplete and an empty list is no answer yet, and when to ask again.
 pub(crate) fn indexing_note_line(note: &crate::session::IndexingNote) -> String {
-    format!(
-        "(the language server was still {} when asked: this answer may be incomplete, and an empty list is not final. Ask again in about {} s.)",
-        note.text, note.retry_after_secs
-    )
+    match note.retry_after_secs {
+        Some(secs) => format!(
+            "(the language server was still {} when asked: this answer may be incomplete, and an empty list is not final. Ask again in about {secs} s.)",
+            note.text
+        ),
+        // A server that does not report: nothing to wait for, so no time to come back at.
+        None => "(the language server does not say whether it is still indexing, so an empty list is not proven final. If it matters, check it another way: a text search, or build the project so that the server can index it.)".to_string(),
+    }
 }
 
 /// The members a structured result gets when its answer was given while the server was busy:
@@ -144,8 +148,10 @@ pub(crate) fn indexing_structured(
     let texts: Vec<&str> = notes.iter().map(|n| n.text.as_str()).collect();
     members.insert("indexing_notes".into(), serde_json::json!(texts));
     members.insert("answer_final".into(), serde_json::json!(false));
-    let retry = notes.iter().map(|n| n.retry_after_secs).max().unwrap_or(30);
-    members.insert("retry_after_secs".into(), serde_json::json!(retry));
+    // Only work the server reported has a time to come back at.
+    if let Some(retry) = notes.iter().filter_map(|n| n.retry_after_secs).max() {
+        members.insert("retry_after_secs".into(), serde_json::json!(retry));
+    }
     members
 }
 

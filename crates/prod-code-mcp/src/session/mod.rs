@@ -23,4 +23,6 @@ mod types;
 
 pub(crate) use pool::is_connection_error;
 pub use pool::{pooled_engine_age, pooled_index_age, pooled_index_gated, pooled_query};
-pub use types::{INDEXING_GRACE, IndexingNote, LspSession, take_indexing_notes};
+pub use types::{
+    INDEXING_GRACE, IndexingNote, LspSession, retain_busy_indexing_notes, take_indexing_notes,
+};

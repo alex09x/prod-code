@@ -156,6 +156,39 @@ fn a_full_check_gets_more_time_than_an_interactive_query() {
     assert_eq!(budget_for("prodCode/structuralReplace").as_secs(), 900);
 }
 
+/// What a server that does not report its indexing could not say about an empty answer on the way
+/// is dropped once the tool has an answer; what a server that reported work said stays (#1969).
+#[test]
+fn only_the_notes_of_reported_work_are_kept_once_a_tool_has_its_answer() {
+    use super::super::types::{record_indexing_note, retain_busy_indexing_notes};
+    use prod_code_protocol::readiness::Busy;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    record_indexing_note(&root, &Busy::unreported(2000));
+    record_indexing_note(
+        &root,
+        &Busy {
+            title: "indexing".into(),
+            message: None,
+            percentage: Some(25),
+            for_ms: 3000,
+            unreported: false,
+        },
+    );
+    retain_busy_indexing_notes(&root);
+    let kept = super::super::types::take_indexing_notes(&root);
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert!(kept[0].is_busy());
+    assert_eq!(kept[0].retry_after_secs, Some(9));
+
+    // Nothing recorded, or only the silent kind: nothing is left, and nothing fails.
+    retain_busy_indexing_notes(&root);
+    record_indexing_note(&root, &Busy::unreported(1000));
+    retain_busy_indexing_notes(&root);
+    assert!(super::super::types::take_indexing_notes(&root).is_empty());
+}
+
 #[test]
 fn rebalance_error_is_classified_as_connection_error() {
     let err = anyhow::anyhow!("session rebalanced to 127.0.0.1:9400: congested gateway");

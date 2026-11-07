@@ -149,7 +149,8 @@ while True:
     elif method == "workspace/symbol":
         found = [{"name": "indexed", "kind": 12, "location": {"uri": "file:///wherever/a.txt",
                   "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 5}}}}]
-        send({"jsonrpc": "2.0", "id": message["id"], "result": found if INDEXED[0] else []})
+        # FAKE_EMPTY: a server whose index has nothing to show, however long it has run.
+        send({"jsonrpc": "2.0", "id": message["id"], "result": found if INDEXED[0] and not os.environ.get("FAKE_EMPTY") else []})
     elif method == "textDocument/hover" and os.environ.get("FAKE_COLLIDE"):
         # A request of the server's own that happens to carry the id of the question it is
         # answering, as gopls's window/workDoneProgress/create did; the answer follows once the
@@ -449,7 +450,7 @@ async fn a_server_still_indexing_when_the_wait_ends_is_asked_with_a_note() {
 
 /// A server that begins its first progress item 1.5 s after `initialized` (as `sourcekit-lsp`
 /// 6.2.4 does at ~1.4 s) slips past the 500 ms default settle window, returning an empty answer
-/// with no busy note; a 3 s settle window holds across the 1.5 s gap and either attaches the
+/// with the note of a server that does not report, not the indexing one; a 3 s settle window holds across the 1.5 s gap and either attaches the
 /// real indexing note when `index_wait` ends or returns the indexed symbols once done (#1969).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_server_that_begins_progress_after_one_and_a_half_seconds_is_held_by_its_settle_window() {
@@ -480,10 +481,16 @@ async fn a_server_that_begins_progress_after_one_and_a_half_seconds_is_held_by_i
         asked_short.elapsed()
     );
     assert_eq!(short_answer["result"], serde_json::json!([]));
+    // The 500 ms settle gave up before the progress began, so the answer carries no note of the
+    // indexing that is about to begin; it carries the note of a server that does not report,
+    // so that the empty list is not taken for final (#1969).
+    let short_note: prod_code_protocol::readiness::Busy =
+        serde_json::from_value(short_answer[prod_code_protocol::readiness::BUSY_MEMBER].clone())
+            .unwrap_or_else(|_| {
+                panic!("the note of a server that does not report: {short_answer}")
+            });
     assert!(
-        short_answer
-            .get(prod_code_protocol::readiness::BUSY_MEMBER)
-            .is_none(),
+        short_note.unreported,
         "default 500 ms settle missed the 1.5 s progress gap: {short_answer}"
     );
 
@@ -592,7 +599,7 @@ async fn a_progress_server_that_never_reports_moves_to_unknown_once_its_settle_w
         answer
             .get(prod_code_protocol::readiness::BUSY_MEMBER)
             .is_none(),
-        "settle ended before index_wait, so no bogus starting note: {answer}"
+        "settle ended before index_wait, so no bogus starting note, and the answer is not empty: {answer}"
     );
     assert_eq!(engine.busy(), None);
     assert_eq!(
@@ -600,6 +607,68 @@ async fn a_progress_server_that_never_reports_moves_to_unknown_once_its_settle_w
         prod_code_protocol::readiness::ReadyState::Unknown
     );
     assert!(!engine.readiness_known());
+}
+
+/// A silent progress server's empty answer carries the note of its own kind; a question that is
+/// not answered from the index, and a server of which nothing was expected, carry none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_empty_answer_from_a_silent_server_is_noted_and_other_answers_are_not() {
+    let (dir, script) = workspace();
+    let mut settings = config(&script);
+    settings.ready = prod_code_protocol::readiness::ReadySignal::Progress;
+    settings.settle = Duration::from_millis(200);
+    settings
+        .env
+        .insert("FAKE_EMPTY".to_string(), "1".to_string());
+    let silent = GenericLspEngine::spawn(dir.path(), settings)
+        .await
+        .expect("the server starts");
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let member = prod_code_protocol::readiness::BUSY_MEMBER;
+
+    // An empty answer from the index: the note of a server that does not report.
+    let empty = silent
+        .send_request(
+            "workspace/symbol",
+            serde_json::json!({ "query": "indexed" }),
+        )
+        .await
+        .expect("an answer");
+    assert_eq!(empty["result"], serde_json::json!([]));
+    let note: prod_code_protocol::readiness::Busy = serde_json::from_value(empty[member].clone())
+        .unwrap_or_else(|_| panic!("a note of its own kind: {empty}"));
+    assert!(note.unreported, "{note:?}");
+
+    let hover = silent
+        .send_request(
+            "textDocument/hover",
+            serde_json::json!({ "textDocument": { "uri": "file:///wherever/a.txt" }, "position": { "line": 0, "character": 0 } }),
+        )
+        .await
+        .expect("an answer");
+    assert!(
+        hover.get(member).is_none(),
+        "not answered from the index: {hover}"
+    );
+
+    // The default signal says nothing was expected: its empty answer is taken as it comes.
+    let (dir, script) = workspace();
+    let mut plain_settings = config(&script);
+    plain_settings
+        .env
+        .insert("FAKE_EMPTY".to_string(), "1".to_string());
+    let plain = GenericLspEngine::spawn(dir.path(), plain_settings)
+        .await
+        .expect("the server starts");
+    let answer = plain
+        .send_request(
+            "workspace/symbol",
+            serde_json::json!({ "query": "indexed" }),
+        )
+        .await
+        .expect("an answer");
+    assert_eq!(answer["result"], serde_json::json!([]));
+    assert!(answer.get(member).is_none(), "{answer}");
 }
 
 /// Writes the server and a workspace for it to serve.

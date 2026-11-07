@@ -321,6 +321,12 @@ fn busy_note(payload: &str) -> Option<String> {
     }
     let busy: prod_code_protocol::readiness::Busy =
         serde_json::from_value(value.get("params")?.clone()).ok()?;
+    if busy.unreported {
+        // Nothing to wait for: the server does not say, so there is no time to come back at.
+        return Some(
+            "warning: the language server does not say whether it is still indexing, so an empty answer below is not proven final; if it matters, check it another way (a text search, or build the project so that the server can index it)".to_string(),
+        );
+    }
     Some(format!(
         "warning: the language server was still indexing ({}); the answer below may be incomplete, and an empty one is not final: ask again in about {} s",
         busy.describe(),
@@ -365,6 +371,20 @@ mod tests {
             warning.contains("an empty one is not final: ask again in about 12 s"),
             "{warning}"
         );
+        // A server that does not report: the warning says so, and gives no time to come back at.
+        let silent = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": prod_code_protocol::readiness::BUSY_NOTIFICATION,
+            "params": { "title": "not reporting", "unreported": true, "for_ms": 3000 }
+        })
+        .to_string();
+        let warning = super::busy_note(&silent).expect("a note");
+        assert!(
+            warning.contains("does not say whether it is still indexing"),
+            "{warning}"
+        );
+        assert!(warning.contains("not proven final"), "{warning}");
+        assert!(!warning.contains("ask again"), "{warning}");
         assert_eq!(
             super::busy_note(r#"{"jsonrpc":"2.0","id":2,"result":[]}"#),
             None
