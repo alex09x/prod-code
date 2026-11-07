@@ -132,6 +132,30 @@ pub struct PlaceResponse {
     pub notified_sessions: usize,
 }
 
+/// Asks a node to forget a peer address: drop it from the cluster listing and from the peers it
+/// gossips with, and refuse to learn it again from other nodes' gossip (#1973).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ForgetPeerRequest {
+    /// The `host:port` the peer was listed under.
+    pub addr: String,
+    /// Whether the node passes the request on to the other peers it knows. The node that is
+    /// asked by a client sets it; the nodes it forwards to do not pass it on again.
+    #[serde(default)]
+    pub propagate: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ForgetPeerResponse {
+    /// Whether the answering node knew the address.
+    pub forgotten: bool,
+    /// The peers the request was passed on to, which answered.
+    #[serde(default)]
+    pub forwarded: Vec<String>,
+    /// The peers it could not be passed on to.
+    #[serde(default)]
+    pub failed: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MetricsRequest {
     /// Window in seconds; 0 means everything the node still holds.

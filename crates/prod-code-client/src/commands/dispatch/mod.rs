@@ -101,6 +101,7 @@ pub async fn dispatch(cmd: Commands, cx: DispatchContext<'_>) -> Result<()> {
         Commands::Lsp { .. }
         | Commands::Status { .. }
         | Commands::Cluster { .. }
+        | Commands::ForgetPeer { .. }
         | Commands::Resolve { .. }
         | Commands::Metrics { .. }
         | Commands::ReportIssue { .. }

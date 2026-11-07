@@ -15,8 +15,8 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    ClusterResponse, MetricsRequest, MetricsResponse, PlaceRequest, PlaceResponse, ProdCodeCodec,
-    StatusResponse, WireMessage,
+    ClusterResponse, ForgetPeerRequest, ForgetPeerResponse, MetricsRequest, MetricsResponse,
+    PlaceRequest, PlaceResponse, ProdCodeCodec, StatusResponse, WireMessage,
 };
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::Framed;
@@ -251,6 +251,30 @@ pub async fn discover_nodes_with_paths(
         }
     }
     nodes
+}
+
+/// Asks one node to forget the peer address `forget` and to tell the other nodes to (#1973).
+pub async fn forget_peer(addr: SocketAddr, forget: &str) -> Result<ForgetPeerResponse> {
+    let stream = tokio::time::timeout(PROBE_TIMEOUT, prod_code_protocol::transport::connect(addr))
+        .await
+        .map_err(|_| anyhow!("connect timed out"))??;
+    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    framed
+        .send(WireMessage::ForgetPeerRequest(ForgetPeerRequest {
+            addr: forget.to_string(),
+            propagate: true,
+        }))
+        .await?;
+    // Every other node is asked in turn, each within its own few seconds.
+    match tokio::time::timeout(Duration::from_secs(30), framed.next()).await {
+        Ok(Some(Ok(WireMessage::ForgetPeerResponse(r)))) => Ok(r),
+        Ok(Some(Ok(other))) => Err(anyhow!("unexpected reply: {other:?}")),
+        Ok(Some(Err(e))) => Err(anyhow!("decode error: {e}")),
+        Ok(None) => Err(anyhow!(
+            "connection closed (a gateway older than this client cannot decode the request)"
+        )),
+        Err(_) => Err(anyhow!("forget timed out")),
+    }
 }
 
 /// Asks one node for its usage metrics over the last `since_secs` (0 = all it holds).

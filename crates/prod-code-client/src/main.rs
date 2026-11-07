@@ -331,6 +331,12 @@ async fn run_cli() -> Result<()> {
         startup.report();
         return run_metrics(&remotes, since, json).await;
     }
+    // Forgetting an address needs no node for this checkout either: it is for when the cluster
+    // listing is wrong (#1973).
+    if let Some(Commands::ForgetPeer { address }) = &cli.command {
+        startup.report();
+        return run_forget_peer(&remotes, address).await;
+    }
     // An editor learns why its server could not start from the answer to its `initialize`,
     // not from a process that is gone before it asks (#338).
     if let (true, Err(err)) = (cli::argv::starts_an_editor_session(&cli), &picked) {

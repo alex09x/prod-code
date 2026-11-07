@@ -131,6 +131,14 @@ pub async fn handle_client(
                 state.metrics.record(ev);
                 framed.send(WireMessage::ClusterResponse(view)).await?;
             }
+            WireMessage::ForgetPeerRequest(req) => {
+                let resp = state.handle_forget(&req).await;
+                tracing::info!(
+                    addr = %req.addr, known = resp.forgotten, forwarded = ?resp.forwarded,
+                    failed = ?resp.failed, "forgot a peer address"
+                );
+                framed.send(WireMessage::ForgetPeerResponse(resp)).await?;
+            }
             WireMessage::PlaceRequest(req) => {
                 let start = std::time::Instant::now();
                 let resp = state.place(&req).await;

@@ -9,12 +9,14 @@
  */
 
 pub mod cluster;
+pub mod forget_peer;
 pub mod metrics;
 pub mod report;
 pub mod resolve;
 pub mod sync;
 
 pub use cluster::*;
+pub use forget_peer::*;
 pub use metrics::*;
 pub use report::*;
 pub use resolve::*;

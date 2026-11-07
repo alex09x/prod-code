@@ -10,6 +10,7 @@
 
 pub mod cli;
 pub mod config;
+mod forget;
 pub mod placement;
 pub mod process;
 pub mod server_state;
