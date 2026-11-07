@@ -13,6 +13,7 @@
 //! Provides structured TOML configuration for server binding, storage, metrics
 //! collection, bounded retention, and Prometheus pull/push export.
 
+use crate::metrics::MetricsEventLevel;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -75,6 +76,9 @@ pub struct MetricsConfig {
     /// Toolchain inventory interval in seconds (default: 3600).
     #[serde(default)]
     pub inventory_interval_secs: Option<u64>,
+    /// Usage-metrics event logging level: "operations" (default) or "all".
+    #[serde(default)]
+    pub event_level: Option<MetricsEventLevel>,
     #[serde(default)]
     pub retention: Option<MetricsRetentionConfig>,
     #[serde(default)]

@@ -104,6 +104,20 @@ pub fn format_operation_metrics(out: &mut String, metrics: &Metrics, node: &str)
         }
     });
 
+    let status_polls = metrics.status_polls();
+    if status_polls > 0 {
+        let key = OpKey {
+            category: "status".to_string(),
+            method: "status".to_string(),
+            engine: "none".to_string(),
+            status: "ok",
+            error_class: String::new(),
+        };
+        let entry = agg_map.entry(key).or_default();
+        entry.count += status_polls;
+        entry.duration_ms += metrics.status_poll_duration_ms();
+    }
+
     if !agg_map.is_empty() {
         let _ = writeln!(
             out,

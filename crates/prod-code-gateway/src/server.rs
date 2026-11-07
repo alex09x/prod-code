@@ -67,6 +67,7 @@ pub(crate) async fn run_announcing(
     let prune_worktree_secs = cli.effective_prune_worktree_secs();
     let prune_workspace_secs = cli.effective_prune_workspace_secs();
     let mut state = ServerState::new(cli.storage);
+    state.metrics.set_event_level(cli.metrics_event_level);
     state.build_cache_ram = cli.build_cache_ram;
     state.build_cache_dir = cli.build_cache_dir;
     if state.build_cache_ram {

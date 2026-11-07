@@ -423,6 +423,7 @@ instance = "gateway-custom-1"
         prometheus_push_interval_secs: 15,
         prometheus_job: "prod-code".to_string(),
         prometheus_instance: None,
+        metrics_event_level: crate::MetricsEventLevel::Operations,
         config: None,
     };
 
