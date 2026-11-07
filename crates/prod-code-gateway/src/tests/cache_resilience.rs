@@ -52,6 +52,7 @@ fn test_effective_prune_timeouts() {
         prometheus_push_interval_secs: 15,
         prometheus_job: "prod-code".to_string(),
         prometheus_instance: None,
+        metrics_event_level: crate::MetricsEventLevel::Operations,
         config: None,
     };
     // Defaults: 1 hour (3600s) for worktrees, 24 hours (86400s) for main workspaces

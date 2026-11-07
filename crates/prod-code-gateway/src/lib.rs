@@ -49,6 +49,7 @@ pub(crate) use gossip::*;
 pub(crate) use janitor_task::*;
 pub(crate) use lsp::*;
 pub(crate) use lsp_handlers::*;
+pub use metrics::MetricsEventLevel;
 pub use runner::*;
 pub use seed_cache::*;
 pub use server::*;

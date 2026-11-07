@@ -593,6 +593,7 @@ build_cache_ram = false
 enabled = true
 snapshot_interval_secs = 30
 inventory_interval_secs = 3600
+event_level = "operations"          # "operations" (default: real operations & errors; status polls write no line) or "all"
 
 [metrics.retention]
 retention_days = 14
@@ -700,7 +701,7 @@ The script locates the compiled binary locally, copies it via `scp` to each node
 - **HTTP Scrape Endpoint**: `http://<node>:9401/metrics` exposes Prometheus exposition format metrics (CPU, RSS memory, cache hit rates, query latencies, active Salsa engines).
 - **Health Probes**: `http://<node>:9401/health` returns `200 OK` as an HTTP listener liveness probe.
 - **Pushgateway**: Configure `mode = "push"` or `mode = "both"` in `gateway.toml` to stream telemetry directly to a central Prometheus Pushgateway.
-- **Event Audit Ledger**: Every query, command, and sync round appends an audit event to `<storage>/../metrics/events-YYYY-MM-DD.jsonl`. Analyze aggregate latency and usage across the cluster with `prod-code metrics [--since SECS]`.
+- **Event Audit Ledger**: Every query, command, and sync round appends an audit event to `<storage>/../metrics/events-YYYY-MM-DD.jsonl`. Analyze aggregate latency and usage across the cluster with `prod-code metrics [--since SECS]`. Routine status polls are filtered at the default `event_level = "operations"` (configurable to `"all"` to log all polls).
 
 **macOS Nodes.** `scripts/deploy-mac-node.sh <host> <advertise> <peers>` builds or installs the gateway, signs it with `PROD_CODE_SIGN_IDENTITY` under a stable bundle identifier (so macOS remembers the Local Network permission across updates), writes the launchd agent with `--engines` (`PROD_CODE_ENGINES`, default `swift`), and reloads the service.
 

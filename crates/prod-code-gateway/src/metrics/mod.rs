@@ -12,6 +12,7 @@
 
 pub mod event;
 pub mod inventory;
+pub mod level;
 pub mod prometheus_format;
 pub mod prometheus_push;
 pub mod prometheus_server;
@@ -25,12 +26,17 @@ mod tests;
 #[cfg(test)]
 mod review_regressions;
 
+#[cfg(test)]
+mod event_level_tests;
+
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, RwLock};
 
 pub use event::{Event, classify_error, command_method, is_compilation_command, now_ms};
 pub use inventory::collect_toolchain_inventory;
+pub use level::MetricsEventLevel;
 #[allow(unused_imports)]
 pub use prometheus_format::format_prometheus_metrics;
 pub use prometheus_push::run_prometheus_push_loop;
@@ -49,6 +55,9 @@ const SNAPSHOT_RING_CAP: usize = 1440; // 24 hours of 1-minute snapshots
 pub struct Metrics {
     dir: PathBuf,
     node: RwLock<String>,
+    event_level: RwLock<MetricsEventLevel>,
+    status_polls: AtomicU64,
+    status_poll_duration_ms: AtomicU64,
     ring: Mutex<VecDeque<Event>>,
     snapshots: Mutex<VecDeque<HostSnapshot>>,
     inventory: RwLock<Option<ToolchainInventory>>,
@@ -69,6 +78,9 @@ impl Metrics {
         Self {
             dir,
             node: RwLock::new(node.into()),
+            event_level: RwLock::new(MetricsEventLevel::Operations),
+            status_polls: AtomicU64::new(0),
+            status_poll_duration_ms: AtomicU64::new(0),
             ring: Mutex::new(VecDeque::with_capacity(4096)),
             snapshots: Mutex::new(VecDeque::with_capacity(SNAPSHOT_RING_CAP)),
             inventory: RwLock::new(None),
@@ -94,6 +106,35 @@ impl Metrics {
             .unwrap_or_else(|_| "unknown".to_string())
     }
 
+    /// The active event logging level.
+    pub fn event_level(&self) -> MetricsEventLevel {
+        self.event_level.read().map(|l| *l).unwrap_or_default()
+    }
+
+    /// Sets the active event logging level.
+    pub fn set_event_level(&self, level: MetricsEventLevel) {
+        if let Ok(mut l) = self.event_level.write() {
+            *l = level;
+        }
+    }
+
+    /// Total count of successful status polls filtered from the event ring and disk log.
+    pub fn status_polls(&self) -> u64 {
+        self.status_polls.load(Ordering::Relaxed)
+    }
+
+    /// Total duration in milliseconds of successful status polls filtered from the event ring.
+    pub fn status_poll_duration_ms(&self) -> u64 {
+        self.status_poll_duration_ms.load(Ordering::Relaxed)
+    }
+
+    fn should_filter(&self, event: &Event) -> bool {
+        match self.event_level() {
+            MetricsEventLevel::All => false,
+            MetricsEventLevel::Operations => event.ok && event.kind == "status",
+        }
+    }
+
     /// The receiver for [`run_writer`]; taken once at startup.
     pub fn take_receiver(&self) -> Option<rapidfire::mpsc::Receiver<TelemetryRecord>> {
         self.rx.lock().unwrap_or_else(|e| e.into_inner()).take()
@@ -106,7 +147,17 @@ impl Metrics {
     }
 
     /// Records one event: into the in-memory ring and into today's JSONL file via disk writer.
+    /// Under [`MetricsEventLevel::Operations`], successful status polls are counted in
+    /// aggregate counters for Prometheus and totals, but neither written to disk nor inserted
+    /// into the in-memory event ring.
     pub fn record(&self, event: Event) {
+        if self.should_filter(&event) {
+            self.status_polls.fetch_add(1, Ordering::Relaxed);
+            self.status_poll_duration_ms
+                .fetch_add(event.duration_ms, Ordering::Relaxed);
+            return;
+        }
+
         let node = self.node();
         let op = event.to_operation_metric(&node);
         let _ = self.tx.try_send(TelemetryRecord::Operation(op));

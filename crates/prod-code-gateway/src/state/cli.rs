@@ -144,6 +144,15 @@ pub struct ServerCli {
     #[arg(long, env = "PROD_CODE_PROMETHEUS_INSTANCE")]
     pub prometheus_instance: Option<String>,
 
+    /// Metrics event logging level: "operations" (default: real operations and all failures; successful
+    /// status polls write no line and take no slot in the in-memory ring), or "all" (record every event).
+    #[arg(
+        long = "metrics-event-level",
+        env = "PROD_CODE_METRICS_EVENT_LEVEL",
+        default_value = "operations"
+    )]
+    pub metrics_event_level: MetricsEventLevel,
+
     /// Path to gateway TOML configuration file (e.g. `/etc/prod-code/gateway.toml`).
     #[arg(short = 'c', long, env = "PROD_CODE_CONFIG")]
     pub config: Option<PathBuf>,
@@ -256,6 +265,12 @@ impl ServerCli {
             && let Some(ref dir) = config.server.build_cache_dir
         {
             self.build_cache_dir = Some(dir.clone());
+        }
+
+        if !is_explicit("metrics_event_level")
+            && let Some(level) = config.metrics.event_level
+        {
+            self.metrics_event_level = level;
         }
 
         if let Some(ref prom) = config.metrics.prometheus {
