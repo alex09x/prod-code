@@ -153,6 +153,11 @@ pub struct ServerCli {
     )]
     pub metrics_event_level: MetricsEventLevel,
 
+    /// Loading workspaces again after a restart: the `[warmup]` section of the configuration
+    /// file (#1976), with no command-line form.
+    #[arg(skip)]
+    pub warmup: crate::warmup::WarmupConfig,
+
     /// Path to gateway TOML configuration file (e.g. `/etc/prod-code/gateway.toml`).
     #[arg(short = 'c', long, env = "PROD_CODE_CONFIG")]
     pub config: Option<PathBuf>,
@@ -273,6 +278,8 @@ impl ServerCli {
             self.metrics_event_level = level;
         }
 
+        self.warmup = config.warmup.clone();
+
         if let Some(ref prom) = config.metrics.prometheus {
             let prom_disabled =
                 prom.enabled == Some(false) || prom.mode.as_deref() == Some("disabled");
@@ -327,6 +334,9 @@ impl ServerCli {
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let config_file = crate::state::config::load_config_file(cli.config.as_deref())?;
         if let Some(ref cfg) = config_file {
+            cfg.warmup
+                .validate()
+                .map_err(|reason| anyhow::anyhow!("invalid gateway configuration: {reason}"))?;
             cli.merge_config(cfg, Some(&matches));
         }
         Ok(cli)

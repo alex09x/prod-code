@@ -32,6 +32,9 @@ pub struct WorkspaceManager {
     pub(crate) admission: Arc<crate::admission::Admission>,
     pub(crate) rust_loader: RustLoader,
     pub(crate) load_semaphore: Arc<tokio::sync::Semaphore>,
+    /// The workspaces in use lately, set once by the server (#1976); a manager built without
+    /// one (a test, an embedding) records nothing.
+    pub(crate) recent: std::sync::OnceLock<Arc<crate::warmup::RecentWorkspaces>>,
 }
 
 impl Default for WorkspaceManager {
@@ -67,7 +70,13 @@ impl WorkspaceManager {
             admission,
             rust_loader: Arc::new(prod_code_engine_rust::RustEngine::load),
             load_semaphore: Arc::new(tokio::sync::Semaphore::new(max_concurrent_loads)),
+            recent: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Has the manager note the workspaces it serves in `recent`; only the first call counts.
+    pub fn record_recent(&self, recent: Arc<crate::warmup::RecentWorkspaces>) {
+        let _ = self.recent.set(recent);
     }
 
     #[cfg(test)]

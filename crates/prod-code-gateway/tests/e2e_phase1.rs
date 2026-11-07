@@ -307,6 +307,7 @@ async fn unix_socket_local_transport_and_negotiated_capabilities_e2e() {
         prometheus_job: "prod-code".to_string(),
         prometheus_instance: None,
         metrics_event_level: prod_code_gateway::MetricsEventLevel::Operations,
+        warmup: Default::default(),
         config: None,
     };
 
