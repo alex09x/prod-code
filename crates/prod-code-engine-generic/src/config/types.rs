@@ -8,7 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use prod_code_protocol::readiness::{INDEX_WAIT, ReadySignal};
+use prod_code_protocol::readiness::{INDEX_WAIT, ReadySignal, SETTLE};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -40,6 +40,9 @@ pub struct GenericLspConfig {
     /// How the server tells that it has loaded and indexed its project, so that questions
     /// answered from its index wait for it instead of getting nothing or a part (#391).
     pub ready: ReadySignal,
+    /// Settle window after `initialized` during which a [`ReadySignal::Progress`] server that has
+    /// not yet emitted its first progress item is held as starting (#1969).
+    pub settle: Duration,
     /// How long such a question waits for the server at most before it is asked anyway, with
     /// a note of how far the server got.
     pub index_wait: Duration,
@@ -66,6 +69,7 @@ impl Default for GenericLspConfig {
             initialization_options: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             ready: ReadySignal::Unknown,
+            settle: SETTLE,
             index_wait: INDEX_WAIT,
             retain_open_documents: false,
             max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,

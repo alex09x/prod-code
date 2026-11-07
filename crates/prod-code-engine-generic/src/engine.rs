@@ -165,7 +165,7 @@ impl GenericLspEngine {
         let is_alive = Arc::new(AtomicBool::new(true));
         let last_activity = Arc::new(RwLock::new(Instant::now()));
 
-        let readiness = Arc::new(Readiness::new(config.ready));
+        let readiness = Arc::new(Readiness::with_settle(config.ready, config.settle));
         let capabilities = Arc::new(RwLock::new(None));
         let accepts_documents = Arc::new(AtomicBool::new(true));
 

@@ -9,7 +9,7 @@
  */
 
 use super::tracker::Readiness;
-use super::types::{Busy, ReadySignal, needs_index, pyright_found_sources};
+use super::types::{Busy, ReadySignal, ReadyState, SETTLE, needs_index, pyright_found_sources};
 use serde_json::json;
 use std::time::{Duration, Instant};
 
@@ -177,4 +177,96 @@ fn the_time_to_ask_again_comes_from_the_progress_and_stays_within_bounds() {
     assert_eq!(busy(Some(99), 10_000).retry_after_secs(), 5);
     assert_eq!(busy(Some(1), 10_000).retry_after_secs(), 60);
     assert_eq!(busy(Some(100), 10_000).retry_after_secs(), 30);
+}
+
+#[tokio::test]
+async fn a_longer_settle_window_holds_until_late_progress_begins() {
+    let ready = Readiness::with_settle(ReadySignal::Progress, Duration::from_millis(900));
+    assert!(ready.known());
+    assert_eq!(ready.state().as_str(), "loading");
+
+    // Past the default 500 ms settle window, a server with a 900 ms settle window is still held.
+    tokio::time::sleep(SETTLE + Duration::from_millis(100)).await;
+    assert_eq!(ready.busy().map(|b| b.title), Some("starting".to_string()));
+    assert!(ready.known());
+
+    ready.on_message(&progress(
+        "idx",
+        json!({ "kind": "begin", "title": "Indexing" }),
+    ));
+    assert_eq!(ready.state().as_str(), "indexing");
+    ready.on_message(&progress("idx", json!({ "kind": "end" })));
+    assert_eq!(ready.state(), ReadyState::Ready);
+    assert_eq!(ready.state().as_str(), "ready");
+    assert!(ready.known());
+}
+
+#[tokio::test]
+async fn a_progress_server_that_never_speaks_becomes_unknown_after_its_settle_window() {
+    let ready = Readiness::with_settle(ReadySignal::Progress, Duration::from_millis(80));
+    assert!(ready.known());
+    assert!(ready.busy().is_some());
+
+    assert_eq!(ready.wait(Duration::from_millis(400)).await, None);
+    assert_eq!(ready.state(), ReadyState::Unknown);
+    assert_eq!(ready.state().as_str(), "unknown");
+    assert!(!ready.known());
+}
+
+#[tokio::test]
+async fn several_tokens_at_once_stay_busy_until_every_open_token_ends() {
+    let ready = Readiness::new(ReadySignal::Progress);
+    // Unbegun create token alongside real work does not mask the begun work's detail (#1970).
+    ready.on_message(&json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "window/workDoneProgress/create",
+        "params": { "token": "pending" }
+    }));
+    ready.on_message(&progress(
+        "reload",
+        json!({ "kind": "begin", "title": "Reloading Package" }),
+    ));
+    ready.on_message(&progress(
+        "index",
+        json!({ "kind": "begin", "title": "Indexing", "message": "0 / 3", "percentage": 0 }),
+    ));
+    ready.on_message(&progress(
+        "index",
+        json!({ "kind": "report", "message": "1 / 3", "percentage": 33 }),
+    ));
+    assert_eq!(
+        ready.busy().map(|b| b.title),
+        Some("Reloading Package".to_string())
+    );
+
+    // Reloading ends while Indexing continues through 66% -> still busy with Indexing's detail.
+    ready.on_message(&progress("reload", json!({ "kind": "end" })));
+    let busy = ready.busy().expect("still indexing");
+    assert_eq!(
+        (
+            busy.title.as_str(),
+            busy.message.as_deref(),
+            busy.percentage
+        ),
+        ("Indexing", Some("1 / 3"), Some(33))
+    );
+    assert!(busy.describe().starts_with("Indexing (1 / 3, 33%) for "));
+
+    ready.on_message(&progress(
+        "index",
+        json!({ "kind": "report", "message": "2 / 3", "percentage": 66 }),
+    ));
+    assert_eq!(ready.busy().and_then(|b| b.percentage), Some(66));
+
+    // Indexing ends, but `pending` never ended -> wait times out with `pending` still open.
+    ready.on_message(&progress("index", json!({ "kind": "end" })));
+    let leftover = ready
+        .wait(Duration::from_millis(120))
+        .await
+        .expect("unended token keeps tracker busy");
+    assert_eq!(leftover.title, "starting");
+
+    ready.on_message(&progress("pending", json!({ "kind": "end" })));
+    assert_eq!(ready.state(), ReadyState::Ready);
 }

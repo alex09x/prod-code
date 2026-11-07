@@ -10,7 +10,7 @@
 
 //! TypeScript / JavaScript server selection with a lazily resolved global npm root.
 
-use prod_code_protocol::readiness::{INDEX_WAIT, ReadySignal};
+use prod_code_protocol::readiness::{INDEX_WAIT, ReadySignal, SETTLE};
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -119,6 +119,7 @@ impl GenericLspConfig {
             initialization_options,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             ready,
+            settle: SETTLE,
             index_wait: INDEX_WAIT,
             retain_open_documents: false,
             max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,

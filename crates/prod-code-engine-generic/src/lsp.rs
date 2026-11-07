@@ -9,7 +9,7 @@
  */
 
 use anyhow::{Context, Result};
-use prod_code_protocol::readiness::{BUSY_MEMBER, Busy, needs_index};
+use prod_code_protocol::readiness::{BUSY_MEMBER, Busy, ReadyState, needs_index};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -133,9 +133,14 @@ impl GenericLspEngine {
     }
 
     /// Whether the server's readiness is known, so that its index answers are final once it
-    /// has said it is ready (#391).
+    /// has said it is ready (#391, #1969).
     pub fn readiness_known(&self) -> bool {
         self.readiness.known()
+    }
+
+    /// Current readiness state (`Busy`, `Ready`, or `Unknown`) reported by the server (#1969).
+    pub fn readiness_state(&self) -> ReadyState {
+        self.readiness.state()
     }
 
     /// The loading or indexing the server is still doing, if any.

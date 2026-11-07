@@ -73,6 +73,33 @@ impl Busy {
     }
 }
 
+/// Whether a server is ready to answer from its index, still working, or has never said.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReadyState {
+    /// Working on loading or indexing (or still within the settle or log window after
+    /// `initialized`).
+    Busy(Busy),
+    /// Finished the work it reported, logged its setup line, or holds questions itself: an empty
+    /// answer from its index is final.
+    Ready,
+    /// Never reported progress or its setup line (for example `sourcekit-lsp` 5.10, which has no
+    /// background indexing, or a server with [`ReadySignal::Unknown`]): it is not busy, yet
+    /// whether an empty answer is final is unknown.
+    Unknown,
+}
+
+impl ReadyState {
+    /// Short label for diagnostics and usage metrics (`loading`, `indexing`, `ready`, `unknown`).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Busy(busy) if busy.title == "starting" => "loading",
+            Self::Busy(_) => "indexing",
+            Self::Ready => "ready",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// The JSON-RPC member an engine adds to an answer given while its server was still busy, and
 /// the notification the gateway turns it into for its client.
 pub const BUSY_MEMBER: &str = "prodCodeIndexing";
@@ -100,9 +127,10 @@ pub fn needs_index(method: &str) -> bool {
 /// indexing before it is asked anyway, with a note of how far the server got.
 pub const INDEX_WAIT: Duration = Duration::from_secs(30);
 
-/// How long after `initialized` a server that reports progress may take to begin it: gopls and
-/// clangd began within 0.15 s on a build node.
-pub(crate) const SETTLE: Duration = Duration::from_millis(500);
+/// Default settle window after `initialized` for a server that reports progress to begin its
+/// first work item: `gopls` and `clangd` began within 0.15 s on a build node, while slower
+/// presets (such as `sourcekit-lsp`, ~1.4 s) set a longer window per server (#1969).
+pub const SETTLE: Duration = Duration::from_millis(500);
 
 /// How long a server that announces its readiness in its log is waited for at most: one that
 /// never logs the line is not waited on forever.
