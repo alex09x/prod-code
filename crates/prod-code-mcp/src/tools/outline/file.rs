@@ -204,7 +204,12 @@ fn swift_result(
                     ),
                 ))
             } else {
-                Err(error).context("Swift outline unavailable; run `prod-code cluster` to inspect gateway health and retry with a reachable Swift node")
+                // The cause goes into the text itself: a caller that shows only the outermost
+                // message must still see whether the node was busy, timed out or refused (#1966).
+                let cause = format!("{error:#}");
+                Err(error).context(format!(
+                    "Swift outline unavailable ({cause}); run `prod-code cluster` to inspect gateway health and retry with a reachable Swift node"
+                ))
             }
         }
     }
@@ -291,4 +296,23 @@ pub(crate) fn local_swift_outline_symbols(source: &str) -> serde_json::Value {
         }
     }
     serde_json::Value::Array(items)
+}
+
+#[cfg(test)]
+mod swift_result_tests {
+    use super::swift_result;
+
+    /// The refusal names what went wrong, so a caller showing only the outermost message still
+    /// tells a busy node from a refused connection (#1966).
+    #[test]
+    fn the_unavailable_message_carries_the_underlying_cause() {
+        let failure = Err(anyhow::anyhow!("session limit reached on the node"));
+        let error = swift_result(Some("struct A {}"), failure).unwrap_err();
+        let outermost = error.to_string();
+        assert!(
+            outermost.contains("Swift outline unavailable")
+                && outermost.contains("session limit reached on the node"),
+            "{outermost}"
+        );
+    }
 }

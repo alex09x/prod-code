@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## v0.3.55 — 2026-11-07
+
+### Fixed
+- **A Refused Swift Outline Says Why** (`crates/prod-code-mcp`, #1966): `code_outline` on a Swift file that the node could not answer returned only `Swift outline unavailable; run prod-code cluster …`, with the cause (busy node, timeout, refused session) left in a part of the error that callers showing the outermost message do not print. The cause is now inside the message itself. A test pins it.
+- `code_impact` takes a `workspace` since v0.3.52 (#1939), which is what #1981 asked for; the issue stays open only for the exact command and output of the case that analysed the wrong checkout.
+
 ### Added
 - **`prod-code forget-peer <host:port>` Removes an Address That Stays Listed as Offline** (`crates/prod-code-protocol`, `crates/prod-code-gateway`, `crates/prod-code-mcp`, `crates/prod-code-client`, #1973): a node that came back under another address stayed in the cluster listing under the old one, because every node handed the address back to the others after each had dropped it. The node asked drops the address from its listing and from the peers it gossips with, keeps it out of what it learns from other nodes' gossip (for seven days; the peer itself speaking to it clears that), and passes the request to every other node it knows (`ForgetPeerRequest`, `ForgetPeerResponse`); the answer names the nodes it could not reach; the machine that runs the command also drops the address from its node cache and its remembered placements, so the next `prod-code cluster` does not read it back, and the command does not wait for a node for the current checkout. A gateway whose unit still lists the address in `--peers` learns it again at its next restart. A gateway older than this client closes the connection on the new message.
 
