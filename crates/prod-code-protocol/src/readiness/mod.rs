@@ -21,6 +21,6 @@ mod tests;
 
 pub use tracker::Readiness;
 pub use types::{
-    BUSY_MEMBER, BUSY_NOTIFICATION, Busy, INDEX_WAIT, ReadySignal, ReadyState, SETTLE, needs_index,
-    pyright_found_sources,
+    BUSY_MEMBER, BUSY_NOTIFICATION, Busy, INDEX_WAIT, ReadySignal, ReadyState, SETTLE,
+    is_empty_answer, needs_index, pyright_found_sources,
 };

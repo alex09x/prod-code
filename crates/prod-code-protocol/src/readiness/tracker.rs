@@ -149,6 +149,7 @@ impl Readiness {
                 message: work.message.clone(),
                 percentage: work.percentage,
                 for_ms: work.began.elapsed().as_millis() as u64,
+                unreported: false,
             });
         }
         let starting = |detail: &str| {
@@ -157,6 +158,7 @@ impl Readiness {
                 message: Some(detail.to_string()),
                 percentage: None,
                 for_ms: state.started.elapsed().as_millis() as u64,
+                unreported: false,
             })
         };
         match self.signal {
@@ -181,6 +183,20 @@ impl Readiness {
             ReadySignal::HoldsQuestions => ReadyState::Ready,
             ReadySignal::Unknown => ReadyState::Unknown,
         }
+    }
+
+    /// The note for a server that was expected to report its loading and indexing (progress or
+    /// a log line) and has said nothing within its window, so that an empty answer of its is not
+    /// proven final. `None` for a server that reports, and for one whose signal is
+    /// [`ReadySignal::Unknown`]: nothing was expected of it, and the answers of such a server
+    /// (a test double, a server that cannot be told) are taken as they come.
+    pub fn unreported(&self) -> Option<Busy> {
+        let expected = matches!(self.signal, ReadySignal::Progress | ReadySignal::Log(_));
+        if expected && matches!(self.state(), ReadyState::Unknown) {
+            let for_ms = self.lock().started.elapsed().as_millis() as u64;
+            return Some(Busy::unreported(for_ms));
+        }
+        None
     }
 
     /// The work the server is still doing, or `None` when it is ready (or nothing is known).

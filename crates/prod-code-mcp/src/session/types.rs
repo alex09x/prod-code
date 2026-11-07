@@ -84,14 +84,23 @@ static INDEXING_NOTES: std::sync::LazyLock<std::sync::Mutex<HashMap<PathBuf, Vec
 pub struct IndexingNote {
     /// "indexing (1 / 3, 33%) for 2 s".
     pub text: String,
-    /// The gateway's estimate of when the work is done, 5 to 60 s.
-    pub retry_after_secs: u64,
+    /// The estimate of when the work is done, 5 to 60 s. `None` for a server that does not
+    /// report its indexing: there is no work to wait for, and asking again changes nothing by
+    /// itself (#1969).
+    pub retry_after_secs: Option<u64>,
+}
+
+impl IndexingNote {
+    /// Whether the server reported work it was still doing, as against saying nothing.
+    pub fn is_busy(&self) -> bool {
+        self.retry_after_secs.is_some()
+    }
 }
 
 pub(crate) fn record_indexing_note(root: &Path, busy: &prod_code_protocol::readiness::Busy) {
     let note = IndexingNote {
         text: busy.describe(),
-        retry_after_secs: busy.retry_after_secs(),
+        retry_after_secs: (!busy.unreported).then(|| busy.retry_after_secs()),
     };
     let mut notes = INDEXING_NOTES.lock().unwrap_or_else(|e| e.into_inner());
     let notes = notes.entry(root.to_path_buf()).or_default();

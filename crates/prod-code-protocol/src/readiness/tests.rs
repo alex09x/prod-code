@@ -9,12 +9,18 @@
  */
 
 use super::tracker::Readiness;
-use super::types::{Busy, ReadySignal, ReadyState, SETTLE, needs_index, pyright_found_sources};
+use super::types::{
+    Busy, ReadySignal, ReadyState, SETTLE, is_empty_answer, needs_index, pyright_found_sources,
+};
 use serde_json::json;
 use std::time::{Duration, Instant};
 
 fn progress(token: &str, value: serde_json::Value) -> serde_json::Value {
     json!({ "jsonrpc": "2.0", "method": "$/progress", "params": { "token": token, "value": value } })
+}
+
+fn progress_create(token: &str) -> serde_json::Value {
+    json!({ "jsonrpc": "2.0", "id": 1, "method": "window/workDoneProgress/create", "params": { "token": token } })
 }
 
 #[tokio::test]
@@ -149,6 +155,7 @@ fn busy_goes_over_the_wire_without_empty_members() {
         message: None,
         percentage: Some(40),
         for_ms: 3200,
+        unreported: false,
     };
     let json = serde_json::to_value(&busy).unwrap();
     assert_eq!(
@@ -160,12 +167,82 @@ fn busy_goes_over_the_wire_without_empty_members() {
 }
 
 #[test]
+fn a_server_that_does_not_report_is_a_note_of_its_own_kind() {
+    let note = Busy::unreported(4200);
+    assert!(note.unreported);
+    assert_eq!(
+        note.describe(),
+        "the server does not say whether it is still indexing"
+    );
+    // On the wire it carries the flag; an older reader that does not know it still reads a Busy,
+    // and one written by an older gateway reads as work that was reported.
+    let json = serde_json::to_value(&note).unwrap();
+    assert_eq!(json["unreported"], true);
+    assert_eq!(serde_json::from_value::<Busy>(json).unwrap(), note);
+    let old = json!({ "title": "indexing", "for_ms": 1000 });
+    assert!(!serde_json::from_value::<Busy>(old).unwrap().unreported);
+}
+
+#[tokio::test]
+async fn only_a_server_that_was_expected_to_report_and_did_not_is_unreported() {
+    let silent = |signal| Readiness::with_settle(signal, Duration::from_millis(30));
+    let starting = Readiness::with_settle(ReadySignal::Progress, Duration::from_secs(60));
+    assert!(
+        starting.unreported().is_none(),
+        "within its settle window it is starting, not silent"
+    );
+    let quiet = silent(ReadySignal::Progress);
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    let note = quiet.unreported().expect("silent past the window");
+    assert!(note.unreported);
+
+    // A server that reported is not unreported, whether it is working or done.
+    let reporting = silent(ReadySignal::Progress);
+    reporting.on_message(&progress_create("t"));
+    reporting.on_message(&progress(
+        "t",
+        json!({ "kind": "begin", "title": "Indexing" }),
+    ));
+    assert!(reporting.unreported().is_none());
+    reporting.on_message(&progress("t", json!({ "kind": "end" })));
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    assert!(reporting.unreported().is_none(), "it has said it is done");
+
+    // Nothing was expected of a server with no signal, and one that holds questions is ready.
+    let unknown = silent(ReadySignal::Unknown);
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    assert!(unknown.unreported().is_none());
+    assert!(silent(ReadySignal::HoldsQuestions).unreported().is_none());
+}
+
+#[test]
+fn an_answer_is_empty_when_it_has_no_result_a_list_or_an_object_to_show() {
+    for empty in [
+        json!({ "id": 1, "result": null }),
+        json!({ "id": 1 }),
+        json!({ "id": 1, "result": [] }),
+        json!({ "id": 1, "result": {} }),
+    ] {
+        assert!(is_empty_answer(&empty), "{empty}");
+    }
+    for filled in [
+        json!({ "id": 1, "result": [ { "name": "a" } ] }),
+        json!({ "id": 1, "result": { "contents": "x" } }),
+        json!({ "id": 1, "result": 0 }),
+        json!({ "id": 1, "error": { "code": -32601, "message": "no" } }),
+    ] {
+        assert!(!is_empty_answer(&filled), "{filled}");
+    }
+}
+
+#[test]
 fn the_time_to_ask_again_comes_from_the_progress_and_stays_within_bounds() {
     let busy = |percentage: Option<u64>, for_ms: u64| Busy {
         title: "indexing".to_string(),
         message: None,
         percentage,
         for_ms,
+        unreported: false,
     };
     // 40% in 12 s: 18 s still to go.
     assert_eq!(busy(Some(40), 12_000).retry_after_secs(), 18);

@@ -38,11 +38,31 @@ pub struct Busy {
     pub percentage: Option<u64>,
     /// Milliseconds since the work began.
     pub for_ms: u64,
+    /// Not work the server reported: the server was expected to report its loading and
+    /// indexing and has said nothing, so there is no work to wait for. Its empty answer is not
+    /// proven final, and asking again later changes nothing by itself (#1969).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unreported: bool,
 }
 
 impl Busy {
+    /// The note for a server that is expected to report and does not, `for_ms` after it
+    /// started.
+    pub fn unreported(for_ms: u64) -> Self {
+        Self {
+            title: "not reporting".to_string(),
+            message: Some("the server does not say whether it is still indexing".to_string()),
+            percentage: None,
+            for_ms,
+            unreported: true,
+        }
+    }
+
     /// "indexing (1234/5000, 25%) for 3 s", for a note under an answer.
     pub fn describe(&self) -> String {
+        if self.unreported {
+            return "the server does not say whether it is still indexing".to_string();
+        }
         let mut detail = Vec::new();
         if let Some(message) = self.message.as_deref().filter(|m| !m.is_empty()) {
             detail.push(message.to_string());
@@ -70,6 +90,20 @@ impl Busy {
             _ => DEFAULT,
         };
         estimate.clamp(5, 60)
+    }
+}
+
+/// Whether an answer from the index is empty: no result, an empty list or an empty object. Such
+/// an answer from a server whose readiness is not proven is not known to be final.
+pub fn is_empty_answer(answer: &serde_json::Value) -> bool {
+    if answer.get("error").is_some() {
+        return false;
+    }
+    match answer.get("result") {
+        None | Some(serde_json::Value::Null) => true,
+        Some(serde_json::Value::Array(items)) => items.is_empty(),
+        Some(serde_json::Value::Object(members)) => members.is_empty(),
+        Some(_) => false,
     }
 }
 

@@ -65,6 +65,9 @@ pub async fn rename_across(
         .flat_map(|root| {
             crate::session::take_indexing_notes(root)
                 .into_iter()
+                // A server that says nothing about its indexing does not block the plan, as
+                // before; one that reported work it was still doing does.
+                .filter(|note| note.is_busy())
                 .map(move |note| (root.clone(), note.text))
         })
         .collect();

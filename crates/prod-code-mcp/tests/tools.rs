@@ -3189,6 +3189,49 @@ async fn an_answer_given_while_the_server_indexes_says_so() {
     assert!(!text.contains("still"), "{text}");
 }
 
+/// A server that should say when it has indexed and says nothing, and answers with an empty list:
+/// the answer says that the list is not proven final, without a time to come back at, since there
+/// is no work to wait for (#1969).
+#[tokio::test]
+async fn an_empty_answer_from_a_server_that_does_not_report_is_not_proven_final() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        ),
+        ("src/lib.rs", "pub fn a() {}\n"),
+    ]);
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "prod-code/busy" => serde_json::json!({
+            "title": "not reporting", "unreported": true, "for_ms": 4000
+        }),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_references",
+        serde_json::json!({ "path": "src/lib.rs", "line": 1, "character": 8 }),
+    )
+    .await
+    .expect("the references");
+    let text = text_of(&result);
+    assert!(
+        text.contains(
+            "does not say whether it is still indexing, so an empty list is not proven final"
+        ),
+        "{text}"
+    );
+    assert!(
+        !text.contains("Ask again"),
+        "no time to come back at: {text}"
+    );
+    let structured = result.structured_content.expect("structured content");
+    assert_eq!(structured["answer_final"], false);
+    assert!(structured.get("retry_after_secs").is_none(), "{structured}");
+}
+
 /// A name the index lacks but a source file declares is answered with that declaration and why
 /// the analyzer has nothing there: no hover at it means a file no target loads; a hover means an
 /// item the index does not list. A name declared nowhere keeps the plain answer (#379).

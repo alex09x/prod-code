@@ -53,11 +53,11 @@ fn indexing_notes_have_a_structured_channel_without_losing_text_or_prior_fields(
     let notes = vec![
         crate::session::IndexingNote {
             text: "indexing (1 / 3, 33%) for 2 s".into(),
-            retry_after_secs: 6,
+            retry_after_secs: Some(6),
         },
         crate::session::IndexingNote {
             text: "loading its project for 1 s".into(),
-            retry_after_secs: 30,
+            retry_after_secs: Some(30),
         },
     ];
     let result = super::super::inspection_handlers::append_indexing_notes(original, notes);
@@ -79,6 +79,40 @@ fn indexing_notes_have_a_structured_channel_without_losing_text_or_prior_fields(
         text,
         "(the language server was still indexing (1 / 3, 33%) for 2 s when asked: this answer may be incomplete, and an empty list is not final. Ask again in about 6 s.)"
     );
+}
+
+#[test]
+fn a_server_that_does_not_report_is_not_proven_final_and_has_no_time_to_come_back_at() {
+    let silent = crate::session::IndexingNote {
+        text: "the server does not say whether it is still indexing".into(),
+        retry_after_secs: None,
+    };
+    let result = super::super::inspection_handlers::append_indexing_notes(
+        McpToolCallResult::text("body"),
+        vec![silent.clone()],
+    );
+    let structured = result.structured_content.unwrap();
+    assert_eq!(structured["answer_final"], false);
+    assert!(
+        structured.get("retry_after_secs").is_none(),
+        "nothing to wait for: {structured}"
+    );
+    let McpContentItem::Text { text } = &result.content[1];
+    assert!(
+        text.contains("does not say whether it is still indexing"),
+        "{text}"
+    );
+    assert!(text.contains("an empty list is not proven final"), "{text}");
+    assert!(!text.contains("Ask again"), "no timer: {text}");
+    assert!(!silent.is_busy());
+
+    // Beside work that was reported, the time to come back at is that work's.
+    let busy = crate::session::IndexingNote {
+        text: "indexing for 2 s".into(),
+        retry_after_secs: Some(12),
+    };
+    let both = super::super::inspection_handlers::indexing_structured(&[silent, busy]);
+    assert_eq!(both["retry_after_secs"], 12);
 }
 
 #[test]

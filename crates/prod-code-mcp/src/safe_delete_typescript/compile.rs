@@ -370,7 +370,12 @@ pub fn inspect_project(checkout: &Path, source: &Path) -> Result<Project> {
 }
 
 pub fn refuse_incomplete_evidence(root: &Path, stage: &str) -> Result<()> {
-    let notes = crate::session::take_indexing_notes(root);
+    // Only work the server reported refuses: a server that says nothing about its indexing is
+    // not, by that alone, a reason to refuse what this tool has always done.
+    let notes: Vec<_> = crate::session::take_indexing_notes(root)
+        .into_iter()
+        .filter(|note| note.is_busy())
+        .collect();
     anyhow::ensure!(
         notes.is_empty(),
         "the TypeScript language server reported incomplete {stage} evidence: {}",
