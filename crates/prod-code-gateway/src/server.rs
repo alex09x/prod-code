@@ -211,6 +211,18 @@ pub(crate) async fn run_announcing(
         cli.prune_below_free_percent,
     ));
 
+    // The workspaces in use lately are noted from now on, and the ones in use before this start
+    // are loaded again, as `[warmup]` says (#1976).
+    let recent = Arc::new(warmup::RecentWorkspaces::open(&state.storage_root));
+    state.workspace_manager.record_recent(Arc::clone(&recent));
+    tokio::spawn(warmup::run(
+        Arc::clone(&state.workspace_manager),
+        Arc::clone(&state.metrics),
+        advertise.clone(),
+        recent,
+        cli.warmup.clone(),
+    ));
+
     // Optional Prometheus scrape HTTP server (/metrics)
     if let Some(prom_listen) = cli.prometheus_listen {
         let prom_metrics = Arc::clone(&state.metrics);

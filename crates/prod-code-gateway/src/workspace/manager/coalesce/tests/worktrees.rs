@@ -11,7 +11,7 @@
 use super::*;
 use tokio::sync::Mutex;
 
-fn checkout(root: &Path) {
+pub(super) fn checkout(root: &Path) {
     std::fs::create_dir_all(root).unwrap();
     std::fs::write(root.join("Cargo.toml"), "[package]\nname='coalesced_fixture'\nversion='0.1.0'\nedition='2021'\n[lib]\npath='lib.rs'\n").unwrap();
     std::fs::write(
