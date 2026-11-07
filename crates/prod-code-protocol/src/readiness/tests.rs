@@ -158,3 +158,23 @@ fn busy_goes_over_the_wire_without_empty_members() {
     assert_eq!(serde_json::from_value::<Busy>(json).unwrap(), busy);
     assert_eq!(busy.describe(), "indexing (40%) for 3 s");
 }
+
+#[test]
+fn the_time_to_ask_again_comes_from_the_progress_and_stays_within_bounds() {
+    let busy = |percentage: Option<u64>, for_ms: u64| Busy {
+        title: "indexing".to_string(),
+        message: None,
+        percentage,
+        for_ms,
+    };
+    // 40% in 12 s: 18 s still to go.
+    assert_eq!(busy(Some(40), 12_000).retry_after_secs(), 18);
+    // Nothing known: the default of 30 s, also at 0% and with no time run.
+    assert_eq!(busy(None, 5_000).retry_after_secs(), 30);
+    assert_eq!(busy(Some(0), 5_000).retry_after_secs(), 30);
+    assert_eq!(busy(Some(50), 0).retry_after_secs(), 30);
+    // Nearly done: not under 5 s. Barely begun: not over 60 s. Done: the default, clamped.
+    assert_eq!(busy(Some(99), 10_000).retry_after_secs(), 5);
+    assert_eq!(busy(Some(1), 10_000).retry_after_secs(), 60);
+    assert_eq!(busy(Some(100), 10_000).retry_after_secs(), 30);
+}

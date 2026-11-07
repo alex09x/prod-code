@@ -3141,10 +3141,34 @@ async fn an_answer_given_while_the_server_indexes_says_so() {
         .expect("the references"),
     );
     assert!(text.contains("Found 1 reference(s)"), "{text}");
+    // 25% in 3.2 s: about 10 s still to go.
     assert!(
-        text.contains("(the language server was still indexing (1234/5000, 25%) for 3 s when asked: this answer may be incomplete)"),
+        text.contains("(the language server was still indexing (1234/5000, 25%) for 3 s when asked: this answer may be incomplete, and an empty list is not final. Ask again in about 10 s.)"),
         "{text}"
     );
+
+    // An empty list given while indexing is not left to pass for the answer: the same note.
+    let empty = scripted_gateway(Arc::new(move |method, _| match method {
+        "prod-code/busy" => serde_json::json!({ "title": "indexing", "for_ms": 1000 }),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        empty,
+        &ws.root(),
+        "code_references",
+        serde_json::json!({ "path": "src/lib.rs", "line": 1, "character": 8 }),
+    )
+    .await
+    .expect("the references");
+    let text = text_of(&result);
+    assert!(
+        text.contains("an empty list is not final. Ask again in about 30 s."),
+        "{text}"
+    );
+    let structured = result.structured_content.expect("structured content");
+    assert_eq!(structured["answer_final"], false);
+    assert_eq!(structured["retry_after_secs"], 30);
 
     // The next answer, given by a ready server, carries no note left over from this one.
     let ready = scripted_gateway(Arc::new(move |method, _| match method {

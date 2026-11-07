@@ -90,7 +90,7 @@ impl LspSession {
                                 .ok()
                         })
                     {
-                        record_indexing_note(&self.root, busy.describe());
+                        record_indexing_note(&self.root, &busy);
                         continue;
                     }
                     // An answer has no method: a request from the server that carries the same

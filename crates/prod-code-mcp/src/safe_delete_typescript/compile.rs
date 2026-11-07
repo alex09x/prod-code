@@ -374,7 +374,11 @@ pub fn refuse_incomplete_evidence(root: &Path, stage: &str) -> Result<()> {
     anyhow::ensure!(
         notes.is_empty(),
         "the TypeScript language server reported incomplete {stage} evidence: {}",
-        notes.join("; ")
+        notes
+            .iter()
+            .map(|note| note.text.as_str())
+            .collect::<Vec<_>>()
+            .join("; ")
     );
     Ok(())
 }

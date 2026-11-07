@@ -65,7 +65,7 @@ pub async fn rename_across(
         .flat_map(|root| {
             crate::session::take_indexing_notes(root)
                 .into_iter()
-                .map(move |note| (root.clone(), note))
+                .map(move |note| (root.clone(), note.text))
         })
         .collect();
     anyhow::ensure!(
