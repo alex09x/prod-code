@@ -8,21 +8,29 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use super::types::{Busy, LOG_LIMIT, RECHECK, ReadySignal, SETTLE, State, Work, token_text};
+use super::types::{
+    Busy, LOG_LIMIT, RECHECK, ReadySignal, ReadyState, SETTLE, State, Work, token_text,
+};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 /// What one server has said about its loading and indexing.
 pub struct Readiness {
     signal: ReadySignal,
+    settle: Duration,
     state: Mutex<State>,
     changed: tokio::sync::Notify,
 }
 
 impl Readiness {
     pub fn new(signal: ReadySignal) -> Self {
+        Self::with_settle(signal, SETTLE)
+    }
+
+    pub fn with_settle(signal: ReadySignal, settle: Duration) -> Self {
         Self {
             signal,
+            settle,
             state: Mutex::new(State {
                 started: Instant::now(),
                 active: Vec::new(),
@@ -34,9 +42,11 @@ impl Readiness {
     }
 
     /// Whether the server's readiness is known, so that its answers after [`Self::wait`] are
-    /// final: an empty one means there is nothing, not that it has not looked yet.
+    /// final: an empty one means there is nothing, not that it has not looked yet. A progress or
+    /// log server that never emits its signal within its window moves to [`ReadyState::Unknown`]
+    /// and ceases to claim its answers are final (#1969).
     pub fn known(&self) -> bool {
-        !matches!(self.signal, ReadySignal::Unknown)
+        !matches!(self.state(), ReadyState::Unknown)
     }
 
     /// Marks the moment `initialized` went to the server, from which the settle and log windows
@@ -122,11 +132,19 @@ impl Readiness {
         }
     }
 
-    /// The work the server is still doing, or `None` when it is ready (or nothing is known).
-    pub fn busy(&self) -> Option<Busy> {
+    /// Current readiness state: [`ReadyState::Busy`] while active work is running or the settle
+    /// or log window has not yet elapsed, [`ReadyState::Ready`] once reported work has finished
+    /// (or the server logged ready or holds questions itself), and [`ReadyState::Unknown`] when
+    /// the server never reported progress or its setup line.
+    pub fn state(&self) -> ReadyState {
         let state = self.lock();
-        if let Some(work) = state.active.first() {
-            return Some(Busy {
+        if let Some(work) = state
+            .active
+            .iter()
+            .find(|w| w.title != "starting")
+            .or_else(|| state.active.first())
+        {
+            return ReadyState::Busy(Busy {
                 title: work.title.clone(),
                 message: work.message.clone(),
                 percentage: work.percentage,
@@ -134,7 +152,7 @@ impl Readiness {
             });
         }
         let starting = |detail: &str| {
-            Some(Busy {
+            ReadyState::Busy(Busy {
                 title: "starting".to_string(),
                 message: Some(detail.to_string()),
                 percentage: None,
@@ -142,13 +160,34 @@ impl Readiness {
             })
         };
         match self.signal {
-            ReadySignal::Log(_) if !state.logged_ready && state.started.elapsed() < LOG_LIMIT => {
-                starting("setting up its project")
+            ReadySignal::Progress => {
+                if state.progress_seen {
+                    ReadyState::Ready
+                } else if state.started.elapsed() < self.settle {
+                    starting("about to load its project")
+                } else {
+                    ReadyState::Unknown
+                }
             }
-            ReadySignal::Progress if !state.progress_seen && state.started.elapsed() < SETTLE => {
-                starting("about to load its project")
+            ReadySignal::Log(_) => {
+                if state.logged_ready {
+                    ReadyState::Ready
+                } else if state.started.elapsed() < LOG_LIMIT {
+                    starting("setting up its project")
+                } else {
+                    ReadyState::Unknown
+                }
             }
-            _ => None,
+            ReadySignal::HoldsQuestions => ReadyState::Ready,
+            ReadySignal::Unknown => ReadyState::Unknown,
+        }
+    }
+
+    /// The work the server is still doing, or `None` when it is ready (or nothing is known).
+    pub fn busy(&self) -> Option<Busy> {
+        match self.state() {
+            ReadyState::Busy(busy) => Some(busy),
+            ReadyState::Ready | ReadyState::Unknown => None,
         }
     }
 

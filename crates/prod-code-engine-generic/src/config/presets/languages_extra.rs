@@ -8,7 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use prod_code_protocol::readiness::{INDEX_WAIT, ReadySignal};
+use prod_code_protocol::readiness::{INDEX_WAIT, ReadySignal, SETTLE};
 use std::collections::HashMap;
 
 use crate::config::discovery::which_bin;
@@ -28,6 +28,7 @@ impl GenericLspConfig {
             initialization_options: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             ready: ReadySignal::Progress,
+            settle: SETTLE,
             index_wait: INDEX_WAIT,
             retain_open_documents: false,
             max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
@@ -57,6 +58,7 @@ impl GenericLspConfig {
             initialization_options: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             ready: ReadySignal::Progress,
+            settle: SETTLE,
             index_wait: INDEX_WAIT,
             retain_open_documents: false,
             max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
@@ -74,6 +76,7 @@ impl GenericLspConfig {
             initialization_options: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             ready: ReadySignal::Progress,
+            settle: SETTLE,
             index_wait: INDEX_WAIT,
             retain_open_documents: false,
             max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
@@ -91,6 +94,7 @@ impl GenericLspConfig {
             initialization_options: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             ready: ReadySignal::Progress,
+            settle: SETTLE,
             index_wait: INDEX_WAIT,
             retain_open_documents: false,
             max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
@@ -113,6 +117,7 @@ impl GenericLspConfig {
             initialization_options: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             ready: ReadySignal::Progress,
+            settle: SETTLE,
             index_wait: INDEX_WAIT,
             retain_open_documents: false,
             max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
@@ -141,6 +146,7 @@ impl GenericLspConfig {
             initialization_options: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             ready: ReadySignal::Progress,
+            settle: SETTLE,
             index_wait: INDEX_WAIT,
             retain_open_documents: false,
             max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
@@ -158,6 +164,7 @@ impl GenericLspConfig {
             initialization_options: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             ready: ReadySignal::Progress,
+            settle: SETTLE,
             index_wait: INDEX_WAIT,
             retain_open_documents: false,
             max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
@@ -175,6 +182,7 @@ impl GenericLspConfig {
             initialization_options: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             ready: ReadySignal::Progress,
+            settle: SETTLE,
             index_wait: INDEX_WAIT,
             retain_open_documents: false,
             max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
@@ -192,6 +200,7 @@ impl GenericLspConfig {
             initialization_options: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             ready: ReadySignal::Progress,
+            settle: SETTLE,
             index_wait: INDEX_WAIT,
             retain_open_documents: false,
             max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,

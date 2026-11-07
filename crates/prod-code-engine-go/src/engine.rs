@@ -9,7 +9,7 @@
  */
 
 use anyhow::{Context, Result};
-use prod_code_protocol::readiness::{Busy, Readiness, ReadySignal};
+use prod_code_protocol::readiness::{Busy, Readiness, ReadySignal, ReadyState};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -218,6 +218,11 @@ impl GoEngine {
         let _ = lock_unpoisoned(&self._child).start_kill();
         lock_unpoisoned(&self.pending_requests).clear();
         lock_unpoisoned(&self.health_probe_pending).take();
+    }
+
+    /// Current readiness state (`Busy`, `Ready`, or `Unknown`) reported by gopls (#1969).
+    pub fn readiness_state(&self) -> ReadyState {
+        self.readiness.state()
     }
 
     /// The package loading gopls is still doing, if any (#391).
