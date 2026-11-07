@@ -48,19 +48,23 @@ fn event(node: &str, entry: &super::Recent, outcome: &Outcome) -> OperationMetri
 }
 
 /// The metrics event of a prebuild command: `category=warmup`, `method=prebuild`.
-fn prebuild_event(node: &str, entry: &super::Recent, outcome: &Prebuilt) -> OperationMetric {
+fn prebuild_event(
+    node: &str,
+    entry: &super::Recent,
+    outcome: &Prebuilt,
+    took: std::time::Duration,
+) -> OperationMetric {
     let mut metric = OperationMetric::new(node, "warmup", "prebuild");
     metric.engine = entry.engine.clone();
     metric.workspace = entry
         .root
         .file_name()
         .map(|name| name.to_string_lossy().into_owned());
-    match outcome {
-        Prebuilt::Done(took) => metric.duration_ms = took.as_millis() as u64,
-        other => {
-            metric.ok = false;
-            metric.error_class = other.error_class().map(str::to_string);
-        }
+    // The time it ran counts whatever the outcome: a build stopped at its budget is not 0 ms.
+    metric.duration_ms = took.as_millis() as u64;
+    if let Some(class) = outcome.error_class() {
+        metric.ok = false;
+        metric.error_class = Some(class.to_string());
     }
     metric
 }
@@ -103,9 +107,9 @@ pub(crate) async fn run(
                 if ahead == Ahead::Loaded
                     && let Some((command, budget)) = prebuild
                 {
-                    let outcome = run_prebuild(&entry.root, &command, budget).await;
+                    let (outcome, took) = run_prebuild(&entry.root, &command, budget).await;
                     match &outcome {
-                        Prebuilt::Done(took) => tracing::info!(
+                        Prebuilt::Done => tracing::info!(
                             workspace = ?entry.root, engine = %entry.engine, took_ms = took.as_millis() as u64,
                             "prebuild command done"
                         ),
@@ -114,7 +118,7 @@ pub(crate) async fn run(
                             "prebuild command did not finish cleanly"
                         ),
                     }
-                    metrics.record_operation(prebuild_event(&node, &entry, &outcome));
+                    metrics.record_operation(prebuild_event(&node, &entry, &outcome, took));
                 }
                 Ok(ahead)
             }

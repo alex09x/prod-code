@@ -136,6 +136,38 @@ fn summary_counts_the_answers_given_before_the_engine_was_ready() {
     assert_eq!(row.empty_before_ready, 2, "the loading one had a hit");
 }
 
+/// The count survives a restart: the events read back from the daily files carry the state too,
+/// so `before_ready` does not fall to zero when the ring is empty.
+#[test]
+fn the_engine_state_is_read_back_from_the_daily_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("metrics");
+    let mut e = Event::blank("lsp");
+    // A minute ago, in the file only: the ring of the restarted gateway holds one later event, and
+    // the summary reads the files for what came before it.
+    e.ts_ms = now_ms() - 60_000;
+    e.workspace = "ws".into();
+    e.method = "textDocument/references".into();
+    e.engine_state = Some("indexing".to_string());
+    let before = Metrics::new(dir.clone());
+    write_events(before.dir(), "n", [e].into_iter());
+    drop(before);
+    let after = Metrics::new(dir);
+    let mut later = Event::blank("lsp");
+    later.workspace = "ws".into();
+    later.method = "textDocument/hover".into();
+    after.record(later);
+    let summary = after.summary("n", 3600);
+    let row = summary
+        .queries
+        .iter()
+        .find(|row| row.method == "textDocument/references")
+        .expect("the stored event is in the summary");
+    assert_eq!(row.count, 1);
+    assert_eq!(row.before_ready, 1);
+    assert_eq!(row.empty_before_ready, 1);
+}
+
 /// What the engine was doing is read from the note sent ahead of the answer, and only an answer
 /// from an index has one (#1975).
 #[test]

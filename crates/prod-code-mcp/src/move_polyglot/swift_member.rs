@@ -24,47 +24,24 @@ pub(super) fn is_member_at_line(source: &str, line: u32) -> bool {
 }
 
 /// Whether the declaration that starts at byte `decl_start` of `source` is inside braces.
-/// Comments and string literals are skipped, so that a brace in either is not counted.
+/// Only braces in code count: those in comments (nested ones too) and in string literals (raw
+/// `#"…"#`, multi-line `"""…"""` and interpolated ones) are left out, by the same lexical mask the
+/// caller migration uses.
 pub(super) fn is_inside_braces(source: &str, decl_start: usize) -> bool {
     let end = decl_start.min(source.len());
-    let bytes = source.as_bytes();
-    let mut depth: i64 = 0;
-    let mut i = 0;
-    while i < end {
-        match bytes[i] {
-            b'/' if bytes.get(i + 1) == Some(&b'/') => {
-                while i < end && bytes[i] != b'\n' {
-                    i += 1;
-                }
-            }
-            b'/' if bytes.get(i + 1) == Some(&b'*') => {
-                i += 2;
-                while i < end && !(bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/')) {
-                    i += 1;
-                }
-                i += 2;
-            }
-            b'"' => {
-                i += 1;
-                while i < end && bytes[i] != b'"' {
-                    if bytes[i] == b'\\' {
-                        i += 1;
-                    }
-                    i += 1;
-                }
-                i += 1;
-            }
-            b'{' => {
-                depth += 1;
-                i += 1;
-            }
-            b'}' => {
-                depth -= 1;
-                i += 1;
-            }
-            _ => i += 1,
-        }
-    }
+    let mask = crate::caller_migration::mask::lexical_code_mask(
+        source,
+        crate::parameter_object::Language::Swift,
+    );
+    let depth: i64 = source.as_bytes()[..end]
+        .iter()
+        .zip(&mask)
+        .map(|(byte, code)| match (*code, *byte) {
+            (true, b'{') => 1,
+            (true, b'}') => -1,
+            _ => 0,
+        })
+        .sum();
     depth > 0
 }
 
@@ -113,6 +90,25 @@ mod tests {
         let source = "class Example {\n    func a() {}\n}\n\nfunc free() {}\n";
         assert!(!is_inside_braces(source, start_of(source, "func free")));
         assert!(!is_inside_braces("func only() {}\n", 0));
+    }
+
+    /// Raw, multi-line and interpolated strings and nested comments (#1978 review): a brace in one
+    /// is not code, whichever way it falls.
+    #[test]
+    fn braces_in_raw_multiline_and_interpolated_strings_and_nested_comments_are_not_counted() {
+        let member = "class A { let q = #\"a\"}\"#; private func m() {} }\n";
+        assert!(is_inside_braces(member, start_of(member, "private func")));
+        for (source, decl) in [
+            ("let r = #\"a\"{\"#\nfunc free() {}\n", "func free"),
+            ("let m = \"\"\"\n\"{\n\"\"\"\nfunc free() {}\n", "func free"),
+            ("let s = \"x: \\(d[\"{\"])\"\nfunc free() {}\n", "func free"),
+            ("/* a /* b */ { */\nfunc free() {}\n", "func free"),
+        ] {
+            assert!(
+                !is_inside_braces(source, start_of(source, decl)),
+                "{source:?}"
+            );
+        }
     }
 
     #[test]

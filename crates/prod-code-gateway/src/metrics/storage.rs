@@ -65,6 +65,8 @@ pub(crate) fn for_each_stored(dir: &Path, from_ms: u64, to_ms: u64, mut f: impl 
                     ev.bytes = op.bytes;
                     ev.error_class = op.error_class;
                     ev.exit_code = op.exit_code;
+                    ev.compiler = op.compiler;
+                    ev.engine_state = op.engine_state;
                     f(ev);
                 }
                 continue;
