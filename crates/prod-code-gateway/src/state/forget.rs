@@ -25,8 +25,9 @@ impl ServerState {
     pub async fn forget_peer(&self, addr: &str) -> bool {
         let mut forgotten = self.forgotten.write().await;
         let now = Instant::now();
-        forgotten.retain(|_, at| now.duration_since(*at) < FORGET_FOR);
-        forgotten.insert(addr.to_string(), now);
+        // An entry is the moment it stops holding: no clock is read backwards from it.
+        forgotten.retain(|_, until| *until > now);
+        forgotten.insert(addr.to_string(), now + FORGET_FOR);
         let in_cluster = self.cluster.write().await.remove(addr).is_some();
         let in_peers = self.peers.write().await.remove(addr);
         in_cluster || in_peers
@@ -61,8 +62,16 @@ impl ServerState {
             addr: req.addr.clone(),
             propagate: false,
         };
-        for target in targets {
-            if self.tell_forget(&target, &passed_on).await {
+        // All at once, each within its own 3 s: up to 64 peers must not add up to more than the
+        // client waits, which would make it ask again.
+        let told = futures_util::future::join_all(
+            targets
+                .iter()
+                .map(|target| self.tell_forget(target, &passed_on)),
+        )
+        .await;
+        for (target, told) in targets.into_iter().zip(told) {
+            if told {
                 response.forwarded.push(target);
             } else {
                 response.failed.push(target);
@@ -149,6 +158,63 @@ mod tests {
         assert!(state.peers.read().await.contains("10.0.0.9:9400"));
         assert!(state.cluster.read().await.contains_key("10.0.0.9:9400"));
         assert!(state.forgotten.read().await.get("10.0.0.9:9400").is_none());
+    }
+
+    /// A tombstone holds for a time, not for ever: once it ran out other nodes' gossip is believed
+    /// again, without another forget being needed to sweep it away.
+    #[tokio::test]
+    async fn a_tombstone_runs_out() {
+        let (_temp, state) = state();
+        *state.advertise.write().await = "10.0.0.1:9400".into();
+        state
+            .forgotten
+            .write()
+            .await
+            .insert("10.0.0.9:9400".into(), Instant::now());
+        state
+            .absorb_gossip(gossip("10.0.0.2:9400", &["10.0.0.9:9400"]))
+            .await;
+        assert!(state.peers.read().await.contains("10.0.0.9:9400"));
+        assert!(
+            state.forgotten.read().await.is_empty(),
+            "the old entry is gone"
+        );
+    }
+
+    /// Unreachable targets are asked together: ten of them take one timeout, not ten.
+    #[tokio::test]
+    async fn the_nodes_are_told_together_not_one_after_another() {
+        let (_temp, state) = state();
+        // Listeners that accept and never answer, so each hop waits its whole 3 s.
+        let mut keep = Vec::new();
+        for _ in 0..5 {
+            let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            state
+                .peers
+                .write()
+                .await
+                .insert(silent.local_addr().unwrap().to_string());
+            keep.push(tokio::spawn(async move {
+                let mut held = Vec::new();
+                while let Ok((socket, _)) = silent.accept().await {
+                    held.push(socket);
+                }
+            }));
+        }
+        let started = std::time::Instant::now();
+        let response = state
+            .handle_forget(&ForgetPeerRequest {
+                addr: "127.0.0.1:9".into(),
+                propagate: true,
+            })
+            .await;
+        keep.iter().for_each(|task| task.abort());
+        assert_eq!(response.failed.len(), 5);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(6),
+            "five silent nodes took {:?}: they were asked one after another",
+            started.elapsed()
+        );
     }
 
     /// A request that is passed on goes to every other known node, and says which did not answer.

@@ -253,6 +253,46 @@ pub async fn discover_nodes_with_paths(
     nodes
 }
 
+/// Removes `addr` from what this machine remembers of the cluster: the node cache and the nodes
+/// checkouts were last placed on. Without it the next `prod-code cluster` reads the address back
+/// from the cache and lists it as down again (#1973).
+pub fn forget_local(addr: &str) {
+    forget_local_at(
+        addr,
+        placement_path().as_deref(),
+        cluster_cache_path().as_deref(),
+    );
+}
+
+pub(crate) fn forget_local_at(
+    addr: &str,
+    placement_file: Option<&Path>,
+    cache_file: Option<&Path>,
+) {
+    if let Some(path) = cache_file
+        && let Ok(bytes) = std::fs::read(path)
+        && let Ok(mut cache) = serde_json::from_slice::<ClusterCache>(&bytes)
+    {
+        let before = cache.nodes.len();
+        cache.nodes.retain(|n| n != addr);
+        if cache.nodes.len() < before
+            && let Ok(bytes) = serde_json::to_vec_pretty(&cache)
+        {
+            let _ = std::fs::write(path, bytes);
+        }
+    }
+    if let Some(path) = placement_file {
+        let mut placement = load_placement(path);
+        let before = placement.workspaces.len();
+        placement
+            .workspaces
+            .retain(|_, node| node.to_string() != addr);
+        if placement.workspaces.len() < before {
+            save_placement(path, &placement);
+        }
+    }
+}
+
 /// Asks one node to forget the peer address `forget` and to tell the other nodes to (#1973).
 pub async fn forget_peer(addr: SocketAddr, forget: &str) -> Result<ForgetPeerResponse> {
     let stream = tokio::time::timeout(PROBE_TIMEOUT, prod_code_protocol::transport::connect(addr))

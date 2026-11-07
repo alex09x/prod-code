@@ -189,6 +189,12 @@ async fn run_cli() -> Result<()> {
         startup.report();
         return run_resolve(&domain, json).await;
     }
+    // Forgetting an address needs no node for this checkout, and must not wait for one: the
+    // checkout may have been placed on the very node that is gone (#1973).
+    if let Some(Commands::ForgetPeer { address }) = &cli.command {
+        startup.report();
+        return run_forget_peer(&remotes, address).await;
+    }
 
     // A Go module whose cgo includes macOS headers builds only on macOS; a Linux node would
     // report the headers as missing on every check (#248).
@@ -330,12 +336,6 @@ async fn run_cli() -> Result<()> {
     if let Some(Commands::Metrics { since, json }) = cli.command {
         startup.report();
         return run_metrics(&remotes, since, json).await;
-    }
-    // Forgetting an address needs no node for this checkout either: it is for when the cluster
-    // listing is wrong (#1973).
-    if let Some(Commands::ForgetPeer { address }) = &cli.command {
-        startup.report();
-        return run_forget_peer(&remotes, address).await;
     }
     // An editor learns why its server could not start from the answer to its `initialize`,
     // not from a process that is gone before it asks (#338).

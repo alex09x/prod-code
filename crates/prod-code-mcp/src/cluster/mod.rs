@@ -32,7 +32,7 @@ mod tests;
 
 pub use discover::{
     ask_placement, ask_placement_opt, ask_placement_preview, cluster_view, discover_nodes,
-    discover_nodes_with_paths, forget_peer, node_metrics, node_status,
+    discover_nodes_with_paths, forget_local, forget_peer, node_metrics, node_status,
 };
 pub use parse::{discover_auto_nodes_sync, parse_remotes, resolve_auto_remotes};
 pub use pick::{pick_node, pick_node_with, pick_pinned_node};

@@ -23,8 +23,8 @@ pub struct ServerState {
     pub peers: tokio::sync::RwLock<std::collections::BTreeSet<String>>,
     /// Latest heartbeat from every peer and when it arrived.
     pub cluster: tokio::sync::RwLock<std::collections::HashMap<String, PeerEntry>>,
-    /// Peer addresses that were forgotten by hand, and when: other nodes' gossip does not bring
-    /// them back (#1973). Only the peer itself speaking to this node clears an entry.
+    /// Peer addresses that were forgotten by hand, and until when: other nodes' gossip does not
+    /// bring them back before then (#1973). The peer itself speaking to this node clears an entry.
     pub forgotten: tokio::sync::RwLock<std::collections::HashMap<String, Instant>>,
     /// Usage metrics (JSONL on disk + in-memory ring).
     pub metrics: Arc<metrics::Metrics>,
@@ -174,6 +174,8 @@ impl ServerState {
             // The peer itself speaking is proof it is there, whatever was decided about it; a
             // third node merely naming it is not (#1973).
             let mut forgotten = self.forgotten.write().await;
+            let now = Instant::now();
+            forgotten.retain(|_, until| *until > now);
             forgotten.remove(&gossip.addr);
             let mut peers = self.peers.write().await;
             peers.insert(gossip.addr.clone());
