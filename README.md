@@ -606,7 +606,23 @@ listen = "0.0.0.0:9401"         # Serves GET /metrics and GET /health
 # push_url = "http://192.0.2.20:9091"
 push_interval_secs = 15
 job = "prod-code"
+
+[warmup]
+# The first request to a workspace is slow and the next ones are fast, and a restart makes every
+# workspace the first again. The gateway notes the workspaces in use (recent-workspaces.json in
+# its storage) and, after a restart, loads the newest of them again, one at a time.
+after_restart = true            # default; false turns it off
+max_workspaces = 4              # at most this many, the most recently used first
+max_age_hours = 24              # only those used within this long
+skip_above_load_percent = 80    # not while the 1-minute load is above this % of the cores
+max_concurrent = 1              # loads at once
+
+# Per engine (rust, go, swift, python, ...); one not listed is loaded.
+[warmup.languages.swift]
+when = "never"                  # "restart" (default) or "never"
 ```
+
+A node short of memory refuses a load as it would for any request (`engine_reserve_mib`), and each load, skipped or failed one is a `category=warmup` event in `prod-code metrics`. A mistake in the section (an unknown key, a value out of range) stops the gateway with a message that names the key.
 
 ### Per-Repository Options (`prod-code.toml`)
 

@@ -29,6 +29,9 @@ pub struct GatewayConfigFile {
     pub server: ServerConfig,
     #[serde(default)]
     pub metrics: MetricsConfig,
+    /// Loading workspaces again after a restart (#1976).
+    #[serde(default)]
+    pub warmup: crate::warmup::WarmupConfig,
 }
 
 /// Server network and operational parameters.

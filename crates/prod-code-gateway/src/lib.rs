@@ -29,6 +29,7 @@ pub mod search;
 pub mod shadow;
 pub mod swift_cache;
 pub mod ts_cache;
+pub mod warmup;
 pub mod workspace;
 
 pub mod engines;

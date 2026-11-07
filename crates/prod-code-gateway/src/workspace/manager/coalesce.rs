@@ -25,8 +25,23 @@ use super::types::WorkspaceManager;
 mod tests;
 
 impl WorkspaceManager {
-    /// Retrieve or load a shared workspace using leader-follower coalescing.
+    /// Retrieve or load a shared workspace using leader-follower coalescing, and note that it
+    /// is in use, so that a restart can load it again (#1976).
     pub async fn get_or_load(
+        self: &Arc<Self>,
+        workspace_root: &Path,
+        engine: &str,
+    ) -> Result<WorkspaceLease> {
+        let lease = self.get_or_load_untracked(workspace_root, engine).await?;
+        if let Some(recent) = self.recent.get() {
+            recent.touch(workspace_root, engine);
+        }
+        Ok(lease)
+    }
+
+    /// [`Self::get_or_load`] without noting a use: what loading a workspace ahead of a request
+    /// does, since a load nobody asked for is no reason to keep it in the record.
+    pub(crate) async fn get_or_load_untracked(
         self: &Arc<Self>,
         workspace_root: &Path,
         engine: &str,
