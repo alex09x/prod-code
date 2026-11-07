@@ -208,13 +208,13 @@ async fn canceling_a_join_retires_the_joined_helper() {
 struct OwnedSessionServer {
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     accept: OwnedTask<()>,
-    aborts: tokio::sync::mpsc::UnboundedReceiver<AbortHandle>,
+    aborts: rapidfire::mpsc::Receiver<AbortHandle>,
 }
 
 impl OwnedSessionServer {
     fn start(listener: TcpListener, state: Arc<ServerState>) -> Self {
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
-        let (abort_tx, aborts) = tokio::sync::mpsc::unbounded_channel();
+        let (abort_tx, aborts) = rapidfire::mpsc::unbounded();
         let accept = OwnedTask::spawn(async move {
             let mut sessions = JoinSet::new();
             loop {
@@ -233,7 +233,7 @@ impl OwnedSessionServer {
                         let abort = sessions.spawn(async move {
                             let _ = handle_client(socket, peer, state).await;
                         });
-                        if abort_tx.send(abort.clone()).is_err() {
+                        if abort_tx.try_send(abort.clone()).is_err() {
                             abort.abort();
                         }
                     }
@@ -1040,10 +1040,19 @@ async fn validation_under_memory_pressure_refuses_when_redirect_count_reached() 
     ));
 
     // The refusal reaches the client before the handler has finished its cleanup, so the
-    // invariant is read after the handler is done, not racing its teardown (#1931).
+    // invariant is read after the handler is done, not racing its teardown (#1931). The refused
+    // session's view is dropped, and its drop starts a task that gives the count back
+    // (`SessionView::drop`); that task is not awaited, so the count falls a moment after the
+    // handler returns. Read it once that task has run: it failed 3 runs in 10 when read at once.
     drop(client);
     let _ = server.join().await;
-    assert_eq!(workspace.active_sessions.load(Ordering::Relaxed), 0);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while workspace.active_sessions.load(Ordering::Relaxed) != 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the refused session's attachment is released");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

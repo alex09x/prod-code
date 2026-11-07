@@ -64,7 +64,7 @@ async fn replay_case(
         ..Default::default()
     };
     let encoding = AtomicU8::new(0);
-    let (sender, receiver) = tokio::sync::mpsc::channel(16);
+    let (sender, receiver) = rapidfire::mpsc::bounded(16);
     for frame in frames {
         sender.send(frame).await.unwrap();
     }
@@ -205,7 +205,7 @@ async fn replay_reports_editor_read_failure_eof_and_queue_overflow() {
             initialize_req: Some(init.into()),
             ..Default::default()
         };
-        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let (sender, receiver) = rapidfire::mpsc::bounded(1);
         sender.send(frame).await.unwrap();
         let mut deferred = VecDeque::from(vec!["queued".to_string(); queued]);
         let error = replay_lsp_state(
@@ -293,7 +293,7 @@ async fn replay_answers_server_requests_and_defers_unrelated_editor_messages() {
     );
     let log = tempfile::NamedTempFile::new().unwrap();
     let trace = Some(Arc::new(std::sync::Mutex::new(log.reopen().unwrap())));
-    let (sender, receiver) = tokio::sync::mpsc::channel(4);
+    let (sender, receiver) = rapidfire::mpsc::bounded(4);
     let editor_frames = Arc::new(tokio::sync::Mutex::new(receiver));
     let initialize = json!({"id":1,"method":"initialize","params":{}}).to_string();
     let response =

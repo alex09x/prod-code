@@ -261,7 +261,7 @@ async fn restore_resumed_session_replays_initialize_and_open_documents() {
         &prod_code_client::editor_files::default_cache(),
     );
     let position_encoding = AtomicU8::new(POSITION_ENCODING_UTF16);
-    let (_tx, rx) = tokio::sync::mpsc::channel(4);
+    let (_tx, rx) = rapidfire::mpsc::bounded(4);
     let editor_frames = Arc::new(Mutex::new(rx));
     let mut deferred = VecDeque::new();
     let pending = Arc::new(Mutex::new(Vec::new()));

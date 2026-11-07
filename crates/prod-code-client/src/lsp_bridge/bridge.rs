@@ -147,9 +147,9 @@ pub async fn run_lsp_bridge(
             tokio::select! {
                 frame = async { editor_frames.lock().await.recv().await } => {
                     match frame {
-                        Some(Ok(frame)) => frame,
-                        Some(Err(error)) => return Err(anyhow::anyhow!("reading the editor's message: {error}")),
-                        None => None,
+                        Ok(Ok(frame)) => frame,
+                        Ok(Err(error)) => return Err(anyhow::anyhow!("reading the editor's message: {error}")),
+                        Err(_) => None,
                     }
                 }
                 closed = &mut closed_rx => match closed {

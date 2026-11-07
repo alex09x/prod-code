@@ -112,13 +112,13 @@ pub(super) async fn shutdown_during_reconnect<T>(
     drop(output);
     loop {
         match frames.lock().await.recv().await {
-            Some(Ok(Some(json))) => {
+            Ok(Ok(Some(json))) => {
                 if prod_code_client::editor_files::method_of(&json).as_deref() == Some("exit") {
                     break;
                 }
             }
-            Some(Ok(None)) | None => break,
-            Some(Err(err)) => {
+            Ok(Ok(None)) | Err(_) => break,
+            Ok(Err(err)) => {
                 return Err(EditorStopped {
                     clean: false,
                     reason: format!("reading editor message during reconnect: {err}"),
@@ -153,12 +153,12 @@ where
             result = &mut future => return result,
             frame = async { frames.lock().await.recv().await } => {
                 let json = match frame {
-                    Some(Ok(Some(json))) => json,
-                    Some(Ok(None)) | None => return Err(EditorStopped {
+                    Ok(Ok(Some(json))) => json,
+                    Ok(Ok(None)) | Err(_) => return Err(EditorStopped {
                         clean: false,
                         reason: "editor closed during language-server reconnect".to_string(),
                     }.into()),
-                    Some(Err(err)) => return Err(EditorStopped {
+                    Ok(Err(err)) => return Err(EditorStopped {
                         clean: false,
                         reason: format!("reading editor message during reconnect: {err}"),
                     }.into()),
@@ -215,7 +215,7 @@ mod tests {
 
     #[tokio::test]
     async fn editor_eof_interrupts_a_stalled_connection_attempt() {
-        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let (sender, receiver) = rapidfire::mpsc::bounded(1);
         sender.send(Ok(None)).await.unwrap();
         let frames = Arc::new(tokio::sync::Mutex::new(receiver));
         let pending = Arc::new(tokio::sync::Mutex::new(Vec::new()));

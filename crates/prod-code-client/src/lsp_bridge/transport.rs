@@ -99,9 +99,8 @@ pub async fn refuse_lsp(err: &anyhow::Error) -> Result<()> {
 }
 
 pub type PendingRequests = Arc<tokio::sync::Mutex<Vec<(serde_json::Value, String, String)>>>;
-pub type EditorFrameReceiver = Arc<
-    tokio::sync::Mutex<tokio::sync::mpsc::Receiver<std::result::Result<Option<String>, String>>>,
->;
+pub type EditorFrameReceiver =
+    Arc<tokio::sync::Mutex<rapidfire::mpsc::Receiver<std::result::Result<Option<String>, String>>>>;
 pub const MAX_DEFERRED_EDITOR_FRAMES: usize = 2048;
 pub const MAX_DEFERRED_EDITOR_BYTES: usize = 32 * 1024 * 1024;
 
@@ -177,7 +176,7 @@ pub fn spawn_editor_stdout_task(
 }
 
 pub fn spawn_editor_frame_reader() -> (tokio::task::JoinHandle<()>, EditorFrameReceiver) {
-    let (tx, rx) = tokio::sync::mpsc::channel(32);
+    let (tx, rx) = rapidfire::mpsc::bounded(32);
     let task = tokio::spawn(async move {
         let mut reader = BufReader::new(tokio::io::stdin());
         loop {

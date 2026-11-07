@@ -28,7 +28,7 @@ async fn replay_refuses_incremental_sync_to_full_sync_downgrade() {
         initialize_req: Some(json!({"id":1,"method":"initialize"}).to_string()),
         ..Default::default()
     };
-    let (_sender, receiver) = tokio::sync::mpsc::channel(1);
+    let (_sender, receiver) = rapidfire::mpsc::bounded(1);
     let task = tokio::spawn(async move {
         let _ = peer.next().await;
         peer.send(WireMessage::LspPayload(

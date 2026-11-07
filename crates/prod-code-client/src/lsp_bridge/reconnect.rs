@@ -113,7 +113,7 @@ pub async fn replay_lsp_state(
                         None => anyhow::bail!("connection closed while awaiting initialize replay response"),
                     },
                     frame = async { editor_frames.lock().await.recv().await } => match frame {
-                        Some(Ok(Some(json))) => {
+                        Ok(Ok(Some(json))) => {
                             let value = serde_json::from_str::<serde_json::Value>(&json).ok();
                             if value.as_ref().and_then(|value| value.get("method")).and_then(|method| method.as_str()) == Some("exit") {
                                 return Err(EditorExit.into());
@@ -140,11 +140,11 @@ pub async fn replay_lsp_state(
                             }
                             defer_editor_message(deferred_editor_frames, json)?;
                         }
-                        Some(Ok(None)) | None => return Err(EditorStopped {
+                        Ok(Ok(None)) | Err(_) => return Err(EditorStopped {
                             clean: false,
                             reason: "editor closed during language-server reconnect".to_string(),
                         }.into()),
-                        Some(Err(err)) => return Err(EditorStopped {
+                        Ok(Err(err)) => return Err(EditorStopped {
                             clean: false,
                             reason: format!("reading editor message during reconnect: {err}"),
                         }.into()),
