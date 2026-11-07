@@ -34,7 +34,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, RwLock};
 
-pub use event::{Event, classify_error, command_method, is_compilation_command, now_ms};
+pub use event::{
+    Event, classify_error, command_method, engine_state, is_compilation_command, now_ms,
+};
 pub use inventory::collect_toolchain_inventory;
 pub use level::MetricsEventLevel;
 #[allow(unused_imports)]

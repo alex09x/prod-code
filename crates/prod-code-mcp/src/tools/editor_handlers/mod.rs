@@ -14,6 +14,7 @@ pub(crate) mod assists;
 pub(crate) mod check;
 pub(crate) mod rename;
 pub(crate) mod rename_leftovers;
+mod rename_refusal;
 pub(crate) mod safe_delete;
 
 pub(crate) use assists::*;

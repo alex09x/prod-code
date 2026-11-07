@@ -17,10 +17,20 @@ use super::event::{Event, command_method};
 
 pub(crate) type Key = (String, String, String, String);
 
+/// One answered query: how long it took, whether it succeeded, and whether it was an answer from
+/// an index given while the engine was not ready, and empty (#1975).
+#[derive(Clone, Copy)]
+pub(crate) struct Sample {
+    pub(crate) ms: u64,
+    pub(crate) ok: bool,
+    pub(crate) before_ready: bool,
+    pub(crate) empty: bool,
+}
+
 /// Events summed by agent, host, workspace and method (or command).
 #[derive(Default)]
 pub(crate) struct Summary {
-    pub(crate) queries: BTreeMap<Key, Vec<(u64, bool)>>,
+    pub(crate) queries: BTreeMap<Key, Vec<Sample>>,
     pub(crate) execs: BTreeMap<Key, (u64, u64, u64)>,
     pub(crate) sync_rounds: u64,
     pub(crate) sync_files: u64,
@@ -45,7 +55,17 @@ impl Summary {
                     ev.method.clone(),
                 ))
                 .or_default()
-                .push((ev.duration_ms, ev.ok)),
+                .push(Sample {
+                    ms: ev.duration_ms,
+                    ok: ev.ok,
+                    // `ready`, or no state at all (a request not answered from an index), is not
+                    // an answer given before the engine was ready.
+                    before_ready: ev
+                        .engine_state
+                        .as_deref()
+                        .is_some_and(|state| state != "ready"),
+                    empty: ev.items == 0,
+                }),
             "exec" => {
                 let command = if ev.method.is_empty() {
                     command_method(&ev.command)
@@ -93,13 +113,13 @@ impl Summary {
         let queries = queries
             .into_iter()
             .map(|((agent, host, workspace, method), mut samples)| {
-                samples.sort_by_key(|(d, _)| *d);
+                samples.sort_by_key(|sample| sample.ms);
                 let pct = |p: f64| -> u64 {
                     if samples.is_empty() {
                         0
                     } else {
                         let idx = ((samples.len() as f64 - 1.0) * p).round() as usize;
-                        samples[idx.min(samples.len() - 1)].0
+                        samples[idx.min(samples.len() - 1)].ms
                     }
                 };
                 QueryMetric {
@@ -108,10 +128,16 @@ impl Summary {
                     workspace,
                     method,
                     count: samples.len() as u64,
-                    errors: samples.iter().filter(|(_, ok)| !ok).count() as u64,
+                    errors: samples.iter().filter(|sample| !sample.ok).count() as u64,
                     p50_ms: pct(0.5),
                     p95_ms: pct(0.95),
-                    max_ms: samples.last().map(|(d, _)| *d).unwrap_or(0),
+                    max_ms: samples.last().map(|sample| sample.ms).unwrap_or(0),
+                    before_ready: samples.iter().filter(|sample| sample.before_ready).count()
+                        as u64,
+                    empty_before_ready: samples
+                        .iter()
+                        .filter(|sample| sample.before_ready && sample.empty)
+                        .count() as u64,
                 }
             })
             .collect();

@@ -8,7 +8,8 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-use super::{Outcome, RecentWorkspaces, WarmupConfig, restore};
+use super::prebuild::{Prebuilt, run_prebuild};
+use super::{Ahead, Outcome, RecentWorkspaces, WarmupConfig, restore};
 use crate::metrics::Metrics;
 use crate::workspace::WorkspaceManager;
 use prod_code_protocol::OperationMetric;
@@ -46,6 +47,24 @@ fn event(node: &str, entry: &super::Recent, outcome: &Outcome) -> OperationMetri
     metric
 }
 
+/// The metrics event of a prebuild command: `category=warmup`, `method=prebuild`.
+fn prebuild_event(node: &str, entry: &super::Recent, outcome: &Prebuilt) -> OperationMetric {
+    let mut metric = OperationMetric::new(node, "warmup", "prebuild");
+    metric.engine = entry.engine.clone();
+    metric.workspace = entry
+        .root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned());
+    match outcome {
+        Prebuilt::Done(took) => metric.duration_ms = took.as_millis() as u64,
+        other => {
+            metric.ok = false;
+            metric.error_class = other.error_class().map(str::to_string);
+        }
+    }
+    metric
+}
+
 /// Loads again the workspaces that were in use before the restart, as `config` says, and
 /// records what became of each as a metrics event.
 pub(crate) async fn run(
@@ -72,7 +91,33 @@ pub(crate) async fn run(
         busy,
         |entry| {
             let manager = Arc::clone(&manager);
-            async move { manager.load_ahead(&entry.root, &entry.engine).await }
+            let metrics = Arc::clone(&metrics);
+            let node = node.clone();
+            // The language's prebuild command, if it has one: the build that writes the index
+            // its server answers from, run once the workspace is loaded.
+            let prebuild = config
+                .prebuild(&entry.engine)
+                .map(|(command, budget)| (command.to_vec(), budget));
+            async move {
+                let ahead = manager.load_ahead(&entry.root, &entry.engine).await?;
+                if ahead == Ahead::Loaded
+                    && let Some((command, budget)) = prebuild
+                {
+                    let outcome = run_prebuild(&entry.root, &command, budget).await;
+                    match &outcome {
+                        Prebuilt::Done(took) => tracing::info!(
+                            workspace = ?entry.root, engine = %entry.engine, took_ms = took.as_millis() as u64,
+                            "prebuild command done"
+                        ),
+                        other => tracing::warn!(
+                            workspace = ?entry.root, engine = %entry.engine, outcome = ?other,
+                            "prebuild command did not finish cleanly"
+                        ),
+                    }
+                    metrics.record_operation(prebuild_event(&node, &entry, &outcome));
+                }
+                Ok(ahead)
+            }
         },
         |entry, outcome| {
             match &outcome {

@@ -134,21 +134,21 @@ pub async fn handle_client(
             WireMessage::PlaceRequest(req) => {
                 let start = std::time::Instant::now();
                 let resp = state.place(&req).await;
-                let mut ev = metrics::Event::blank("place");
-                ev.method = "place".to_string();
-                ev.duration_ms = start.elapsed().as_millis() as u64;
-                ev.ok = resp.node.is_some();
-                state.metrics.record(ev);
+                state.metrics.record(place_event(
+                    &req,
+                    resp.node.is_some(),
+                    start.elapsed().as_millis() as u64,
+                ));
                 framed.send(WireMessage::PlaceResponse(resp)).await?;
             }
             WireMessage::PlacePreviewRequest(req) => {
                 let start = std::time::Instant::now();
                 let resp = state.preview_place(&req).await;
-                let mut ev = metrics::Event::blank("place");
-                ev.method = "place".to_string();
-                ev.duration_ms = start.elapsed().as_millis() as u64;
-                ev.ok = resp.node.is_some();
-                state.metrics.record(ev);
+                state.metrics.record(place_event(
+                    &req,
+                    resp.node.is_some(),
+                    start.elapsed().as_millis() as u64,
+                ));
                 framed.send(WireMessage::PlacePreviewResponse(resp)).await?;
             }
             WireMessage::MetricsRequest(req) => {
@@ -326,6 +326,23 @@ pub async fn handle_client(
     }
 
     Ok(())
+}
+
+/// The usage-metrics event of one placement question. An answer with no node says that no node
+/// of the cluster serves the engine: that is `no_node`, and it names the engine, so the share of
+/// such answers can be read per engine. Without a class it was counted as `internal_error`, and
+/// 42% of all placement answers looked like failures of the gateway (#1971).
+fn place_event(req: &PlaceRequest, placed: bool, duration_ms: u64) -> metrics::Event {
+    let mut ev = metrics::Event::blank("place");
+    ev.method = "place".to_string();
+    ev.duration_ms = duration_ms;
+    ev.engine = req.engine.clone().unwrap_or_default();
+    ev.workspace = req.workspace_name.clone();
+    ev.ok = placed;
+    if !placed {
+        ev.error_class = Some("no_node".to_string());
+    }
+    ev
 }
 
 #[cfg(test)]

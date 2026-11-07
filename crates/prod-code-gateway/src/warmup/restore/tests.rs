@@ -118,9 +118,13 @@ async fn a_language_set_to_never_and_a_missing_checkout_are_skipped_with_the_rea
     let fixture = Fixture::new();
     std::fs::remove_dir(fixture.root("c")).unwrap();
     let mut config = WarmupConfig::default();
-    config
-        .languages
-        .insert("swift".to_string(), LanguagePolicy { when: When::Never });
+    config.languages.insert(
+        "swift".to_string(),
+        LanguagePolicy {
+            when: When::Never,
+            ..LanguagePolicy::default()
+        },
+    );
     let (loaded, outcomes) = run(&fixture, &config, || false, &[], &[]).await;
     assert_eq!(loaded, ["a/rust"]);
     let reason = |name: &str| {
@@ -206,9 +210,13 @@ async fn a_checkout_used_with_two_engines_is_loaded_once_with_the_newest() {
 async fn an_engine_that_is_never_loaded_leaves_the_older_engine_of_its_checkout() {
     let fixture = Fixture::with(&[("x", "python"), ("x", "swift")]);
     let mut config = WarmupConfig::default();
-    config
-        .languages
-        .insert("swift".to_string(), LanguagePolicy { when: When::Never });
+    config.languages.insert(
+        "swift".to_string(),
+        LanguagePolicy {
+            when: When::Never,
+            ..LanguagePolicy::default()
+        },
+    );
     let (loaded, outcomes) = run(&fixture, &config, || false, &[], &[]).await;
     assert_eq!(loaded, ["x/python"]);
     let kinds: Vec<_> = outcomes.iter().map(|(_, o)| o.clone_kind()).collect();

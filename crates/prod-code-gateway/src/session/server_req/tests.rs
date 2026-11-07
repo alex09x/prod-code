@@ -70,7 +70,9 @@ async fn a_busy_note_is_sent_ahead_of_the_answer_and_removed_from_it() {
         serde_json::json!({
             "jsonrpc": "2.0",
             "method": prod_code_protocol::readiness::BUSY_NOTIFICATION,
-            "params": {"reason": "indexing"}
+            "params": {"reason": "indexing"},
+            // The request the note is about, so that the usage metrics tie it to that answer.
+            "for_request": 7
         })
     );
 

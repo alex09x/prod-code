@@ -14,6 +14,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use url::Url;
 
+use super::rename_refusal::rename_refusal;
 use crate::protocol::McpToolCallResult;
 use crate::tools::{checked_position_argument, execute_lsp_query, resolve_file_path};
 
@@ -88,15 +89,11 @@ pub(crate) async fn handle_rename(
     {
         Ok(edit) => edit,
         Err(e) => {
-            let msg = e.to_string();
-            if file_path.extension().and_then(|ext| ext.to_str()) == Some("swift")
-                && msg.contains("timed out")
-            {
-                return Ok(McpToolCallResult::error(format!(
-                    "rename refused: {e:#} (sourcekit-lsp did not complete textDocument/rename within budget; ensure the target builds cleanly or wait for background indexing to finish)"
-                )));
-            }
-            return Ok(McpToolCallResult::error(format!("rename refused: {e:#}")));
+            let is_swift = file_path.extension().and_then(|ext| ext.to_str()) == Some("swift");
+            return Ok(McpToolCallResult::error(rename_refusal(
+                is_swift,
+                &format!("{e:#}"),
+            )));
         }
     };
     if edit.is_null() {

@@ -30,6 +30,7 @@ fn operation(ts_ms: u64, category: &str, method: &str) -> OperationMetric {
         host: Some("test-host".to_string()),
         workspace: Some("test-workspace".to_string()),
         compiler: None,
+        engine_state: None,
     }
 }
 

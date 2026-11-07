@@ -26,11 +26,33 @@ pub enum When {
 }
 
 /// What is done for one language.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LanguagePolicy {
     #[serde(default)]
     pub when: When,
+    /// A command run in the workspace after it was loaded again, as an argument vector with no
+    /// shell: the build that writes the index a server answers from (`swift build
+    /// --build-tests` for a `sourcekit-lsp` that has no background indexing). Empty: none.
+    #[serde(default)]
+    pub prebuild: Vec<String>,
+    /// How long that command may run before it is stopped.
+    #[serde(default = "default_prebuild_budget_secs")]
+    pub budget_secs: u64,
+}
+
+fn default_prebuild_budget_secs() -> u64 {
+    600
+}
+
+impl Default for LanguagePolicy {
+    fn default() -> Self {
+        Self {
+            when: When::default(),
+            prebuild: Vec::new(),
+            budget_secs: default_prebuild_budget_secs(),
+        }
+    }
 }
 
 /// The `[warmup]` section of `gateway.toml`.
@@ -93,6 +115,35 @@ impl WarmupConfig {
                 "warmup.languages has an empty language name {name:?}"
             ));
         }
+        for (name, policy) in &self.languages {
+            if policy
+                .prebuild
+                .first()
+                .is_some_and(|program| program.trim().is_empty())
+            {
+                return Err(format!(
+                    "warmup.languages.{name}.prebuild must start with the program to run, not an empty string"
+                ));
+            }
+            if !(1..=3600).contains(&policy.budget_secs) {
+                return Err(format!(
+                    "warmup.languages.{name}.budget_secs must be from 1 to 3600 seconds, not {}",
+                    policy.budget_secs
+                ));
+            }
+        }
         Ok(())
+    }
+
+    /// The command to run in a workspace of `engine` after it was loaded again, and how long it
+    /// may take; `None` when the language has none.
+    pub fn prebuild(&self, engine: &str) -> Option<(&[String], std::time::Duration)> {
+        let policy = self.languages.get(engine)?;
+        (!policy.prebuild.is_empty()).then(|| {
+            (
+                &policy.prebuild[..],
+                std::time::Duration::from_secs(policy.budget_secs),
+            )
+        })
     }
 }

@@ -39,6 +39,29 @@ pub struct Event {
     pub error_class: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compiler: Option<String>,
+    /// What the engine was doing when it answered an index question; see
+    /// [`engine_state`] (#1975).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_state: Option<String>,
+}
+
+/// What the engine was doing when it answered `method`, from the note the gateway sent ahead of
+/// the answer (`busy`): `None` for a request that is not answered from an index, `ready` when no
+/// note came, `loading` and `indexing` for work the server reported, and `unreported` for a
+/// server that was expected to report and said nothing.
+pub fn engine_state(
+    method: &str,
+    busy: Option<&prod_code_protocol::readiness::Busy>,
+) -> Option<&'static str> {
+    if !prod_code_protocol::readiness::needs_index(method) {
+        return None;
+    }
+    Some(match busy {
+        None => "ready",
+        Some(busy) if busy.unreported => "unreported",
+        Some(busy) if busy.title == "starting" => "loading",
+        Some(_) => "indexing",
+    })
 }
 
 impl Event {
@@ -65,6 +88,7 @@ impl Event {
             bytes: 0,
             error_class: None,
             compiler: None,
+            engine_state: None,
         }
     }
 
@@ -136,6 +160,7 @@ impl Event {
             host,
             workspace,
             compiler: self.compiler.clone(),
+            engine_state: self.engine_state.clone(),
         }
     }
 }
@@ -227,7 +252,16 @@ pub fn classify_error(detail: &str, exit_code: Option<i32>) -> &'static str {
         "invalid_params"
     } else if lower.contains("not found") || lower.contains("no such") {
         "not_found"
-    } else if lower.contains("connection") || lower.contains("io") || lower.contains("broken pipe")
+    } else if lower.contains("not a readable") || lower.contains("not allowed") {
+        // The gateway's own policy said no (a path outside what it serves): not a fault of its
+        // I/O. The substring "io" put these under `io_error`, with every "location" and
+        // "permission" and "version" (#1972).
+        "refused"
+    } else if lower.contains("connection")
+        || lower.contains("os error")
+        || lower.contains("i/o")
+        || lower.contains("io error")
+        || lower.contains("broken pipe")
     {
         "io_error"
     } else if lower.contains("admission") || lower.contains("pressure") || lower.contains("reject")
@@ -301,5 +335,37 @@ mod tests {
             classify_error("resource pressure", None),
             "admission_rejected"
         );
+    }
+
+    /// What `read_file` really answers with (#1972): a policy refusal used to be `io_error`
+    /// because "location" contains "io"; a missing file is `not_found`; a read that failed in
+    /// the operating system is `io_error`.
+    #[test]
+    fn classify_error_does_not_mistake_a_word_for_an_io_error() {
+        assert_eq!(
+            classify_error(
+                "/home/x/.cargo/registry/src/a/b.rs is not a readable source location on this gateway",
+                None
+            ),
+            "refused"
+        );
+        assert_eq!(
+            classify_error(
+                "cannot read /srv/ws/a.rs: No such file or directory (os error 2)",
+                None
+            ),
+            "not_found"
+        );
+        assert_eq!(
+            classify_error(
+                "cannot read /srv/ws/a.rs: Permission denied (os error 13)",
+                None
+            ),
+            "io_error"
+        );
+        // Words that only contain the letters "io" are no evidence of anything.
+        for text in ["unsupported version", "bad region", "a long description"] {
+            assert_eq!(classify_error(text, None), "internal_error", "{text}");
+        }
     }
 }

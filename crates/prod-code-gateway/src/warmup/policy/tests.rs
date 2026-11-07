@@ -46,10 +46,10 @@ fn a_section_sets_what_it_names_and_keeps_the_rest() {
 fn a_key_that_is_not_known_is_an_error_naming_it() {
     let error = parse("max_workspace = 8\n").unwrap_err().to_string();
     assert!(error.contains("max_workspace"), "{error}");
-    let error = parse("[languages.rust]\nwhen = \"restart\"\nprebuild = [\"x\"]\n")
+    let error = parse("[languages.rust]\nwhen = \"restart\"\nwarm_command = [\"x\"]\n")
         .unwrap_err()
         .to_string();
-    assert!(error.contains("prebuild"), "{error}");
+    assert!(error.contains("warm_command"), "{error}");
     let error = parse("[languages.rust]\nwhen = \"sometimes\"\n")
         .unwrap_err()
         .to_string();
@@ -70,8 +70,46 @@ fn values_out_of_range_are_refused_with_the_key() {
         ("max_concurrent = 0\n", "warmup.max_concurrent"),
         ("max_age_hours = 0\n", "warmup.max_age_hours"),
         ("[languages.\" \"]\nwhen = \"never\"\n", "warmup.languages"),
+        (
+            "[languages.swift]\nprebuild = [\"\"]\n",
+            "warmup.languages.swift.prebuild",
+        ),
+        (
+            "[languages.swift]\nprebuild = [\"swift\"]\nbudget_secs = 0\n",
+            "warmup.languages.swift.budget_secs",
+        ),
+        (
+            "[languages.swift]\nprebuild = [\"swift\"]\nbudget_secs = 7200\n",
+            "warmup.languages.swift.budget_secs",
+        ),
     ] {
         let error = parse(text).unwrap().validate().unwrap_err();
         assert!(error.contains(key), "{text}: {error}");
     }
+}
+
+/// The command run in a workspace after it was loaded again: an argument vector, no shell, with a
+/// budget that defaults to 600 s (#1976).
+#[test]
+fn a_language_can_name_a_prebuild_command_and_its_budget() {
+    let config = parse(
+        "[languages.swift]\nprebuild = [\"swift\", \"build\", \"--build-tests\"]\nbudget_secs = 900\n[languages.rust]\nwhen = \"restart\"\n[languages.go]\nprebuild = [\"go\", \"build\", \"./...\"]\n",
+    )
+    .unwrap();
+    assert!(config.validate().is_ok());
+    let (command, budget) = config.prebuild("swift").expect("swift has one");
+    assert_eq!(command, ["swift", "build", "--build-tests"]);
+    assert_eq!(budget, std::time::Duration::from_secs(900));
+    // The default budget, and a language with no command, and one that is not listed.
+    assert_eq!(
+        config.prebuild("go").unwrap().1,
+        std::time::Duration::from_secs(600)
+    );
+    assert!(config.prebuild("rust").is_none());
+    assert!(config.prebuild("python").is_none());
+    // A key that is not known is still an error that names it.
+    let error = parse("[languages.swift]\nprebuilt = [\"x\"]\n")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("prebuilt"), "{error}");
 }

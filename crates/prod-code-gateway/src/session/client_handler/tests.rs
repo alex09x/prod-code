@@ -338,3 +338,38 @@ async fn every_pre_handshake_request_gets_its_own_kind_of_answer() {
         .unwrap();
     s.ends().await;
 }
+
+/// An answer with no node says that no node serves the engine. It used to be recorded with no
+/// class, which the usage metrics turned into `internal_error`: 42% of placement answers looked
+/// like failures of the gateway (#1971).
+#[test]
+fn a_placement_with_no_node_is_a_no_node_event_that_names_the_engine() {
+    let req = PlaceRequest {
+        workspace_name: "proj".to_string(),
+        engine: Some("swift".to_string()),
+        os: None,
+        rebalance_active: false,
+    };
+    let none = place_event(&req, false, 3);
+    assert_eq!(
+        (
+            none.ok,
+            none.error_class.as_deref(),
+            none.engine.as_str(),
+            none.workspace.as_str()
+        ),
+        (false, Some("no_node"), "swift", "proj")
+    );
+    // The operation metric it becomes keeps that class, not `internal_error`.
+    let metric = none.to_operation_metric("node");
+    assert_eq!(metric.error_class.as_deref(), Some("no_node"));
+    assert_eq!(metric.engine, "swift");
+
+    let placed = place_event(&req, true, 3);
+    assert!(placed.ok && placed.error_class.is_none());
+    let without_engine = PlaceRequest {
+        engine: None,
+        ..req
+    };
+    assert_eq!(place_event(&without_engine, true, 0).engine, "");
+}

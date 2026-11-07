@@ -18,6 +18,7 @@
 //! languages is set in the `[warmup]` section of `gateway.toml` ([`WarmupConfig`]).
 
 mod policy;
+mod prebuild;
 mod recent;
 mod restore;
 mod start;

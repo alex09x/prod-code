@@ -620,6 +620,13 @@ max_concurrent = 1              # loads at once
 # Per engine (rust, go, swift, python, ...); one not listed is loaded.
 [warmup.languages.swift]
 when = "never"                  # "restart" (default) or "never"
+
+# A command run in a workspace once it was loaded again: the build that writes the index a
+# server answers from (sourcekit-lsp before 6.x has no background indexing). An argument
+# vector, no shell; stopped after budget_secs (default 600, at most 3600).
+[warmup.languages.go]
+prebuild = ["go", "build", "./..."]
+budget_secs = 600
 ```
 
 A node short of memory refuses a load as it would for any request (`engine_reserve_mib`), and each load, skipped or failed one is a `category=warmup` event in `prod-code metrics`. A mistake in the section (an unknown key, a value out of range) stops the gateway with a message that names the key.

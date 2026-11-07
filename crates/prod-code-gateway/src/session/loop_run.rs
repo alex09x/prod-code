@@ -40,6 +40,10 @@ pub async fn run_session_loop(
     let writer_handle = tokio::spawn(async move {
         let _lifetime = SharedWriterLifetime::start(writer_output);
         let mut batch: Vec<SharedOutputFrame> = Vec::with_capacity(SHARED_OUTPUT_BATCH);
+        // The note the gateway sent ahead of an answer, by the id of the request it is about, for
+        // the usage-metrics event that answer closes (#1975).
+        let mut notes: std::collections::HashMap<String, prod_code_protocol::readiness::Busy> =
+            std::collections::HashMap::new();
         while out_rx
             .recv_many(&mut batch, SHARED_OUTPUT_BATCH)
             .await
@@ -52,10 +56,26 @@ pub async fn run_session_loop(
                 }
                 if let WireMessage::LspPayload(ref raw) = frame.message
                     && let Ok(val) = serde_json::from_str::<serde_json::Value>(raw)
+                    && val.get("method").and_then(|m| m.as_str())
+                        == Some(prod_code_protocol::readiness::BUSY_NOTIFICATION)
+                {
+                    if let Some(id) = val.get("for_request")
+                        && let Some(busy) = val
+                            .get("params")
+                            .and_then(|p| serde_json::from_value(p.clone()).ok())
+                    {
+                        if notes.len() >= 256 {
+                            notes.clear();
+                        }
+                        notes.insert(id.to_string(), busy);
+                    }
+                } else if let WireMessage::LspPayload(ref raw) = frame.message
+                    && let Ok(val) = serde_json::from_str::<serde_json::Value>(raw)
                     && let Some(id) = val.get("id").filter(|i| !i.is_null())
                     && val.get("method").is_none()
                 {
                     let key = id.to_string();
+                    let note = notes.remove(&key);
                     if let Some(req) = pending_writer.lock().await.remove(&key) {
                         let mut ev = metrics::Event::blank("lsp");
                         ev.session_id = meta_writer.session_id;
@@ -65,6 +85,8 @@ pub async fn run_session_loop(
                         ev.client_addr = meta_writer.client_addr.clone();
                         ev.workspace = meta_writer.workspace.clone();
                         ev.engine = meta_writer.engine.clone();
+                        ev.engine_state =
+                            metrics::engine_state(&req.method, note.as_ref()).map(str::to_string);
                         ev.method = req.method;
                         ev.file = req.file;
                         ev.line = req.line;
