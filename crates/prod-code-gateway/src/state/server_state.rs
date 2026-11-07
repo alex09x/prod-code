@@ -23,6 +23,9 @@ pub struct ServerState {
     pub peers: tokio::sync::RwLock<std::collections::BTreeSet<String>>,
     /// Latest heartbeat from every peer and when it arrived.
     pub cluster: tokio::sync::RwLock<std::collections::HashMap<String, PeerEntry>>,
+    /// Peer addresses that were forgotten by hand, and until when: other nodes' gossip does not
+    /// bring them back before then (#1973). The peer itself speaking to this node clears an entry.
+    pub forgotten: tokio::sync::RwLock<std::collections::HashMap<String, Instant>>,
     /// Usage metrics (JSONL on disk + in-memory ring).
     pub metrics: Arc<metrics::Metrics>,
     /// Engines this node serves (`--engines`); empty means every installed engine.
@@ -84,6 +87,7 @@ impl ServerState {
             advertise: tokio::sync::RwLock::new(String::new()),
             peers: tokio::sync::RwLock::new(std::collections::BTreeSet::new()),
             cluster: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            forgotten: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             metrics: Arc::new(metrics::Metrics::new(metrics_dir)),
             engine_allowlist: Vec::new(),
             auth_token: None,
@@ -167,10 +171,16 @@ impl ServerState {
             return;
         }
         {
+            // The peer itself speaking is proof it is there, whatever was decided about it; a
+            // third node merely naming it is not (#1973).
+            let mut forgotten = self.forgotten.write().await;
+            let now = Instant::now();
+            forgotten.retain(|_, until| *until > now);
+            forgotten.remove(&gossip.addr);
             let mut peers = self.peers.write().await;
             peers.insert(gossip.addr.clone());
             for p in &gossip.peers {
-                if *p != me && peers.len() < 64 {
+                if *p != me && peers.len() < 64 && !forgotten.contains_key(p) {
                     peers.insert(p.clone());
                 }
             }

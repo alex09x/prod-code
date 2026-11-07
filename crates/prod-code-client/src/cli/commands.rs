@@ -48,6 +48,13 @@ pub enum Commands {
         #[arg(long, default_value_t = false)]
         rebalance: bool,
     },
+    /// Forget a peer address that stays listed as offline (a node that came back under another
+    /// address): this node and every other node drop it and do not learn it again from gossip.
+    /// A gateway whose unit still names it in `--peers` brings it back at its next restart.
+    ForgetPeer {
+        /// The `host:port` the peer is listed under (see `prod-code cluster`).
+        address: String,
+    },
     /// Inspect DNS and SRV service discovery resolution for *.code.internal or cluster nodes.
     Resolve {
         /// The domain or service query to resolve (e.g. `shop.code.internal`, `cluster.code.internal`, `_prod-code._tcp.code.internal`).

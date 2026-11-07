@@ -11,8 +11,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::cluster::{
-    AuthToken, ClusterResponse, MetricsRequest, MetricsResponse, NodeGossip, PlaceRequest,
-    PlaceResponse, ReadFileRequest, ReadFileResponse,
+    AuthToken, ClusterResponse, ForgetPeerRequest, ForgetPeerResponse, MetricsRequest,
+    MetricsResponse, NodeGossip, PlaceRequest, PlaceResponse, ReadFileRequest, ReadFileResponse,
 };
 use super::exec::{ExecChanges, ExecChunk, ExecExit, ExecRequest};
 use super::handshake::{HandshakeRequest, HandshakeResponse};
@@ -76,6 +76,10 @@ pub enum WireMessage {
     /// A client asks any node for the whole cluster as that node sees it.
     ClusterRequest,
     ClusterResponse(ClusterResponse),
+    /// A client asks a node to forget a peer address and tell the other nodes to (#1973).
+    /// Older gateways cannot decode it and close the connection.
+    ForgetPeerRequest(ForgetPeerRequest),
+    ForgetPeerResponse(ForgetPeerResponse),
     /// A client asks any node where a workspace should live.
     PlaceRequest(PlaceRequest),
     PlaceResponse(PlaceResponse),

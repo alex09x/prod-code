@@ -61,6 +61,36 @@ async fn discover_nodes_preserves_remembered_placement_when_seed_view_omits_it()
     );
 }
 
+/// What the machine remembers of a forgotten address goes with it (#1973): the node cache that
+/// `PROD_CODE_REMOTE=auto` reads its seeds from, and the nodes checkouts were last placed on.
+/// Otherwise the next `prod-code cluster` reads it back and lists it as down.
+#[test]
+fn forgetting_an_address_removes_it_from_the_cache_and_the_placements() {
+    let temp = tempfile::tempdir().unwrap();
+    let placement = temp.path().join("placement.json");
+    let cache = temp.path().join("cluster.json");
+    let gone: SocketAddr = "192.0.2.40:9400".parse().unwrap();
+    let kept: SocketAddr = "192.0.2.41:9400".parse().unwrap();
+    std::fs::write(&cache, format!(r#"{{"nodes":["{gone}","{kept}"]}}"#)).unwrap();
+    let mut rem = Placement::default();
+    rem.workspaces.insert("a".to_string(), gone);
+    rem.workspaces.insert("b".to_string(), kept);
+    save_placement(&placement, &rem);
+
+    crate::cluster::discover::forget_local_at(&gone.to_string(), Some(&placement), Some(&cache));
+
+    let cached = std::fs::read_to_string(&cache).unwrap();
+    assert!(
+        !cached.contains("192.0.2.40") && cached.contains("192.0.2.41"),
+        "{cached}"
+    );
+    let left = load_placement(&placement);
+    assert_eq!(left.workspaces.len(), 1);
+    assert_eq!(left.workspaces.get("b"), Some(&kept));
+    // Files that are not there are not an error.
+    crate::cluster::discover::forget_local_at("192.0.2.1:9400", None, None);
+}
+
 #[tokio::test]
 async fn explicit_remote_does_not_fall_back_to_remembered_placement() {
     let temp = tempfile::tempdir().unwrap();

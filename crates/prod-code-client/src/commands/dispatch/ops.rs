@@ -41,6 +41,7 @@ pub async fn dispatch_ops(cmd: Commands, cx: &DispatchContext<'_>) -> Result<()>
             )
             .await
         }
+        Commands::ForgetPeer { address } => run_forget_peer(cx.remotes, &address).await,
         Commands::Resolve { domain, json } => run_resolve(&domain, json).await,
         Commands::Metrics { since, json } => run_metrics(cx.remotes, since, json).await,
         Commands::ReportIssue { .. } => unreachable!("handled before placement"),

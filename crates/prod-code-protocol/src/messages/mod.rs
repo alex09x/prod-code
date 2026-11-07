@@ -25,9 +25,10 @@ pub mod wire;
 mod tests;
 
 pub use cluster::{
-    AuthToken, ClusterResponse, ExecMetric, LoadedWorkspaceInfo, MetricsRequest, MetricsResponse,
-    NodeGossip, PeerInfo, PlaceRequest, PlaceResponse, QueryMetric, ReadFileRequest,
-    ReadFileResponse, client_host, detect_client_agent, platform,
+    AuthToken, ClusterResponse, ExecMetric, ForgetPeerRequest, ForgetPeerResponse,
+    LoadedWorkspaceInfo, MetricsRequest, MetricsResponse, NodeGossip, PeerInfo, PlaceRequest,
+    PlaceResponse, QueryMetric, ReadFileRequest, ReadFileResponse, client_host,
+    detect_client_agent, platform,
 };
 pub use exec::{ExecChanges, ExecChunk, ExecExit, ExecRequest, ExecUsage};
 pub use handshake::{
