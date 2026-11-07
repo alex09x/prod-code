@@ -188,13 +188,13 @@ async fn unloading_preserves_an_in_flight_load_for_later_sessions() {
 /// to trap later sessions, nothing stays reserved, and the next session loads afresh.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_load_that_panics_answers_its_sessions_and_leaves_no_loading_entry() {
-    let (started_tx, mut started) = tokio::sync::mpsc::unbounded_channel();
+    let (started_tx, mut started) = rapidfire::mpsc::unbounded();
     let (gate, gate_rx) = std::sync::mpsc::channel::<()>();
     let gate_rx = std::sync::Mutex::new(gate_rx);
     let reads = AtomicUsize::new(0);
     let probe: crate::admission::MemoryProbe = Arc::new(move || {
         if reads.fetch_add(1, Ordering::SeqCst) == 0 {
-            let _ = started_tx.send(());
+            let _ = started_tx.try_send(());
             let _ = gate_rx.lock().unwrap().recv();
             panic!("scripted probe failure");
         }

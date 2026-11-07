@@ -35,17 +35,23 @@ pub fn fallback_answers_request(json: &str) -> bool {
 /// Sends the client the note an engine attached to an answer given while its server was still
 /// loading or indexing, just before the answer, and takes it off the answer (#391).
 pub async fn send_busy_note(resp: &mut serde_json::Value, out_tx: &SharedOutputSender) {
+    // The request the note is about, so that the usage metrics tie it to that answer and not to
+    // whichever one the queue carries next (#1975); a client reads `params` and ignores the rest.
+    let for_request = resp.get("id").cloned();
     let Some(busy) = resp
         .as_object_mut()
         .and_then(|o| o.remove(prod_code_protocol::readiness::BUSY_MEMBER))
     else {
         return;
     };
-    let note = serde_json::json!({
+    let mut note = serde_json::json!({
         "jsonrpc": "2.0",
         "method": prod_code_protocol::readiness::BUSY_NOTIFICATION,
         "params": busy
     });
+    if let Some(id) = for_request {
+        note["for_request"] = id;
+    }
     let _ = out_tx.send(WireMessage::LspPayload(note.to_string())).await;
 }
 

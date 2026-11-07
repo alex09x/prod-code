@@ -15,7 +15,9 @@ use tokio_util::codec::Framed;
 
 use crate::sync::workspace_identity;
 
-use super::super::pool::{pool_key, pooled_query, pooled_query_with_budget, session_slot};
+use super::super::pool::{
+    pool_key, pooled_query, pooled_query_in, pooled_query_with_budget, session_slot,
+};
 use super::super::types::LspSession;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -230,9 +232,13 @@ async fn established_session_migrates_when_placement_is_rebalanced() {
     let root = ws.root();
     let file = ws.path("src/lib.rs");
     let ws_identity = workspace_identity(&root);
+    // A placement file of this test's own: the user's is shared by every test process (#1986).
+    let store_dir = tempfile::tempdir().unwrap();
+    let store = crate::cluster::PlacementStore::at(store_dir.path().join("placement.json"));
 
     // Query 1: runs on gateway1
-    pooled_query(
+    pooled_query_in(
+        &store,
         gateway1.addr(),
         &root,
         &file,
@@ -245,10 +251,11 @@ async fn established_session_migrates_when_placement_is_rebalanced() {
     assert_eq!(gateway2.calls(), 0);
 
     // Rebalance workspace placement to gateway2
-    crate::cluster::remember_placement(&ws_identity.name, gateway2.addr());
+    store.remember(&ws_identity.name, gateway2.addr());
 
     // Query 2: established session on gateway1 must migrate to gateway2
-    pooled_query(
+    pooled_query_in(
+        &store,
         gateway1.addr(),
         &root,
         &file,
@@ -269,8 +276,11 @@ async fn pinned_semantic_query_ignores_remembered_node_outside_pin() {
     let root = ws.root();
     let file = ws.path("src/lib.rs");
     let identity = workspace_identity(&root);
+    let store_dir = tempfile::tempdir().unwrap();
+    let store = crate::cluster::PlacementStore::at(store_dir.path().join("placement.json"));
 
-    pooled_query(
+    pooled_query_in(
+        &store,
         pinned.addr(),
         &root,
         &file,
@@ -279,7 +289,7 @@ async fn pinned_semantic_query_ignores_remembered_node_outside_pin() {
     )
     .await
     .unwrap();
-    crate::cluster::remember_placement(&identity.name, remembered.addr());
+    store.remember(&identity.name, remembered.addr());
 
     let policy = crate::cluster::pin::NodePolicy {
         mode: crate::cluster::pin::PinMode::Strict,
@@ -292,7 +302,8 @@ async fn pinned_semantic_query_ignores_remembered_node_outside_pin() {
     crate::cluster::with_root_policy(
         &root,
         policy,
-        pooled_query(
+        pooled_query_in(
+            &store,
             pinned.addr(),
             &root,
             &file,

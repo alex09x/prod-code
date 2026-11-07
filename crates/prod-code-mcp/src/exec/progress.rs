@@ -80,9 +80,10 @@ pub(super) async fn prepare_reporting_after(
     let server_root;
     let sync_omitted;
     {
-        let (phases, mut changes) = tokio::sync::mpsc::unbounded_channel();
+        let (phases, mut changes) = rapidfire::mpsc::unbounded();
         let mut observer = move |phase| {
-            let _ = phases.send(phase);
+            // The observer is not async, and an unbounded queue is never full.
+            let _ = phases.try_send(phase);
         };
         let sync =
             push_workspace_sync_with_progress(&mut framed, root, identity, None, &mut observer);
@@ -101,7 +102,7 @@ pub(super) async fn prepare_reporting_after(
                     break;
                 }
                 // A quick pre-flight stays silent; one that drags on says each step it reaches.
-                Some(next) = changes.recv() => {
+                Ok(next) = changes.recv() => {
                     phase = next;
                     if started.elapsed() >= quiet_for {
                         report(output, phase, started);

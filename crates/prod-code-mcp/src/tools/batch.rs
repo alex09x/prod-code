@@ -162,6 +162,12 @@ where
                     out.push_str(text.trim_end());
                     out.push('\n');
                 }
+                // The 2 s was this batch's default for a bare name, not the tool's 45 s: say so,
+                // and how to get more (#1985).
+                if short_reference_share && res.is_error {
+                    out.push_str(SHORT_SHARE_HINT);
+                    out.push('\n');
+                }
             }
             Ok(Err(err)) => {
                 out.push_str(&format!("Error: {err:#}\n"));
@@ -184,6 +190,9 @@ where
         Ok(McpToolCallResult::error(trimmed))
     }
 }
+
+/// What a batch of references adds under a bare name that ran out of its default share.
+const SHORT_SHARE_HINT: &str = "[This name had the default 2 s share of a `symbols` batch (an unqualified name can fan out to many declarations): pass `budget_ms`, give a path, or qualify it (`Type::name`) for more time.]";
 
 fn is_unqualified_symbol(symbol: &str) -> bool {
     !symbol.contains("::") && !symbol.contains('.') && !symbol.contains('/')
@@ -320,6 +329,55 @@ mod tests {
             explicit_budgets.lock().unwrap()[0].1 > 2000,
             "an explicit user budget overrides the default short share"
         );
+    }
+
+    /// A bare name that ran out of the batch's default 2 s says that it was the batch's default
+    /// and how to get more; a qualified name, a name with an explicit budget, and one that was
+    /// answered say nothing of the kind (#1985).
+    #[tokio::test]
+    async fn a_bare_name_out_of_its_default_share_says_where_the_2_seconds_came_from() {
+        let busy = |_: serde_json::Value| async { Ok(McpToolCallResult::error("busy")) };
+        let hint = |text: &str| text.contains("default 2 s share of a `symbols` batch");
+
+        let symbols = vec!["common_helper".to_string(), "Widget::run".to_string()];
+        let result = run_symbol_batch(
+            "code_references",
+            serde_json::json!({ "symbols": symbols.clone() }),
+            &symbols,
+            busy,
+        )
+        .await
+        .unwrap();
+        let McpContentItem::Text { text } = &result.content[0];
+        let (bare, qualified) = text.split_once("=== [2/2]").expect("two sections");
+        assert!(hint(bare), "{text}");
+        assert!(!hint(qualified), "a qualified name keeps its share: {text}");
+
+        let explicit = run_symbol_batch(
+            "code_references",
+            serde_json::json!({ "symbols": symbols.clone(), "budget_ms": 5000 }),
+            &symbols,
+            busy,
+        )
+        .await
+        .unwrap();
+        let McpContentItem::Text { text } = &explicit.content[0];
+        assert!(!hint(text), "an explicit budget is the user's own: {text}");
+
+        let answered = run_symbol_batch(
+            "code_references",
+            serde_json::json!({ "symbols": symbols.clone() }),
+            &symbols,
+            |args| async move {
+                Ok(McpToolCallResult::text(
+                    args["symbol"].as_str().unwrap().to_string(),
+                ))
+            },
+        )
+        .await
+        .unwrap();
+        let McpContentItem::Text { text } = &answered.content[0];
+        assert!(!hint(text), "an answered name needs no hint: {text}");
     }
 
     #[test]

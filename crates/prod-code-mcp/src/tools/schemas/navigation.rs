@@ -143,7 +143,7 @@ pub fn navigation_tools() -> Vec<McpTool> {
                     },
                     "budget_ms": {
                         "type": "integer",
-                        "description": "Shared wall-clock budget for a single references request and scan (default: 45000 ms; capped at 50000 ms). Expiry returns a busy response. Multi-symbol batches keep their shared partial-result budget."
+                        "description": "Shared wall-clock budget for a single references request and scan (default: 45000 ms; capped at 50000 ms). Expiry returns a busy response. Multi-symbol batches (`symbols`) keep their shared partial-result budget, and in one without `budget_ms` or a path an unqualified name (no `Type::` or `.`) gets at most 2000 ms, since it can fan out to many declarations: pass `budget_ms` or qualify the name for more time."
                     },
                     "build_index": {
                         "type": "boolean",

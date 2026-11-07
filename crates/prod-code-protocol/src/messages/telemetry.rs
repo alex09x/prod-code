@@ -36,7 +36,8 @@ pub struct OperationMetric {
     /// Whether the operation completed successfully.
     pub ok: bool,
     /// Normalized low-cardinality error category (e.g. `timeout`, `cancelled`, `invalid_params`,
-    /// `exit_non_zero`, `io_error`, `not_found`, `internal_error`).
+    /// `exit_non_zero`, `io_error`, `not_found`, `refused` (the gateway's own policy said no),
+    /// `no_node` (no node serves the engine asked for), `internal_error`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_class: Option<String>,
     /// Number of processed items (e.g. hits returned, files synced, references found).
@@ -60,6 +61,12 @@ pub struct OperationMetric {
     /// Optional compiler name and version (e.g. `rustc 1.85.0`, `go 1.24.0`, `clang 19.1.0`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compiler: Option<String>,
+    /// For an answer from an index (`references`, `definition`, `workspace/symbol`, ...): what the
+    /// engine was doing when it answered: `ready`, `loading`, `indexing`, or `unreported` (a
+    /// server that was expected to say when it had indexed and said nothing). Absent for every
+    /// other request. An empty answer is final only when this is `ready` (#1975).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_state: Option<String>,
 }
 
 impl OperationMetric {
@@ -87,6 +94,7 @@ impl OperationMetric {
             host: None,
             workspace: None,
             compiler: None,
+            engine_state: None,
         }
     }
 }

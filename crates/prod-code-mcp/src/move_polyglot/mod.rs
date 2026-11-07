@@ -24,6 +24,7 @@ pub mod imports;
 mod python_dependencies;
 mod python_header;
 pub mod specifiers;
+mod swift_member;
 pub mod target;
 
 #[cfg(test)]

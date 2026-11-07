@@ -102,13 +102,13 @@ pub(crate) fn loaded(root: &str, idle_secs: u64) -> Arc<SharedWorkspace> {
 /// through (or drops the gate), and then fails, so that no real engine is built.
 pub(crate) struct SlowLoader {
     pub(crate) load: RustLoader,
-    pub(crate) started: tokio::sync::mpsc::UnboundedReceiver<()>,
+    pub(crate) started: rapidfire::mpsc::Receiver<()>,
     pub(crate) gate: std::sync::mpsc::Sender<()>,
     pub(crate) loads: Arc<AtomicUsize>,
 }
 
 pub(crate) fn slow_loader() -> SlowLoader {
-    let (started_tx, started) = tokio::sync::mpsc::unbounded_channel();
+    let (started_tx, started) = rapidfire::mpsc::unbounded();
     let (gate, gate_rx) = std::sync::mpsc::channel::<()>();
     let gate_rx = std::sync::Mutex::new(gate_rx);
     let loads = Arc::new(AtomicUsize::new(0));
@@ -117,7 +117,7 @@ pub(crate) fn slow_loader() -> SlowLoader {
         load: Arc::new(
             move |_root: &Path| -> Result<prod_code_engine_rust::RustEngine> {
                 counted.fetch_add(1, Ordering::SeqCst);
-                let _ = started_tx.send(());
+                let _ = started_tx.try_send(());
                 let _ = gate_rx.lock().unwrap().recv();
                 anyhow::bail!("scripted load")
             },

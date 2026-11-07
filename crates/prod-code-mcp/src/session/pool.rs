@@ -164,7 +164,30 @@ pub async fn pooled_query(
     method: &str,
     params: serde_json::Value,
 ) -> Result<serde_json::Value> {
-    pooled_query_with_budget(
+    pooled_query_in(
+        &crate::cluster::PlacementStore::user(),
+        remote,
+        root,
+        file,
+        method,
+        params,
+    )
+    .await
+}
+
+/// [`pooled_query`] reading and forgetting the node a checkout last used in `placement`, which a
+/// test makes over a file of its own: the user's file is shared by every process that runs, and
+/// one test's entry was overwritten by another's (#1986).
+pub(crate) async fn pooled_query_in(
+    placement: &crate::cluster::PlacementStore,
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value> {
+    pooled_query_with_budget_in(
+        placement,
         remote,
         root,
         file,
@@ -175,7 +198,29 @@ pub async fn pooled_query(
     .await
 }
 
+#[cfg(test)]
 pub(crate) async fn pooled_query_with_budget(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    method: &str,
+    params: serde_json::Value,
+    budget: std::time::Duration,
+) -> Result<serde_json::Value> {
+    pooled_query_with_budget_in(
+        &crate::cluster::PlacementStore::user(),
+        remote,
+        root,
+        file,
+        method,
+        params,
+        budget,
+    )
+    .await
+}
+
+pub(crate) async fn pooled_query_with_budget_in(
+    placement: &crate::cluster::PlacementStore,
     remote: SocketAddr,
     root: &Path,
     file: &Path,
@@ -218,7 +263,7 @@ pub(crate) async fn pooled_query_with_budget(
             let engine_key = file_engine.map(|eng| format!("{ws_name}#{eng}"));
             let policy = crate::cluster::policy_for_root(&root)?;
             if let Some(ref key) = engine_key
-                && let Some(remembered) = crate::cluster::remembered_node(key)
+                && let Some(remembered) = placement.remembered(key)
                 && policy.allows(remembered)
             {
                 let valid = match file_engine {
@@ -228,10 +273,10 @@ pub(crate) async fn pooled_query_with_budget(
                 if valid {
                     target_remote = remembered;
                 } else {
-                    crate::cluster::forget_placement(key);
+                    placement.forget(key);
                 }
             } else if belongs_to_root_engine
-                && let Some(remembered) = crate::cluster::remembered_node(ws_name)
+                && let Some(remembered) = placement.remembered(ws_name)
                 && policy.allows(remembered)
             {
                 let valid = match file_engine {

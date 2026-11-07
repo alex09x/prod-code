@@ -342,6 +342,8 @@ async fn handle_client(
                             p50_ms: 1,
                             p95_ms: 3,
                             max_ms: 5,
+                            before_ready: 4,
+                            empty_before_ready: 3,
                         }],
                         execs: vec![ExecMetric {
                             agent: "cli".to_string(),

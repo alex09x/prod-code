@@ -220,6 +220,35 @@ async fn cpp_move_to_implementation_file_refuses_before_writing() {
     assert!(!target.exists());
 }
 
+/// A member of a Swift type moved alone would be a free declaration outside its type, and the
+/// preview called it clean (#1978): the move refuses it, before writing anything, and still moves
+/// a declaration that is at the top level.
+#[tokio::test]
+async fn a_swift_member_is_refused_and_a_top_level_declaration_is_not() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("Example.swift");
+    let target = temp.path().join("ExampleSetup.swift");
+    let original = "class Example {\n    init() { setup() }\n    private func setup() { self.value = 1 }\n    var value = 0\n}\n\nfunc free() {}\n";
+    std::fs::write(&source, original).unwrap();
+    let remote = "127.0.0.1:9400".parse().unwrap();
+
+    let error = move_item(remote, temp.path(), &source, 3, 0, &target, false, false)
+        .await
+        .unwrap_err();
+    let text = format!("{error:#}");
+    assert!(text.contains("cannot move `setup` alone"), "{text}");
+    assert!(text.contains("extension"), "{text}");
+    assert_eq!(std::fs::read_to_string(&source).unwrap(), original);
+    assert!(!target.exists());
+
+    // The top-level function is not the refused kind: whatever else the move says, it does not
+    // say that.
+    match move_item(remote, temp.path(), &source, 7, 0, &target, false, false).await {
+        Ok(_) => {}
+        Err(error) => assert!(!format!("{error:#}").contains("alone"), "{error:#}"),
+    }
+}
+
 #[test]
 fn go_move_to_new_file_initializes_package_header() {
     let temp = tempfile::tempdir().unwrap();

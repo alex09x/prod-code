@@ -33,7 +33,8 @@ pub async fn run_metrics(nodes: &[SocketAddr], since: u64, json: bool) -> Result
     println!("────────────────────────────────────────────────────────────────────────");
     // Queries: by agent → workspace → method, summed over nodes.
     type Key = (String, String, String, String);
-    type Agg = (u64, u64, u64, u64);
+    // count, errors, p50, p95, answers given before the engine was ready, and the empty ones.
+    type Agg = (u64, u64, u64, u64, u64, u64);
     let mut by_key: std::collections::BTreeMap<Key, Agg> = std::collections::BTreeMap::new();
     for m in &all {
         for q in &m.queries {
@@ -49,18 +50,20 @@ pub async fn run_metrics(nodes: &[SocketAddr], since: u64, json: bool) -> Result
             e.1 += q.errors;
             e.2 = e.2.max(q.p50_ms);
             e.3 = e.3.max(q.p95_ms);
+            e.4 += q.before_ready;
+            e.5 += q.empty_before_ready;
         }
     }
     if by_key.is_empty() {
         println!("no queries in the window");
     } else {
         println!(
-            "{:<12} {:<18} {:<28} {:<34} {:>7} {:>5} {:>7} {:>7}",
-            "agent", "host", "workspace", "method", "count", "err", "p50ms", "p95ms"
+            "{:<12} {:<18} {:<28} {:<34} {:>7} {:>5} {:>7} {:>7} {:>11}",
+            "agent", "host", "workspace", "method", "count", "err", "p50ms", "p95ms", "early/empty"
         );
-        for ((agent, host, ws, method), (count, errors, p50, p95)) in &by_key {
+        for ((agent, host, ws, method), (count, errors, p50, p95, early, early_empty)) in &by_key {
             println!(
-                "{:<12} {:<18} {:<28} {:<34} {:>7} {:>5} {:>7} {:>7}",
+                "{:<12} {:<18} {:<28} {:<34} {:>7} {:>5} {:>7} {:>7} {:>11}",
                 truncate(agent, 12),
                 truncate(host, 18),
                 truncate(ws, 28),
@@ -68,9 +71,13 @@ pub async fn run_metrics(nodes: &[SocketAddr], since: u64, json: bool) -> Result
                 count,
                 errors,
                 p50,
-                p95
+                p95,
+                early_before_ready(*early, *early_empty)
             );
         }
+        println!(
+            "early/empty: answers from an index given while the engine was loading, indexing or not saying, and how many of them were empty; such an empty answer is not proven final"
+        );
     }
     let mut execs: Vec<_> = all.iter().flat_map(|m| m.execs.iter().cloned()).collect();
     if !execs.is_empty() {
@@ -141,6 +148,27 @@ pub async fn run_metrics(nodes: &[SocketAddr], since: u64, json: bool) -> Result
         }
     }
     Ok(())
+}
+
+/// "12/9" for twelve answers given before the engine was ready, nine of them empty; "-" for none.
+fn early_before_ready(early: u64, empty: u64) -> String {
+    if early == 0 {
+        "-".to_string()
+    } else {
+        format!("{early}/{empty}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::early_before_ready;
+
+    #[test]
+    fn answers_before_the_engine_was_ready_show_as_early_over_empty() {
+        assert_eq!(early_before_ready(0, 0), "-");
+        assert_eq!(early_before_ready(12, 9), "12/9");
+        assert_eq!(early_before_ready(3, 0), "3/0");
+    }
 }
 
 fn truncate(s: &str, n: usize) -> String {

@@ -81,6 +81,15 @@ pub async fn move_item(
     let (name, decl_start, decl_end) =
         resolve_polyglot_decl_span(symbols.as_ref(), &source_text, line, lang)?;
 
+    // A member moved alone would become a free declaration outside its type, and the preview
+    // would still call it clean (#1978).
+    anyhow::ensure!(
+        !(lang == Language::Swift
+            && super::swift_member::is_member_at_line(&source_text, decl_start)),
+        "cannot move `{name}` alone: it is declared inside a Swift type, extension or function, and in {} it would be a free declaration outside its type, where `self` and its properties no longer resolve. Move the whole type, or write the member in an `extension` of its type in the target file",
+        display(root, target)
+    );
+
     if target_existed {
         check_target_collision(&target_text, &name, target_lang)?;
     }

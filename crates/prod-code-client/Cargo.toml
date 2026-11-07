@@ -30,6 +30,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 ignore = "0.4"
 tempfile.workspace = true
+# The queue between the editor's input task and the bridge, as in the gateway.
+rapidfire = "0.2"
 
 [dev-dependencies]
 prod-code-testkit = { path = "../prod-code-testkit" }

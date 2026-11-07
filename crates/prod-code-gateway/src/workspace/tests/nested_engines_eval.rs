@@ -105,12 +105,12 @@ async fn a_change_made_while_the_validation_engine_loads_reaches_it() {
     manager.insert_ready_for_test(Arc::clone(&ws)).await;
 
     // The loader reads the tree, says so, and waits for the test before it returns.
-    let (started_tx, mut started) = tokio::sync::mpsc::unbounded_channel();
+    let (started_tx, mut started) = rapidfire::mpsc::unbounded();
     let (gate, gate_rx) = std::sync::mpsc::channel::<()>();
     let gate_rx = std::sync::Mutex::new(gate_rx);
     let load: crate::workspace::types::RustLoader = Arc::new(move |root: &Path| {
         let engine = prod_code_engine_rust::RustEngine::load(root)?;
-        let _ = started_tx.send(());
+        let _ = started_tx.try_send(());
         let _ = gate_rx.lock().unwrap().recv();
         Ok(engine)
     });

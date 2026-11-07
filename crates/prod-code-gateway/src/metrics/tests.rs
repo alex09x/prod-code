@@ -10,7 +10,7 @@
 
 use super::event::Event;
 use super::storage::{format_day, prune_expired_metrics, write_events, write_telemetry_batch};
-use super::{Metrics, now_ms};
+use super::{Metrics, engine_state, now_ms};
 use prod_code_protocol::{
     EngineToolchainInfo, HostSnapshot, OperationMetric, TelemetryRecord, ToolchainInventory,
     ToolchainVersion,
@@ -106,6 +106,97 @@ fn summary_groups_and_percentiles() {
         .unwrap()
         .collect();
     assert_eq!(files.len(), 1);
+}
+
+/// The summary counts the answers from an index given while the engine was not ready, and the
+/// empty ones among them: the share of answers an agent should not have taken as final (#1975).
+#[test]
+fn summary_counts_the_answers_given_before_the_engine_was_ready() {
+    let temp = tempfile::tempdir().unwrap();
+    let m = Metrics::new(temp.path().join("metrics"));
+    // (state, items): two empty ones before ready, one with a hit before ready, a ready one that
+    // is empty (a true "nothing"), and a request that is not answered from an index.
+    for (state, items) in [
+        (Some("indexing"), 0),
+        (Some("unreported"), 0),
+        (Some("loading"), 2),
+        (Some("ready"), 0),
+        (None, 0),
+    ] {
+        let mut e = Event::blank("lsp");
+        e.workspace = "ws".into();
+        e.method = "textDocument/references".into();
+        e.items = items;
+        e.engine_state = state.map(str::to_string);
+        m.record(e);
+    }
+    let row = &m.summary("n", 0).queries[0];
+    assert_eq!(row.count, 5);
+    assert_eq!(row.before_ready, 3, "indexing, unreported and loading");
+    assert_eq!(row.empty_before_ready, 2, "the loading one had a hit");
+}
+
+/// The count survives a restart: the events read back from the daily files carry the state too,
+/// so `before_ready` does not fall to zero when the ring is empty.
+#[test]
+fn the_engine_state_is_read_back_from_the_daily_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("metrics");
+    let mut e = Event::blank("lsp");
+    // A minute ago, in the file only: the ring of the restarted gateway holds one later event, and
+    // the summary reads the files for what came before it.
+    e.ts_ms = now_ms() - 60_000;
+    e.workspace = "ws".into();
+    e.method = "textDocument/references".into();
+    e.engine_state = Some("indexing".to_string());
+    let before = Metrics::new(dir.clone());
+    write_events(before.dir(), "n", [e].into_iter());
+    drop(before);
+    let after = Metrics::new(dir);
+    let mut later = Event::blank("lsp");
+    later.workspace = "ws".into();
+    later.method = "textDocument/hover".into();
+    after.record(later);
+    let summary = after.summary("n", 3600);
+    let row = summary
+        .queries
+        .iter()
+        .find(|row| row.method == "textDocument/references")
+        .expect("the stored event is in the summary");
+    assert_eq!(row.count, 1);
+    assert_eq!(row.before_ready, 1);
+    assert_eq!(row.empty_before_ready, 1);
+}
+
+/// What the engine was doing is read from the note sent ahead of the answer, and only an answer
+/// from an index has one (#1975).
+#[test]
+fn engine_state_names_what_the_engine_was_doing() {
+    use prod_code_protocol::readiness::Busy;
+    let work = |title: &str| Busy {
+        title: title.to_string(),
+        message: None,
+        percentage: Some(10),
+        for_ms: 1000,
+        unreported: false,
+    };
+    let refs = "textDocument/references";
+    assert_eq!(engine_state(refs, None), Some("ready"));
+    assert_eq!(
+        engine_state(refs, Some(&work("Indexing"))),
+        Some("indexing")
+    );
+    assert_eq!(engine_state(refs, Some(&work("starting"))), Some("loading"));
+    assert_eq!(
+        engine_state(refs, Some(&Busy::unreported(2000))),
+        Some("unreported")
+    );
+    assert_eq!(engine_state("textDocument/hover", None), None);
+    assert_eq!(
+        engine_state("textDocument/documentSymbol", Some(&work("Indexing"))),
+        None,
+        "not answered from an index, so no state to tell"
+    );
 }
 
 #[test]

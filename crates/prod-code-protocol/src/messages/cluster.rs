@@ -151,6 +151,13 @@ pub struct QueryMetric {
     pub p50_ms: u64,
     pub p95_ms: u64,
     pub max_ms: u64,
+    /// Answers from an index given while the engine was not ready (loading, indexing, or a
+    /// server that does not say), and how many of them were empty: such an empty answer is not
+    /// proven final (#1975).
+    #[serde(default)]
+    pub before_ready: u64,
+    #[serde(default)]
+    pub empty_before_ready: u64,
 }
 
 /// Commands run through `exec` (including check/lint/test) in the window.
