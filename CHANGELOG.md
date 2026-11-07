@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- **An Answer Given While the Server Indexes Says an Empty List Is Not Final, and When to Ask Again** (`crates/prod-code-protocol`, `crates/prod-code-mcp`, `crates/prod-code-client`, #1969): the note under an answer that the language server gave while it was still loading or indexing said only that the answer "may be incomplete", which an agent reads past: it took an empty `references` list for "nothing uses this" and never asked again. The note now says that an empty list is not final and when to ask again (`Ask again in about 10 s.`), the time estimated from the server's own progress (the work still to do at the rate so far, never under 5 s or over 60 s, 30 s when the server gave no percentage), and a structured result carries `answer_final: false` and `retry_after_secs` beside `indexing_notes`. The command line prints the same advice in its warning, and the agent instructions tell agents never to conclude from such an answer that a symbol is unused or a name does not exist. This changes what is said, not when: a server that reports no progress at all, or that has not begun it yet, is still taken as ready (the rest of #1969).
+
 ## v0.3.53 — 2026-11-06
 
 ### Added

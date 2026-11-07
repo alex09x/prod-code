@@ -57,6 +57,20 @@ impl Busy {
         };
         format!("{}{detail} for {} s", self.title, self.for_ms / 1000)
     }
+
+    /// When to ask again, in seconds: the time the work still needs if its percentage and the
+    /// time it has run say so, else 30 s. Never under 5 s (the work moves in steps) and never
+    /// over 60 s (a longer wait should be asked about again, not trusted).
+    pub fn retry_after_secs(&self) -> u64 {
+        const DEFAULT: u64 = 30;
+        let estimate = match self.percentage {
+            Some(done @ 1..=99) if self.for_ms > 0 => {
+                (self.for_ms.saturating_mul(100 - done) / done).div_ceil(1000)
+            }
+            _ => DEFAULT,
+        };
+        estimate.clamp(5, 60)
+    }
 }
 
 /// The JSON-RPC member an engine adds to an answer given while its server was still busy, and

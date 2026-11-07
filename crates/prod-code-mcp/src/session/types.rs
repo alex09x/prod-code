@@ -76,19 +76,32 @@ pub(crate) fn budget_for(method: &str) -> std::time::Duration {
 
 /// Notes, per checkout, of index questions the gateway answered while the language server was
 /// still loading or indexing; a tool's answer carries them (#391).
-static INDEXING_NOTES: std::sync::LazyLock<std::sync::Mutex<HashMap<PathBuf, Vec<String>>>> =
+static INDEXING_NOTES: std::sync::LazyLock<std::sync::Mutex<HashMap<PathBuf, Vec<IndexingNote>>>> =
     std::sync::LazyLock::new(Default::default);
 
-pub(crate) fn record_indexing_note(root: &Path, note: String) {
+/// What the language server was doing when it was asked, and when to ask again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexingNote {
+    /// "indexing (1 / 3, 33%) for 2 s".
+    pub text: String,
+    /// The gateway's estimate of when the work is done, 5 to 60 s.
+    pub retry_after_secs: u64,
+}
+
+pub(crate) fn record_indexing_note(root: &Path, busy: &prod_code_protocol::readiness::Busy) {
+    let note = IndexingNote {
+        text: busy.describe(),
+        retry_after_secs: busy.retry_after_secs(),
+    };
     let mut notes = INDEXING_NOTES.lock().unwrap_or_else(|e| e.into_inner());
     let notes = notes.entry(root.to_path_buf()).or_default();
-    if !notes.contains(&note) {
+    if !notes.iter().any(|known| known.text == note.text) {
         notes.push(note);
     }
 }
 
 /// The indexing notes recorded for the checkout at `root` since the last call.
-pub fn take_indexing_notes(root: &Path) -> Vec<String> {
+pub fn take_indexing_notes(root: &Path) -> Vec<IndexingNote> {
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     INDEXING_NOTES
         .lock()

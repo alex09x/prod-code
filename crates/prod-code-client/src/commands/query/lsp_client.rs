@@ -322,8 +322,9 @@ fn busy_note(payload: &str) -> Option<String> {
     let busy: prod_code_protocol::readiness::Busy =
         serde_json::from_value(value.get("params")?.clone()).ok()?;
     Some(format!(
-        "warning: the language server was still indexing ({}); the answer below may be incomplete",
-        busy.describe()
+        "warning: the language server was still indexing ({}); the answer below may be incomplete, and an empty one is not final: ask again in about {} s",
+        busy.describe(),
+        busy.retry_after_secs()
     ))
 }
 
@@ -353,12 +354,17 @@ mod tests {
         let note = serde_json::json!({
             "jsonrpc": "2.0",
             "method": prod_code_protocol::readiness::BUSY_NOTIFICATION,
-            "params": { "title": "Indexing", "for_ms": 4000 }
+            "params": { "title": "Indexing", "percentage": 25, "for_ms": 4000 }
         })
         .to_string();
         let warning = super::busy_note(&note).expect("a note");
         assert!(warning.contains("still indexing (Indexing"), "{warning}");
         assert!(warning.contains("may be incomplete"), "{warning}");
+        // 25% in 4 s: 12 s to go.
+        assert!(
+            warning.contains("an empty one is not final: ask again in about 12 s"),
+            "{warning}"
+        );
         assert_eq!(
             super::busy_note(r#"{"jsonrpc":"2.0","id":2,"result":[]}"#),
             None

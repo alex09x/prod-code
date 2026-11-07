@@ -123,23 +123,47 @@ pub(crate) fn with_indexing_notes(
     Ok(append_indexing_notes(result?, notes))
 }
 
+/// The text under an answer given while the server was busy: what it was doing, that the answer
+/// may be incomplete and an empty list is no answer yet, and when to ask again.
+pub(crate) fn indexing_note_line(note: &crate::session::IndexingNote) -> String {
+    format!(
+        "(the language server was still {} when asked: this answer may be incomplete, and an empty list is not final. Ask again in about {} s.)",
+        note.text, note.retry_after_secs
+    )
+}
+
+/// The members a structured result gets when its answer was given while the server was busy:
+/// the notes as before, `answer_final: false` and the longest time to wait.
+pub(crate) fn indexing_structured(
+    notes: &[crate::session::IndexingNote],
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut members = serde_json::Map::new();
+    if notes.is_empty() {
+        return members;
+    }
+    let texts: Vec<&str> = notes.iter().map(|n| n.text.as_str()).collect();
+    members.insert("indexing_notes".into(), serde_json::json!(texts));
+    members.insert("answer_final".into(), serde_json::json!(false));
+    let retry = notes.iter().map(|n| n.retry_after_secs).max().unwrap_or(30);
+    members.insert("retry_after_secs".into(), serde_json::json!(retry));
+    members
+}
+
 pub(crate) fn append_indexing_notes(
     mut result: McpToolCallResult,
-    notes: Vec<String>,
+    notes: Vec<crate::session::IndexingNote>,
 ) -> McpToolCallResult {
     if !notes.is_empty() {
         let data = result
             .structured_content
             .get_or_insert_with(|| serde_json::json!({}));
         if let Some(object) = data.as_object_mut() {
-            object.insert("indexing_notes".into(), serde_json::json!(notes));
+            object.extend(indexing_structured(&notes));
         }
     }
     for note in &notes {
         result.content.push(crate::protocol::McpContentItem::Text {
-            text: format!(
-                "(the language server was still {note} when asked: this answer may be incomplete)"
-            ),
+            text: indexing_note_line(note),
         });
     }
     result

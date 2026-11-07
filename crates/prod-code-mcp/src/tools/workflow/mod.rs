@@ -237,8 +237,9 @@ async fn invoke_prepared(
         let notes = crate::session::take_indexing_notes(root);
         if !notes.is_empty()
             && let Ok(value) = &mut outcome
+            && let Some(object) = value.as_object_mut()
         {
-            value["indexing_notes"] = json!(notes);
+            object.extend(super::inspection_handlers::indexing_structured(&notes));
         }
     }
     outcome

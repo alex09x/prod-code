@@ -50,12 +50,45 @@ fn text_only_protocol_results_remain_compatible() {
 fn indexing_notes_have_a_structured_channel_without_losing_text_or_prior_fields() {
     let mut original = McpToolCallResult::text("body");
     original.structured_content = Some(json!({"existing":"kept"}));
-    let result =
-        super::super::inspection_handlers::append_indexing_notes(original, vec!["indexing".into()]);
+    let notes = vec![
+        crate::session::IndexingNote {
+            text: "indexing (1 / 3, 33%) for 2 s".into(),
+            retry_after_secs: 6,
+        },
+        crate::session::IndexingNote {
+            text: "loading its project for 1 s".into(),
+            retry_after_secs: 30,
+        },
+    ];
+    let result = super::super::inspection_handlers::append_indexing_notes(original, notes);
     let structured = result.structured_content.unwrap();
     assert_eq!(structured["existing"], "kept");
-    assert_eq!(structured["indexing_notes"], json!(["indexing"]));
-    assert_eq!(result.content.len(), 2);
+    assert_eq!(
+        structured["indexing_notes"],
+        json!([
+            "indexing (1 / 3, 33%) for 2 s",
+            "loading its project for 1 s"
+        ])
+    );
+    // The answer is final only when the slowest piece of work is done.
+    assert_eq!(structured["answer_final"], false);
+    assert_eq!(structured["retry_after_secs"], 30);
+    assert_eq!(result.content.len(), 3);
+    let McpContentItem::Text { text } = &result.content[1];
+    assert_eq!(
+        text,
+        "(the language server was still indexing (1 / 3, 33%) for 2 s when asked: this answer may be incomplete, and an empty list is not final. Ask again in about 6 s.)"
+    );
+}
+
+#[test]
+fn an_answer_without_notes_gets_no_finality_members() {
+    let result = super::super::inspection_handlers::append_indexing_notes(
+        McpToolCallResult::text("body"),
+        Vec::new(),
+    );
+    assert!(result.structured_content.is_none());
+    assert_eq!(result.content.len(), 1);
 }
 
 #[tokio::test]
