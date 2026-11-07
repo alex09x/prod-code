@@ -24,5 +24,5 @@ mod start;
 
 pub use policy::{LanguagePolicy, WarmupConfig, When};
 pub use recent::{Recent, RecentWorkspaces};
-pub use restore::{Outcome, Skip, restore};
+pub use restore::{Ahead, Outcome, Skip, restore};
 pub(crate) use start::run;

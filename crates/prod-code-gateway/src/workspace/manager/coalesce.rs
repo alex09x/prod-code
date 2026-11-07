@@ -39,8 +39,56 @@ impl WorkspaceManager {
         Ok(lease)
     }
 
-    /// [`Self::get_or_load`] without noting a use: what loading a workspace ahead of a request
-    /// does, since a load nobody asked for is no reason to keep it in the record.
+    /// Loads `engine` for `workspace_root` ahead of any request, and only if nothing is there.
+    /// A workspace is kept once per root, whatever its engine, and a load of another engine
+    /// replaces the one that is there, so a load nobody asked for must not: a root that is
+    /// loading, or loaded with a server that is alive, is left as it is, whichever engine it
+    /// has. A load nobody asked for is also no use of the workspace, so it is not noted in the
+    /// record of recent ones. A worktree is left alone as well: it attaches to its base's engine,
+    /// and loading that could replace what the base holds (#1976).
+    pub(crate) async fn load_ahead(
+        self: &Arc<Self>,
+        workspace_root: &Path,
+        engine: &str,
+    ) -> Result<crate::warmup::Ahead> {
+        use crate::warmup::Ahead;
+        if split_worktree_base(workspace_root).is_some_and(|base| base != workspace_root) {
+            return Ok(Ahead::Worktree);
+        }
+        let key = WorkspaceKey(workspace_root.to_path_buf());
+        let (tx, replaced) = {
+            let mut guard = self.workspaces.write().await;
+            match guard.get(&key) {
+                Some(LoadState::Loading(_)) => return Ok(Ahead::Present),
+                Some(LoadState::Ready(ws)) if !ws.has_dead_server() => return Ok(Ahead::Present),
+                _ => {}
+            }
+            // Nothing there, or a workspace whose server has exited: take the slot, as a load
+            // asked for by a request does.
+            let mut replaced = Vec::new();
+            if let Some(LoadState::Ready(ws)) = guard.remove(&key) {
+                replaced.push(ws);
+            }
+            let (tx, _rx) = broadcast::channel(1);
+            guard.insert(key.clone(), LoadState::Loading(tx.clone()));
+            (tx, replaced)
+        };
+        let (leader_tx, leader_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(lead(
+            Arc::clone(self),
+            key,
+            engine.to_string(),
+            tx,
+            replaced,
+            leader_tx,
+        ));
+        match leader_rx.await {
+            Ok(result) => result.map(|_lease| Ahead::Loaded),
+            Err(_) => anyhow::bail!("the workspace load ended without a result"),
+        }
+    }
+
+    /// [`Self::get_or_load`] without noting a use.
     pub(crate) async fn get_or_load_untracked(
         self: &Arc<Self>,
         workspace_root: &Path,

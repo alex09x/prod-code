@@ -72,12 +72,7 @@ pub(crate) async fn run(
         busy,
         |entry| {
             let manager = Arc::clone(&manager);
-            async move {
-                manager
-                    .get_or_load_untracked(&entry.root, &entry.engine)
-                    .await
-                    .map(|_lease| ())
-            }
+            async move { manager.load_ahead(&entry.root, &entry.engine).await }
         },
         |entry, outcome| {
             match &outcome {

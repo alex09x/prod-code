@@ -11,11 +11,23 @@
 use super::policy::WarmupConfig;
 use super::recent::{Recent, RecentWorkspaces};
 use futures_util::StreamExt;
+use std::collections::HashSet;
 use std::future::Future;
 use std::time::{Duration, Instant};
 
 #[cfg(test)]
 mod tests;
+
+/// What loading a workspace ahead of a request came to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ahead {
+    /// It was loaded.
+    Loaded,
+    /// The root already has a workspace loaded or loading, which is left as it is.
+    Present,
+    /// A worktree, which attaches to its base and is left alone.
+    Worktree,
+}
 
 /// What became of one workspace of the record.
 #[derive(Debug, PartialEq, Eq)]
@@ -37,6 +49,10 @@ pub enum Skip {
     Missing,
     /// The node was busy.
     Busy,
+    /// The root has a workspace already, loaded or loading, of any engine.
+    Present,
+    /// A worktree.
+    Worktree,
 }
 
 impl Skip {
@@ -46,13 +62,45 @@ impl Skip {
             Skip::Language => "skipped_language",
             Skip::Missing => "skipped_missing",
             Skip::Busy => "skipped_busy",
+            Skip::Present => "skipped_present",
+            Skip::Worktree => "skipped_worktree",
         }
     }
 }
 
+/// The entries to load: the newest per root (a root is kept once, whatever its engine, so a
+/// second engine of one checkout would replace the first and use a slot of its own), no more
+/// than `max_workspaces`. An engine set to `never` is reported and passed over, so an older
+/// engine of the same root that may be loaded still can be.
+fn wanted(
+    config: &WarmupConfig,
+    recent: &RecentWorkspaces,
+    now_ms: u64,
+    report: &impl Fn(&Recent, Outcome),
+) -> Vec<Recent> {
+    let max_age = Duration::from_secs(config.max_age_hours.saturating_mul(3600));
+    let mut roots = HashSet::new();
+    let mut picked = Vec::new();
+    for entry in recent.newest(usize::MAX, max_age, now_ms) {
+        if picked.len() >= config.max_workspaces {
+            break;
+        }
+        if roots.contains(&entry.root) {
+            continue;
+        }
+        if !config.loads(&entry.engine) {
+            report(&entry, Outcome::Skipped(Skip::Language));
+            continue;
+        }
+        roots.insert(entry.root.clone());
+        picked.push(entry);
+    }
+    picked
+}
+
 /// Loads again the workspaces of `recent` that `config` asks for, newest first, `max_concurrent`
 /// at a time. `busy` is asked before each load: a node that has become busy loads no more.
-/// `load` brings one workspace up; `report` hears of every outcome.
+/// `load` brings one workspace up, and says whether it did; `report` hears of every outcome.
 pub async fn restore<L, Fut>(
     config: &WarmupConfig,
     recent: &RecentWorkspaces,
@@ -62,28 +110,27 @@ pub async fn restore<L, Fut>(
     report: impl Fn(&Recent, Outcome),
 ) where
     L: Fn(Recent) -> Fut,
-    Fut: Future<Output = anyhow::Result<()>>,
+    Fut: Future<Output = anyhow::Result<Ahead>>,
 {
     if !config.after_restart {
         return;
     }
-    let max_age = Duration::from_secs(config.max_age_hours.saturating_mul(3600));
-    let wanted = recent.newest(config.max_workspaces, max_age, now_ms);
+    let entries = wanted(config, recent, now_ms, &report);
     let busy = &busy;
     let load = &load;
     let report = &report;
-    futures_util::stream::iter(wanted)
+    futures_util::stream::iter(entries)
         .for_each_concurrent(config.max_concurrent.max(1), |entry| async move {
-            let outcome = if !config.loads(&entry.engine) {
-                Outcome::Skipped(Skip::Language)
-            } else if !entry.root.exists() {
+            let outcome = if !entry.root.exists() {
                 Outcome::Skipped(Skip::Missing)
             } else if busy() {
                 Outcome::Skipped(Skip::Busy)
             } else {
                 let started = Instant::now();
                 match load(entry.clone()).await {
-                    Ok(()) => Outcome::Loaded(started.elapsed()),
+                    Ok(Ahead::Loaded) => Outcome::Loaded(started.elapsed()),
+                    Ok(Ahead::Present) => Outcome::Skipped(Skip::Present),
+                    Ok(Ahead::Worktree) => Outcome::Skipped(Skip::Worktree),
                     Err(error) => Outcome::Failed(format!("{error:#}")),
                 }
             };

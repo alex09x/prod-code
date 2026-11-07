@@ -12,6 +12,7 @@ use super::*;
 use std::future::Future;
 use std::pin::Pin;
 
+mod ahead;
 mod worktrees;
 
 #[tokio::test]
