@@ -109,6 +109,22 @@ pub(crate) fn record_indexing_note(root: &Path, busy: &prod_code_protocol::readi
     }
 }
 
+/// Drops the notes of a server that does not report its indexing from those recorded for the
+/// checkout at `root`, and keeps the ones about work it reported. A tool that went on after an
+/// empty answer, and found one by another way (the bare name after the qualified one, the
+/// references after the index was built), has a non-empty answer: that the first one was empty
+/// is no longer something to tell about it (#1969).
+pub fn retain_busy_indexing_notes(root: &Path) {
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let mut all = INDEXING_NOTES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(notes) = all.get_mut(&root) {
+        notes.retain(IndexingNote::is_busy);
+        if notes.is_empty() {
+            all.remove(&root);
+        }
+    }
+}
+
 /// The indexing notes recorded for the checkout at `root` since the last call.
 pub fn take_indexing_notes(root: &Path) -> Vec<IndexingNote> {
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());

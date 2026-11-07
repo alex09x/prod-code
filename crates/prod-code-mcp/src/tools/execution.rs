@@ -403,6 +403,10 @@ fn execute_selected<'a>(
         {
             SymbolResolution::Dispatch(args, budget) => {
                 reference_budget = budget.or(reference_budget);
+                // The name resolved to a position. A server that does not report its indexing
+                // may have answered an empty list on the way (the qualified name before the
+                // bare one): that was about the lookup, not about this tool's answer (#1969).
+                crate::session::retain_busy_indexing_notes(workspace_root);
                 args
             }
             SymbolResolution::Respond(result) => return Ok(result),

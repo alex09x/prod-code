@@ -192,6 +192,13 @@ pub(crate) async fn handle_references(
         }
     }
 
+    // The first answer may have been empty, from a server that does not report its indexing,
+    // and the tool found references another way (the index built, a fallback): that the first
+    // was empty is not something to tell about this answer (#1969).
+    if !all_locs.is_empty() {
+        crate::session::retain_busy_indexing_notes(workspace_root);
+    }
+
     // An empty answer says what the position stood on, so a position one line off (an
     // attribute above the function) shows as such (#373).
     let stood_on = line_text

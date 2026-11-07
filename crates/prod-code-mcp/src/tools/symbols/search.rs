@@ -115,6 +115,12 @@ pub(crate) async fn workspace_symbol_search_with_retry_policy(
             }
         }
     }
+    // An empty answer on the way (the qualified name asked first, an index that had not begun)
+    // from a server that does not report its indexing is not the answer of this search when it
+    // found something (#1969).
+    if !hits.is_empty() {
+        crate::session::retain_busy_indexing_notes(root);
+    }
     Ok(hits)
 }
 
