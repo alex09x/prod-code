@@ -348,6 +348,47 @@ pub(crate) fn bare_symbol_name(name: &str) -> &str {
     }
 }
 
+/// A name and the argument selector written after it: `Widget::update(value:options:)` is
+/// `("Widget::update", Some("value:options:"))`. The colons inside the parentheses are not path
+/// separators, and the selector is how one overload is told from another (#1993). A name with
+/// no parameter list, or an empty one, has no selector.
+pub(crate) fn split_selector(symbol: &str) -> (&str, Option<&str>) {
+    let symbol = symbol.trim();
+    if !symbol.ends_with(')') {
+        return (symbol, None);
+    }
+    let mut depth = 0usize;
+    for (i, c) in symbol.char_indices().rev() {
+        match c {
+            ')' => depth += 1,
+            '(' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    let head = symbol[..i].trim_end();
+                    let inner = symbol[i + 1..symbol.len() - 1].trim();
+                    if head.is_empty() {
+                        return (symbol, None);
+                    }
+                    return (head, Some(inner).filter(|inner| !inner.is_empty()));
+                }
+            }
+            _ => {}
+        }
+    }
+    (symbol, None)
+}
+
+/// Whether a declaration's own parameter list is the selector asked for, spaces aside.
+pub(crate) fn selector_matches(declared: &str, selector: &str) -> bool {
+    let strip = |text: &str| {
+        text.chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>()
+    };
+    let (_, inner) = split_selector(declared);
+    inner.is_some_and(|inner| strip(inner) == strip(selector))
+}
+
 /// The error for a name nothing in the index is called. The first sentence stays the same
 /// whatever follows it; the closest names the index returned are listed so that the caller can
 /// pick the symbol it meant instead of the tool guessing one.
@@ -395,4 +436,33 @@ pub(crate) fn is_test_source_path(path: &Path) -> bool {
         || n.ends_with("_test.rs")
         || n.contains(".test.")
         || n.contains(".spec.")
+}
+
+#[cfg(test)]
+mod selector_tests {
+    use super::{selector_matches, split_selector};
+
+    /// The labels of a Swift overload are not path separators: the selector an ambiguity answer
+    /// advertises must be a query that resolves (#1993).
+    #[test]
+    fn a_selector_is_split_off_the_name_and_matches_its_overload() {
+        assert_eq!(
+            split_selector("Widget::update(value:options:)"),
+            ("Widget::update", Some("value:options:"))
+        );
+        assert_eq!(
+            split_selector("Widget::update(value:)"),
+            ("Widget::update", Some("value:"))
+        );
+        assert_eq!(split_selector("Widget::update()"), ("Widget::update", None));
+        assert_eq!(split_selector("Widget::update"), ("Widget::update", None));
+        assert_eq!(split_selector("(*T).Bar"), ("(*T).Bar", None));
+        assert!(selector_matches("update(value:options:)", "value:options:"));
+        assert!(selector_matches(
+            "update( value: , options: )",
+            "value:,options:"
+        ));
+        assert!(!selector_matches("update(value:)", "value:options:"));
+        assert!(!selector_matches("update", "value:"));
+    }
 }

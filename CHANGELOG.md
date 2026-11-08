@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Fixed
+- **A Sync Over an Open Session Creates the Tracked Symlinks and Acknowledges Them** (`crates/prod-code-gateway`, #1996): `code_symbols` in a checkout with tracked symlinks failed with `gateway does not support tracked symlink sync; upgrade the gateway` against a gateway of the same version. Only the one-shot sync path created the links and sent the acknowledgement; the sync an open session makes ignored the link manifest, so the client took the gateway for an old one. The session path now applies the links and acknowledges the manifest. A test pins both.
+- **The Overload Selector an Ambiguity Answer Advertises Resolves** (`crates/prod-code-mcp`, #1993): `code_definition` for `Widget::update` listed `Widget::update(value:)` and `Widget::update(value:options:)`, and repeating it with the longer name failed with `no symbol named`, because the colons of the labels were read as path separators. The parameter list is now split off the name first, and when the declarations tell their labels apart the one written is chosen; a selector nothing declares leaves the candidates as they were.
+
 - **`impact` Names the Way On When a Swift Function Has No Call-Hierarchy Item** (`crates/prod-code-mcp`, #1991): in a Rust project with a nested Swift package, every changed Swift function was reported as `the analyzer has no call-hierarchy item at its name` and nothing said what to do. For a Swift file the entry now says that the Swift server reads a built index of its target, and names the ways on: build the Swift package's index on a Swift node with `prod-code check --path <swift-package>` and run again, or list the uses with `prod-code refs` (`code_references`). A longer `--budget-secs` or `code_callers` would not help: the server has already answered, and `code_callers` asks it the same question. Other languages keep the plain message.
 
 ## v0.3.55 — 2026-11-07

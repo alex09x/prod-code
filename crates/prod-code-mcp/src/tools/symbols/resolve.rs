@@ -35,6 +35,8 @@ pub(crate) async fn resolve_symbol_ties(
     hint: Option<&Path>,
 ) -> Result<(bool, Vec<SymbolHit>)> {
     let absolute = super::relative::absolute_symbol(remote, root, symbol, hint).await?;
+    // The labels of an overload (`update(value:options:)`) are not path segments.
+    let (absolute, selector) = super::matching::split_selector(&absolute);
     let parts: Vec<&str> = absolute
         .split(['.', ':', '#', '/'])
         .map(|p| p.trim().trim_end_matches("()"))
@@ -164,6 +166,19 @@ pub(crate) async fn resolve_symbol_ties(
         } else {
             exact
         }
+    };
+    // The overload the caller spelled out, when the declarations tell their labels apart. A
+    // selector nothing declares leaves the candidates as they were.
+    let exact = match selector {
+        Some(selector) => {
+            let chosen: Vec<SymbolHit> = exact
+                .iter()
+                .filter(|hit| super::matching::selector_matches(&hit.name, selector))
+                .cloned()
+                .collect();
+            if chosen.is_empty() { exact } else { chosen }
+        }
+        None => exact,
     };
     let remote_texts = remote_sources(remote, &exact).await;
     // An explicit owner is not enough when the index or outline is stale. Qualified lookup
