@@ -375,7 +375,7 @@ fn no_item_message(file: &str) -> String {
     let base = "the analyzer has no call-hierarchy item at its name";
     if file.ends_with(".swift") {
         format!(
-            "{base}; the Swift server reads a built index of its target, so build the Swift target on the node and run again, allow longer with --budget-secs, or ask code_callers for the function"
+            "{base}; the Swift server reads a built index of its target, so build its index on a Swift node with `prod-code check --path <swift-package>` and run again, or list the uses with `prod-code refs` (code_references)"
         )
     } else {
         base.to_string()
@@ -389,7 +389,7 @@ mod no_item_message_tests {
     #[test]
     fn a_swift_file_gets_the_way_on_and_other_files_keep_the_plain_message() {
         let swift = no_item_message("App/Sources/View.swift");
-        assert!(swift.contains("build the Swift target") && swift.contains("code_callers"));
+        assert!(swift.contains("prod-code check --path") && swift.contains("code_references"));
         assert_eq!(
             no_item_message("src/lib.rs"),
             "the analyzer has no call-hierarchy item at its name"
