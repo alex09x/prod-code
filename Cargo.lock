@@ -2409,7 +2409,7 @@ dependencies = [
 
 [[package]]
 name = "prod-code-client"
-version = "0.3.55"
+version = "0.3.56"
 dependencies = [
  "anyhow",
  "clap",
@@ -2433,7 +2433,7 @@ dependencies = [
 
 [[package]]
 name = "prod-code-engine-generic"
-version = "0.3.55"
+version = "0.3.56"
 dependencies = [
  "anyhow",
  "prod-code-protocol",
@@ -2448,7 +2448,7 @@ dependencies = [
 
 [[package]]
 name = "prod-code-engine-go"
-version = "0.3.55"
+version = "0.3.56"
 dependencies = [
  "anyhow",
  "prod-code-protocol",
@@ -2463,7 +2463,7 @@ dependencies = [
 
 [[package]]
 name = "prod-code-engine-rust"
-version = "0.3.55"
+version = "0.3.56"
 dependencies = [
  "anyhow",
  "base-db",
@@ -2489,7 +2489,7 @@ dependencies = [
 
 [[package]]
 name = "prod-code-gateway"
-version = "0.3.55"
+version = "0.3.56"
 dependencies = [
  "anyhow",
  "clap",
@@ -2519,7 +2519,7 @@ dependencies = [
 
 [[package]]
 name = "prod-code-mcp"
-version = "0.3.55"
+version = "0.3.56"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -2554,7 +2554,7 @@ dependencies = [
 
 [[package]]
 name = "prod-code-protocol"
-version = "0.3.55"
+version = "0.3.56"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2580,7 +2580,7 @@ dependencies = [
 
 [[package]]
 name = "prod-code-testkit"
-version = "0.3.55"
+version = "0.3.56"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -3557,7 +3557,7 @@ dependencies = [
 
 [[package]]
 name = "time"
-version = "0.3.55"
+version = "0.3.56"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdb87b95ec50ddfa440816d227a17b2ccbdda963a316a727fda0fc4334f7d134"
 dependencies = [
