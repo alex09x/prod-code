@@ -244,3 +244,63 @@ async fn syncing_a_project_manifest_retires_the_session_after_its_response() {
         Some(prod_code_protocol::WORKSPACE_MODEL_CHANGED_REASON)
     );
 }
+
+/// A sync over an open session creates the tracked links and acknowledges the manifest, as the
+/// other path does: without the acknowledgement the client takes the gateway for an old one and
+/// refuses every command in a checkout that has tracked symlinks (#1996).
+#[cfg(unix)]
+#[tokio::test]
+async fn session_sync_creates_tracked_symlinks_and_acknowledges_them() {
+    let storage = tempfile::tempdir().unwrap();
+    let root = storage.path().join("ws");
+    std::fs::create_dir_all(&root).unwrap();
+    let workspace = Arc::new(workspace::SharedWorkspace::new(
+        root.clone(),
+        "generic-lsp".to_string(),
+        None,
+        None,
+        None,
+        None,
+    ));
+    let manager = workspace::WorkspaceManager::new();
+    let lease = workspace::WorkspaceLease::acquire(workspace);
+    let view = manager.register_session_view(1, root.clone(), lease).await;
+    let (raw_tx, mut raw_rx) = rapidfire::mpsc::bounded(8);
+    let out_tx = SharedOutputSender::new(raw_tx, std::time::Duration::from_secs(1));
+
+    handle_session_sync(
+        SyncRequest {
+            client_workspace_root: "/tmp/ws".to_string(),
+            symlinks: Some(vec![prod_code_protocol::messages::sync::SyncSymlink {
+                relative_path: "app/_bindings".into(),
+                target: "../generated".into(),
+            }]),
+            files: vec![delta("generated/api.swift", Some("struct Api {}"), false)],
+            clean_others: false,
+            base_workspace_name: Some("ws".to_string()),
+        },
+        &view,
+        &out_tx,
+    )
+    .await;
+
+    let WireMessage::SyncResponse(response) = raw_rx.recv().await.unwrap().message else {
+        panic!("expected sync response");
+    };
+    assert!(
+        response
+            .stale_paths
+            .iter()
+            .any(|path| path == prod_code_protocol::messages::sync::SYNC_SYMLINKS_ACK),
+        "{:?}",
+        response.stale_paths
+    );
+    assert_eq!(
+        std::fs::read_link(root.join("app/_bindings")).unwrap(),
+        std::path::Path::new("../generated")
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("app/_bindings/api.swift")).unwrap(),
+        "struct Api {}"
+    );
+}

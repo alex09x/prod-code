@@ -26,6 +26,9 @@ pub async fn handle_session_sync(
     )
     .await;
     let workspace_root = view.workspace.root.clone();
+    // A client that tracks symlinks waits for this acknowledgement and otherwise takes the
+    // gateway for an old one (#1996).
+    let symlinks_requested = req.symlinks.is_some();
     let (
         _sync_guard,
         files_updated,
@@ -48,6 +51,12 @@ pub async fn handle_session_sync(
         let mut safe_paths = Vec::with_capacity(req.files.len());
         let mut base_paths = Vec::new();
         let arrived: Vec<String> = req.files.iter().map(|f| f.relative_path.clone()).collect();
+        if let Some(links) = req.symlinks.as_deref() {
+            let result = crate::sync::symlinks::apply(&workspace_root, links);
+            files_updated += result.updated;
+            files_deleted += result.deleted;
+            failed.extend(result.failed);
+        }
 
         for delta in req.files {
             let is_project_config =
@@ -156,6 +165,10 @@ pub async fn handle_session_sync(
     })
     .await
     .expect("session sync disk commit task must not panic");
+    let mut stale_paths = stale_paths;
+    if symlinks_requested {
+        stale_paths.push(prod_code_protocol::messages::sync::SYNC_SYMLINKS_ACK.to_string());
+    }
 
     // A stuck query can keep the engine locked; the answer must not wait for it (#1143).
     crate::sync::base_updates::push_base_updates(
