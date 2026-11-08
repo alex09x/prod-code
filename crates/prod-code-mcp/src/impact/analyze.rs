@@ -268,7 +268,7 @@ pub async fn analyze_with_budget(
                 // file's top-level `it(...)`) has no item of its own.
                 Incoming::NoItem if is_test => Vec::new(),
                 Incoming::NoItem => {
-                    let error = "the analyzer has no call-hierarchy item at its name".to_string();
+                    let error = no_item_message(&sym.file);
                     note(&mut incomplete, Gap::Callers { symbol: sym, error });
                     continue;
                 }
@@ -366,4 +366,33 @@ pub async fn analyze_with_budget(
         incomplete,
         signature_warnings,
     })
+}
+
+/// Why a changed function has no callers listed, with the way on (#1991). A Swift file in a
+/// project that is not Swift gets the answer of a server that reads a built index, so the
+/// bare "no item" left no action to take.
+fn no_item_message(file: &str) -> String {
+    let base = "the analyzer has no call-hierarchy item at its name";
+    if file.ends_with(".swift") {
+        format!(
+            "{base}; the Swift server reads a built index of its target, so build the Swift target on the node and run again, allow longer with --budget-secs, or ask code_callers for the function"
+        )
+    } else {
+        base.to_string()
+    }
+}
+
+#[cfg(test)]
+mod no_item_message_tests {
+    use super::no_item_message;
+
+    #[test]
+    fn a_swift_file_gets_the_way_on_and_other_files_keep_the_plain_message() {
+        let swift = no_item_message("App/Sources/View.swift");
+        assert!(swift.contains("build the Swift target") && swift.contains("code_callers"));
+        assert_eq!(
+            no_item_message("src/lib.rs"),
+            "the analyzer has no call-hierarchy item at its name"
+        );
+    }
 }

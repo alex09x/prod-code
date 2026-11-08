@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **`impact` Names the Way On When a Swift Function Has No Call-Hierarchy Item** (`crates/prod-code-mcp`, #1991): in a Rust project with a nested Swift package, every changed Swift function was reported as `the analyzer has no call-hierarchy item at its name` and nothing said what to do. For a Swift file the entry now says that the Swift server reads a built index of its target, and names the ways on: build the target on the node and run again, allow longer with `--budget-secs`, or ask `code_callers`. Other languages keep the plain message.
+
 ## v0.3.55 — 2026-11-07
 
 ### Fixed
