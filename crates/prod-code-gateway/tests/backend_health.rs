@@ -291,12 +291,15 @@ async fn controlled_backends_prove_health_lifecycle_and_private_routing() {
                 .await
             });
             let pid_file = workspace.path().join("fixture.pid");
+            // The file exists before the fixture has written the number into it.
             wait_until(Duration::from_secs(2), "initializing fixture pid", || {
-                pid_file.is_file()
+                std::fs::read_to_string(&pid_file)
+                    .is_ok_and(|text| text.trim().parse::<libc::pid_t>().is_ok())
             })
             .await;
             let pid: libc::pid_t = std::fs::read_to_string(pid_file)
                 .expect("pid")
+                .trim()
                 .parse()
                 .expect("numeric pid");
             task.abort();
