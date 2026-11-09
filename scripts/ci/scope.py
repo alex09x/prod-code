@@ -201,22 +201,30 @@ def verify_ci_results(needs: dict) -> None:
     }
     if any(value not in VALID_FLAGS for value in flags.values()):
         raise AssertionError(f"missing or malformed plan flags: {outputs}")
-    if scope == "docs" and any(v != "false" for v in flags.values()):
-        raise AssertionError(f"docs scope must skip heavy jobs: {outputs}")
-    if scope == "version" and flags != {
-        "run_lint": "true",
+    if scope == "docs" and flags != {
+        "run_lint": "false",
         "run_warm": "false",
         "run_tests": "false",
-        "run_macos": "true",
+        "run_macos": "false",
+    }:
+        raise AssertionError(f"docs scope must skip heavy jobs: {outputs}")
+    if scope == "version" and flags != {
+        "run_lint": "false",
+        "run_warm": "false",
+        "run_tests": "true",
+        "run_macos": "false",
     }:
         raise AssertionError(f"unexpected version scope flags: {outputs}")
     if scope == "affected" and (
-        flags["run_lint"] != "true"
-        or flags["run_warm"] != "true"
-        or flags["run_tests"] != "true"
+        flags["run_lint"] != "true" or flags["run_tests"] != "true"
     ):
-        raise AssertionError(f"affected scope must run lint/warm/tests: {outputs}")
-    if scope == "full" and any(v != "true" for v in flags.values()):
+        raise AssertionError(f"affected scope must run lint and tests: {outputs}")
+    if scope == "full" and flags != {
+        "run_lint": "true",
+        "run_warm": "true",
+        "run_tests": "true",
+        "run_macos": "true",
+    }:
         raise AssertionError(f"full scope must run every job: {outputs}")
 
     expected = {
