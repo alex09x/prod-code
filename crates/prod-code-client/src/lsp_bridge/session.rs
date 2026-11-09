@@ -36,14 +36,27 @@ impl std::fmt::Display for RedirectTlsRequired {
 
 impl std::error::Error for RedirectTlsRequired {}
 
+/// The server-authenticated TLS a redirected connection needs, when this client has it.
+fn redirect_client_tls() -> Result<Option<prod_code_protocol::transport::BuiltClientTls>> {
+    Ok(
+        match prod_code_protocol::transport::default_client_tls_built() {
+            Some(cached) => cached,
+            None => prod_code_protocol::ClientTlsConfig::from_env()?
+                .map(prod_code_protocol::ClientTlsConfig::build)
+                .transpose()?,
+        },
+    )
+}
+
+/// Whether this client could follow a gateway redirect at all. One that could not must not
+/// say it follows them: a gateway that offers a better node to such a client hands it an error
+/// where staying on the node it reached would have worked.
+pub(super) fn can_follow_redirects() -> bool {
+    redirect_client_tls().is_ok_and(|tls| tls.is_some())
+}
+
 async fn connect_to_redirect_target(remote: SocketAddr) -> Result<prod_code_protocol::AnyStream> {
-    let client_tls = match prod_code_protocol::transport::default_client_tls_built() {
-        Some(cached) => cached,
-        None => prod_code_protocol::ClientTlsConfig::from_env()?
-            .map(prod_code_protocol::ClientTlsConfig::build)
-            .transpose()?,
-    }
-    .ok_or(RedirectTlsRequired)?;
+    let client_tls = redirect_client_tls()?.ok_or(RedirectTlsRequired)?;
     let token = prod_code_protocol::transport::try_auth_token()?;
     let stream = prod_code_protocol::transport::connect_stream_with_client_config(
         remote,
@@ -130,7 +143,7 @@ pub async fn open_editor_session(
                 protocol_version: PROTOCOL_VERSION,
                 supported_versions: Some(supported_versions.clone()),
                 capabilities: Some(prod_code_protocol::ClientCapabilities {
-                    redirects: policy.offers_redirects(),
+                    redirects: policy.offers_redirects() && can_follow_redirects(),
                     ..Default::default()
                 }),
                 client_name: "prod-code-client".to_string(),
