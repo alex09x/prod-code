@@ -241,8 +241,35 @@ fn source_cli() -> PathBuf {
             .and_then(Path::parent)
             .expect("gateway crate below workspace")
             .to_path_buf();
-        let mut build = Command::new("cargo")
-            .args(["build", "-p", "prod-code-client", "--bin", "prod-code"])
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| workspace.join("target"));
+        let target = if target.is_absolute() {
+            target
+        } else {
+            workspace.join(target)
+        };
+        let builder = if std::env::var_os("LLVM_PROFILE_FILE").is_none()
+            && Command::new("mitts")
+                .arg("--version")
+                .output()
+                .is_ok_and(|o| o.status.success())
+        {
+            "mitts"
+        } else {
+            "cargo"
+        };
+        let mut build = Command::new(builder)
+            .args([
+                "build",
+                "--locked",
+                "-p",
+                "prod-code-client",
+                "--bin",
+                "prod-code",
+                "--target-dir",
+            ])
+            .arg(&target)
             .current_dir(&workspace)
             .process_group(0)
             .spawn()
@@ -255,14 +282,6 @@ fn source_cli() -> PathBuf {
             }
         };
         assert!(status.success(), "source client build: {status}");
-        let target = std::env::var_os("CARGO_TARGET_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| workspace.join("target"));
-        let target = if target.is_absolute() {
-            target
-        } else {
-            workspace.join(target)
-        };
         let binary = target
             .join("debug")
             .join(format!("prod-code{}", std::env::consts::EXE_SUFFIX));

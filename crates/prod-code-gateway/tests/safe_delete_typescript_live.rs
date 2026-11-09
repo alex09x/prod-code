@@ -284,14 +284,6 @@ fn source_cli(deadline: Instant) -> PathBuf {
             .and_then(Path::parent)
             .expect("workspace")
             .to_path_buf();
-        let (ok, output) = run_command(
-            Command::new("cargo")
-                .args(["build", "-p", "prod-code-client", "--bin", "prod-code"])
-                .current_dir(&workspace),
-            deadline,
-            "source client build",
-        );
-        assert!(ok, "source client build: {output}");
         let target = std::env::var_os("CARGO_TARGET_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| workspace.join("target"));
@@ -300,6 +292,33 @@ fn source_cli(deadline: Instant) -> PathBuf {
         } else {
             workspace.join(target)
         };
+        let builder = if std::env::var_os("LLVM_PROFILE_FILE").is_none()
+            && Command::new("mitts")
+                .arg("--version")
+                .output()
+                .is_ok_and(|o| o.status.success())
+        {
+            "mitts"
+        } else {
+            "cargo"
+        };
+        let (ok, output) = run_command(
+            Command::new(builder)
+                .args([
+                    "build",
+                    "--locked",
+                    "-p",
+                    "prod-code-client",
+                    "--bin",
+                    "prod-code",
+                    "--target-dir",
+                ])
+                .arg(&target)
+                .current_dir(&workspace),
+            deadline,
+            "source client build",
+        );
+        assert!(ok, "source client build: {output}");
         target
             .join("debug")
             .join(format!("prod-code{}", std::env::consts::EXE_SUFFIX))

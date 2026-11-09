@@ -292,7 +292,17 @@ fn source_built_gateway() -> (tempfile::TempDir, PathBuf) {
         .parent()
         .and_then(Path::parent)
         .expect("workspace root");
-    let mut build = Command::new("cargo");
+    let builder = if std::env::var_os("LLVM_PROFILE_FILE").is_none()
+        && Command::new("mitts")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    {
+        "mitts"
+    } else {
+        "cargo"
+    };
+    let mut build = Command::new(builder);
     build
         .current_dir(root)
         .env_remove("CARGO_TARGET_DIR")

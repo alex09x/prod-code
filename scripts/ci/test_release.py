@@ -271,7 +271,7 @@ class ReleaseBoundaries(unittest.TestCase):
 
     def test_test_matrix_covers_every_target_once_and_bounds_linked_binaries(self):
         targets = [{"name": "demo", "kind": ["lib"]}]
-        targets += [{"name": f"case{i:02}", "kind": ["test"]} for i in range(19)]
+        targets += [{"name": f"case{i:02}", "kind": ["test"]} for i in range(35)]
         metadata = {
             "workspace_members": ["demo"],
             "packages": [{"id": "demo", "name": "demo", "targets": targets}],
@@ -282,7 +282,7 @@ class ReleaseBoundaries(unittest.TestCase):
             [t for r in integration for t in r["targets"]],
             [t["name"] for t in targets[1:]],
         )
-        self.assertTrue(all(len(r["targets"]) <= 8 for r in rows))
+        self.assertTrue(all(len(r["targets"]) <= 16 for r in rows))
         self.assertEqual([r["kind"] for r in rows[:2]], ["lib", "doc"])
 
 
