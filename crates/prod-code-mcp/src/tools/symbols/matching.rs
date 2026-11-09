@@ -378,14 +378,50 @@ pub(crate) fn split_selector(symbol: &str) -> (&str, Option<&str>) {
     (symbol, None)
 }
 
-/// A path segment without its generic arguments: the spelling a language server gives a type
-/// (`JournalInner<ENTRY>`) is the name a lookup knows it by (`JournalInner`) (#2000). A segment
-/// that opens with `<` (`<T as Trait>`) is left as it is.
-pub(crate) fn without_generics(segment: &str) -> &str {
-    match segment.find('<') {
-        Some(at) if at > 0 => segment[..at].trim_end(),
-        _ => segment,
+/// A path without the generic arguments of its segments: the spelling a language server gives a
+/// type (`JournalInner<ENTRY>`) is the name a lookup knows it by (`JournalInner`) (#2000). The
+/// arguments are balanced, so a path inside them (`Wrapper<other::Item>::load`) is not split
+/// into segments. A segment that opens with `<` (`<T as Trait>::f`) is left as it is.
+pub(crate) fn without_generics(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    let (mut skip, mut keep) = (0usize, 0usize);
+    let mut segment_start = true;
+    for c in path.chars() {
+        if skip > 0 {
+            match c {
+                '<' => skip += 1,
+                '>' => skip -= 1,
+                _ => {}
+            }
+            continue;
+        }
+        if keep > 0 {
+            out.push(c);
+            match c {
+                '<' => keep += 1,
+                '>' => keep -= 1,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '<' if segment_start => {
+                keep = 1;
+                out.push(c);
+                segment_start = false;
+            }
+            '<' => skip = 1,
+            ':' | '.' | '#' | '/' => {
+                out.push(c);
+                segment_start = true;
+            }
+            _ => {
+                out.push(c);
+                segment_start = false;
+            }
+        }
     }
+    out
 }
 
 /// Whether a declaration's own parameter list is the selector asked for, spaces aside.
@@ -484,9 +520,21 @@ mod generics_tests {
     /// The spelling an analyzer suggests for a member of a generic type must resolve (#2000).
     #[test]
     fn generic_arguments_are_dropped_from_a_path_segment() {
-        assert_eq!(without_generics("JournalInner<ENTRY>"), "JournalInner");
-        assert_eq!(without_generics("Map<K, V>"), "Map");
+        assert_eq!(
+            without_generics("revm_context::journal::inner::JournalInner<ENTRY>::load_code"),
+            "revm_context::journal::inner::JournalInner::load_code"
+        );
+        assert_eq!(without_generics("Map<K, V>::get"), "Map::get");
         assert_eq!(without_generics("load_code"), "load_code");
-        assert_eq!(without_generics("<T as Trait>"), "<T as Trait>");
+        assert_eq!(
+            without_generics("<T as Trait>::f"),
+            "<T as Trait>::f",
+            "a qualified-self segment is kept"
+        );
+        // A path inside the arguments is not split into segments of the lookup.
+        assert_eq!(
+            without_generics("Wrapper<other_mod::Item<u8>>::load"),
+            "Wrapper::load"
+        );
     }
 }
