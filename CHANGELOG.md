@@ -8,6 +8,7 @@
 ## v0.3.57 — 2026-11-08
 
 ### Fixed
+- **An Editor Client Without TLS No Longer Offers to Follow Gateway Redirects** (`crates/prod-code-client`): in a cluster without TLS, Zed's language server for a workspace whose engine was warm on another node failed to start with `refusing gateway redirect without server-authenticated TLS; configure a trusted CA or certificate pin`. The first node answered with a redirect to the node with the warm engine, and the client, which only follows a redirect over server-authenticated TLS, refused it. The handshake now says the client follows redirects only when it has the TLS to follow one over, so a gateway keeps such a session itself instead of sending it away. The refusal for a client that does have TLS and meets an unauthenticated target is unchanged, and so is its test. A test fails without the change (the handshake offered redirects).
 - **A Member of a Generic Type Resolves Under the Spelling the Analyzer Suggests** (`crates/prod-code-mcp`, #2000): `code_definition` for `revm_context::journal::inner::JournalInner<ENTRY>::load_code` failed and suggested the same spelling, while `JournalInner::load_code` worked. The generic arguments of a path segment (`<ENTRY>`) are dropped before the lookup; a segment that opens with `<` (`<T as Trait>`) is kept. A test pins it.
 
 ## v0.3.56 — 2026-11-08
