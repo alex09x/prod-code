@@ -37,6 +37,9 @@ pub(crate) async fn resolve_symbol_ties(
     let absolute = super::relative::absolute_symbol(remote, root, symbol, hint).await?;
     // The labels of an overload (`update(value:options:)`) are not path segments.
     let (absolute, selector) = super::matching::split_selector(&absolute);
+    // And neither are the generic arguments of a type (`JournalInner<ENTRY>::load_code`), for
+    // the search, the owner lookup and the dependency scope alike (#2000).
+    let absolute = super::matching::without_generics(absolute);
     let parts: Vec<&str> = absolute
         .split(['.', ':', '#', '/'])
         .map(|p| p.trim().trim_end_matches("()"))

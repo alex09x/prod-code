@@ -92,5 +92,37 @@ fn owner_matches(container: Option<&str>, owners: &[&str]) -> bool {
         && segments[segments.len() - owners.len()..]
             .iter()
             .zip(owners)
-            .all(|(actual, expected)| actual.eq_ignore_ascii_case(expected))
+            .all(|(actual, expected)| without_generics(actual).eq_ignore_ascii_case(expected))
+}
+
+/// A container segment without its generic arguments: `JournalInner<ENTRY>` is the owner a
+/// caller spells `JournalInner` (#2000). A segment that opens with `<` is kept.
+fn without_generics(segment: &str) -> &str {
+    match segment.find('<') {
+        Some(at) if at > 0 => segment[..at].trim_end(),
+        _ => segment,
+    }
+}
+
+#[cfg(test)]
+mod owner_tests {
+    use super::owner_matches;
+
+    /// The container a moniker reports keeps its generic arguments; the owner a caller spells
+    /// does not (#2000).
+    #[test]
+    fn an_owner_matches_its_container_with_generic_arguments() {
+        assert!(owner_matches(
+            Some("revm_context::journal::inner::JournalInner<ENTRY>"),
+            &["JournalInner"]
+        ));
+        assert!(owner_matches(
+            Some("inner::JournalInner"),
+            &["journalinner"]
+        ));
+        assert!(!owner_matches(
+            Some("inner::Other<ENTRY>"),
+            &["JournalInner"]
+        ));
+    }
 }

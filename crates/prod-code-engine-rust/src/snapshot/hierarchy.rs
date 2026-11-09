@@ -184,8 +184,25 @@ impl RustEngineSnapshot {
                     continue;
                 };
                 if symbol.container.as_deref().is_some_and(|c| {
-                    let segs: Vec<String> = c
-                        .split([':', ' ', '<', '>'])
+                    // The generic arguments of a container (`JournalInner<ENTRY>`) are not
+                    // path segments of their own (#2000).
+                    let mut depth = 0usize;
+                    let plain: String = c
+                        .chars()
+                        .filter(|ch| match ch {
+                            '<' => {
+                                depth += 1;
+                                false
+                            }
+                            '>' => {
+                                depth = depth.saturating_sub(1);
+                                false
+                            }
+                            _ => depth == 0,
+                        })
+                        .collect();
+                    let segs: Vec<String> = plain
+                        .split([':', ' '])
                         .filter(|s| !s.is_empty() && *s != "impl" && *s != "for")
                         .map(|s| s.to_ascii_lowercase())
                         .collect();

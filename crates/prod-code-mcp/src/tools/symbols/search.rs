@@ -81,7 +81,8 @@ pub(crate) async fn workspace_symbol_search_with_retry_policy(
         res = execute_lsp_query(remote, root, &anchor, "workspace/symbol", params.clone()).await?;
     }
     let mut hits = parse_workspace_symbol_hits(root, query, &res, limit)?;
-    let parts: Vec<&str> = query
+    let plain_query = super::matching::without_generics(query);
+    let parts: Vec<&str> = plain_query
         .split([':', '.', '#', '/'])
         .map(|p| p.trim().trim_end_matches("()"))
         .filter(|p| !p.is_empty())
