@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## v0.3.57 — 2026-11-08
+
 ### Fixed
 - **A Member of a Generic Type Resolves Under the Spelling the Analyzer Suggests** (`crates/prod-code-mcp`, #2000): `code_definition` for `revm_context::journal::inner::JournalInner<ENTRY>::load_code` failed and suggested the same spelling, while `JournalInner::load_code` worked. The generic arguments of a path segment (`<ENTRY>`) are dropped before the lookup; a segment that opens with `<` (`<T as Trait>`) is kept. A test pins it.
 
