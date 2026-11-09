@@ -378,6 +378,16 @@ pub(crate) fn split_selector(symbol: &str) -> (&str, Option<&str>) {
     (symbol, None)
 }
 
+/// A path segment without its generic arguments: the spelling a language server gives a type
+/// (`JournalInner<ENTRY>`) is the name a lookup knows it by (`JournalInner`) (#2000). A segment
+/// that opens with `<` (`<T as Trait>`) is left as it is.
+pub(crate) fn without_generics(segment: &str) -> &str {
+    match segment.find('<') {
+        Some(at) if at > 0 => segment[..at].trim_end(),
+        _ => segment,
+    }
+}
+
 /// Whether a declaration's own parameter list is the selector asked for, spaces aside.
 pub(crate) fn selector_matches(declared: &str, selector: &str) -> bool {
     let strip = |text: &str| {
@@ -464,5 +474,19 @@ mod selector_tests {
         ));
         assert!(!selector_matches("update(value:)", "value:options:"));
         assert!(!selector_matches("update", "value:"));
+    }
+}
+
+#[cfg(test)]
+mod generics_tests {
+    use super::without_generics;
+
+    /// The spelling an analyzer suggests for a member of a generic type must resolve (#2000).
+    #[test]
+    fn generic_arguments_are_dropped_from_a_path_segment() {
+        assert_eq!(without_generics("JournalInner<ENTRY>"), "JournalInner");
+        assert_eq!(without_generics("Map<K, V>"), "Map");
+        assert_eq!(without_generics("load_code"), "load_code");
+        assert_eq!(without_generics("<T as Trait>"), "<T as Trait>");
     }
 }

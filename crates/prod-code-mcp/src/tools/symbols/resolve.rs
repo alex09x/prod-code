@@ -39,7 +39,7 @@ pub(crate) async fn resolve_symbol_ties(
     let (absolute, selector) = super::matching::split_selector(&absolute);
     let parts: Vec<&str> = absolute
         .split(['.', ':', '#', '/'])
-        .map(|p| p.trim().trim_end_matches("()"))
+        .map(|p| super::matching::without_generics(p.trim().trim_end_matches("()")))
         .filter(|p| !p.is_empty())
         .collect();
     let name = bare_symbol_name(parts.last().copied().unwrap_or(symbol));
