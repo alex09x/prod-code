@@ -539,14 +539,6 @@ fn source_cli() -> PathBuf {
             .and_then(Path::parent)
             .expect("gateway crate lives below workspace")
             .to_path_buf();
-        // A seeded target can contain an older binary. Always ask Cargo to establish that
-        // this checkout's client is current, including when instrumentation selects a target.
-        let status = Command::new("cargo")
-            .args(["build", "-p", "prod-code-client", "--bin", "prod-code"])
-            .current_dir(&workspace)
-            .status()
-            .expect("build source client");
-        assert!(status.success(), "build source client: {status}");
         let target = std::env::var_os("CARGO_TARGET_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| workspace.join("target"));
@@ -555,6 +547,17 @@ fn source_cli() -> PathBuf {
         } else {
             workspace.join(target)
         };
+        // A seeded target can contain an older binary. Always establish that this checkout's
+        // client is current via Mitts (when present and uninstrumented) or Cargo.
+        let status = live_tools::workspace_build_command(
+            &workspace,
+            &target,
+            "prod-code-client",
+            "prod-code",
+        )
+        .status()
+        .expect("build source client");
+        assert!(status.success(), "build source client: {status}");
         let cli = target
             .join("debug")
             .join(format!("prod-code{}", std::env::consts::EXE_SUFFIX));

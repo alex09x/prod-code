@@ -292,7 +292,37 @@ fn source_built_gateway() -> (tempfile::TempDir, PathBuf) {
         .parent()
         .and_then(Path::parent)
         .expect("workspace root");
-    let mut build = Command::new("cargo");
+    let use_mitts = std::env::var_os("LLVM_PROFILE_FILE").is_none()
+        && Command::new("mitts")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success());
+    let mut build = Command::new(if use_mitts { "mitts" } else { "cargo" });
+    if use_mitts {
+        for (key, _) in std::env::vars_os() {
+            let Some(name) = key.to_str() else {
+                continue;
+            };
+            let keep_cargo = name == "CARGO_HOME"
+                || name == "CARGO_INCREMENTAL"
+                || name.starts_with("CARGO_PROFILE_")
+                || name.starts_with("CARGO_TERM_")
+                || name.starts_with("CARGO_NET_")
+                || name.starts_with("CARGO_REGISTRIES_")
+                || name.starts_with("CARGO_HTTP_");
+            if (name == "CARGO" || (name.starts_with("CARGO_") && !keep_cargo))
+                || matches!(
+                    name,
+                    "OUT_DIR"
+                        | "LD_LIBRARY_PATH"
+                        | "DYLD_LIBRARY_PATH"
+                        | "DYLD_FALLBACK_LIBRARY_PATH"
+                )
+            {
+                build.env_remove(&key);
+            }
+        }
+    }
     build
         .current_dir(root)
         .env_remove("CARGO_TARGET_DIR")

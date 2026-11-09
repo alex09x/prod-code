@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
   cancel-in-progress: true
 
 env:
@@ -33,25 +33,42 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
+      scope: ${{ steps.plan.outputs.scope }}
+      run_lint: ${{ steps.plan.outputs.run_lint }}
+      run_warm: ${{ steps.plan.outputs.run_warm }}
+      run_tests: ${{ steps.plan.outputs.run_tests }}
+      run_macos: ${{ steps.plan.outputs.run_macos }}
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/install-mitts
       - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ${{ runner.temp }}/mitts-cache
-          key: mitts-cache-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
-      - name: Fetch complete workspace dependencies before sharing the cache
+            ${{ runner.temp }}/mitts-cache/index
+            ${{ runner.temp }}/mitts-cache/sources
+          key: mitts-sources-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            mitts-sources-v1-${{ runner.os }}-${{ runner.arch }}-
+      - name: Fetch complete workspace dependencies
         run: mitts fetch --locked
+      - name: Validate workflow definitions
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck= -pyflakes= .github/workflows/ci.yml .github/workflows/release.yml
+      - name: CI helper regression tests
+        run: python3 -m unittest discover -s scripts/ci -p 'test_*.py' -v
       - id: plan
+        env:
+          CI_EVENT_NAME: ${{ github.event_name }}
+          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
         run: python3 scripts/ci/plan.py tests
 
   lint:
     needs: plan
+    if: needs.plan.outputs.run_lint == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -63,24 +80,110 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ${{ runner.temp }}/mitts-cache
-          key: mitts-cache-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
-      - name: Validate workflow definitions
-        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck= -pyflakes= .github/workflows/ci.yml .github/workflows/release.yml
+            ${{ runner.temp }}/mitts-cache/ac
+            ${{ runner.temp }}/mitts-cache/cas/artifacts
+            ${{ runner.temp }}/mitts-cache/cas/artifacts-meta
+            ${{ runner.temp }}/mitts-cache/cas/build_scripts
+            ${{ runner.temp }}/mitts-cache/cas/metadata
+            ${{ runner.temp }}/mitts-cache/cas/objects
+            ${{ runner.temp }}/mitts-cache/env_macros
+            ${{ runner.temp }}/mitts-cache/index
+            ${{ runner.temp }}/mitts-cache/sources
+            ${{ runner.temp }}/mitts-cache/toolchain
+          key: mitts-lint-cas-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}
+          restore-keys: |
+            mitts-lint-cas-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-
+            mitts-sources-v1-${{ runner.os }}-${{ runner.arch }}-
       - run: mitts fmt --all --check
       - name: Clippy (existing warnings remain visible)
         run: mitts clippy --workspace --all-targets --locked
-      - name: CI helper regression tests
-        run: python3 -m unittest discover -s scripts/ci -p 'test_*.py' -v
+      - name: Bound Mitts lint CAS
+        run: mitts gc --cache-dir "$RUNNER_TEMP/mitts-cache" --max-bytes 2000000000
+
+  warm:
+    needs: plan
+    if: needs.plan.outputs.run_warm == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      MITTS_JOBS: '4'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Configure shared Mitts test profile
+        run: bash scripts/ci/configure-test-profile.sh
+      - id: probe
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          lookup-only: true
+          path: |
+            ${{ runner.temp }}/mitts-cache/ac
+            ${{ runner.temp }}/mitts-cache/cas/artifacts
+            ${{ runner.temp }}/mitts-cache/cas/artifacts-meta
+            ${{ runner.temp }}/mitts-cache/cas/build_scripts
+            ${{ runner.temp }}/mitts-cache/cas/metadata
+            ${{ runner.temp }}/mitts-cache/cas/objects
+            ${{ runner.temp }}/mitts-cache/env_macros
+            ${{ runner.temp }}/mitts-cache/index
+            ${{ runner.temp }}/mitts-cache/sources
+            ${{ runner.temp }}/mitts-cache/toolchain
+          key: mitts-test-cas-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml', 'scripts/ci/configure-test-profile.sh') }}
+      - name: Restore prior Mitts CAS on lockfile or profile update
+        if: steps.probe.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/mitts-cache/ac
+            ${{ runner.temp }}/mitts-cache/cas/artifacts
+            ${{ runner.temp }}/mitts-cache/cas/artifacts-meta
+            ${{ runner.temp }}/mitts-cache/cas/build_scripts
+            ${{ runner.temp }}/mitts-cache/cas/metadata
+            ${{ runner.temp }}/mitts-cache/cas/objects
+            ${{ runner.temp }}/mitts-cache/env_macros
+            ${{ runner.temp }}/mitts-cache/index
+            ${{ runner.temp }}/mitts-cache/sources
+            ${{ runner.temp }}/mitts-cache/toolchain
+          key: mitts-test-cas-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml', 'scripts/ci/configure-test-profile.sh') }}
+          restore-keys: |
+            mitts-test-cas-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-
+            mitts-sources-v1-${{ runner.os }}-${{ runner.arch }}-
+      - uses: ./.github/actions/install-mitts
+        if: steps.probe.outputs.cache-hit != 'true'
+      - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+        if: steps.probe.outputs.cache-hit != 'true'
+      - name: Populate Mitts CAS for workspace libraries, binaries and dev-dependencies
+        if: steps.probe.outputs.cache-hit != 'true'
+        run: |
+          mitts build --locked -p prod-code-gateway -p prod-code-client --bins
+          mitts test --locked --workspace --lib --bins --no-run
+          mitts gc --cache-dir "$RUNNER_TEMP/mitts-cache" --max-bytes 3500000000
+      - name: Save Mitts CAS for test shards
+        if: steps.probe.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/mitts-cache/ac
+            ${{ runner.temp }}/mitts-cache/cas/artifacts
+            ${{ runner.temp }}/mitts-cache/cas/artifacts-meta
+            ${{ runner.temp }}/mitts-cache/cas/build_scripts
+            ${{ runner.temp }}/mitts-cache/cas/metadata
+            ${{ runner.temp }}/mitts-cache/cas/objects
+            ${{ runner.temp }}/mitts-cache/env_macros
+            ${{ runner.temp }}/mitts-cache/index
+            ${{ runner.temp }}/mitts-cache/sources
+            ${{ runner.temp }}/mitts-cache/toolchain
+          key: mitts-test-cas-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml', 'scripts/ci/configure-test-profile.sh') }}
 
   test:
-    needs: plan
+    needs: [plan, warm]
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.run_tests == 'true' && (needs.warm.result == 'success' || needs.warm.result == 'skipped')
     name: Tests / ${{ matrix.package }} / ${{ matrix.kind }} / ${{ strategy.job-index }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
       fail-fast: false
-      max-parallel: 8
+      max-parallel: 16
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -88,11 +191,25 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/install-mitts
       - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Configure shared Mitts test profile
+        run: bash scripts/ci/configure-test-profile.sh
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ${{ runner.temp }}/mitts-cache
-          key: mitts-cache-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+            ${{ runner.temp }}/mitts-cache/ac
+            ${{ runner.temp }}/mitts-cache/cas/artifacts
+            ${{ runner.temp }}/mitts-cache/cas/artifacts-meta
+            ${{ runner.temp }}/mitts-cache/cas/build_scripts
+            ${{ runner.temp }}/mitts-cache/cas/metadata
+            ${{ runner.temp }}/mitts-cache/cas/objects
+            ${{ runner.temp }}/mitts-cache/env_macros
+            ${{ runner.temp }}/mitts-cache/index
+            ${{ runner.temp }}/mitts-cache/sources
+            ${{ runner.temp }}/mitts-cache/toolchain
+          key: mitts-test-cas-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml', 'scripts/ci/configure-test-profile.sh') }}
+          restore-keys: |
+            mitts-test-cas-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-
+            mitts-sources-v1-${{ runner.os }}-${{ runner.arch }}-
       - name: Install the real Rust analyzer test prerequisites
         if: matrix.kind != 'doc' && matrix.package != 'prod-code-protocol'
         run: rustup component add rust-src rust-analyzer rustfmt clippy
@@ -102,6 +219,12 @@ jobs:
         with:
           path: ~/go/bin/gopls
           key: gopls-${{ runner.os }}-${{ runner.arch }}-0.23.0-go1.27.1
+      - name: Cache pinned Node, Python and sccache test tools
+        if: matrix.kind != 'doc' && matrix.package != 'prod-code-protocol'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/test-language-tools
+          key: test-language-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ci/provision-test-tools.sh') }}
       - name: Provision real-server test prerequisites
         if: matrix.kind != 'doc' && matrix.package != 'prod-code-protocol'
         run: bash scripts/ci/provision-test-tools.sh
@@ -112,6 +235,7 @@ jobs:
 
   macos-signatures:
     needs: plan
+    if: needs.plan.outputs.run_macos == 'true'
     name: Native macOS installer signature acceptance
     runs-on: macos-15
     timeout-minutes: 60
@@ -127,25 +251,42 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ${{ runner.temp }}/mitts-cache
-          key: mitts-cache-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+            ${{ runner.temp }}/mitts-cache/ac
+            ${{ runner.temp }}/mitts-cache/cas/artifacts
+            ${{ runner.temp }}/mitts-cache/cas/artifacts-meta
+            ${{ runner.temp }}/mitts-cache/cas/build_scripts
+            ${{ runner.temp }}/mitts-cache/cas/metadata
+            ${{ runner.temp }}/mitts-cache/cas/objects
+            ${{ runner.temp }}/mitts-cache/env_macros
+            ${{ runner.temp }}/mitts-cache/index
+            ${{ runner.temp }}/mitts-cache/sources
+            ${{ runner.temp }}/mitts-cache/toolchain
+          key: mitts-macos-cas-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}
+          restore-keys: |
+            mitts-macos-cas-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-
       - name: Test valid Developer ID, unsigned, tampered and ad-hoc downloads without secrets
         run: python3 scripts/ci/macos-signatures.py
       - name: Verify Git build metadata on native macOS
         run: mitts test --locked -p prod-code-protocol --test build_fingerprint
+      - name: Bound Mitts macOS CAS
+        run: mitts gc --cache-dir "$RUNNER_TEMP/mitts-cache" --max-bytes 1500000000
 
   ci:
     if: always()
-    needs: [plan, lint, test, macos-signatures]
+    needs: [plan, lint, warm, test, macos-signatures]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Require every CI scope to pass
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require every planned CI scope to pass
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           python3 - <<'PY'
-          import json, os
-          rows = json.loads(os.environ['RESULTS'])
-          assert all(row['result'] == 'success' for row in rows.values()), rows
+          import json, os, sys
+          sys.path.insert(0, "scripts/ci")
+          from scope import verify_ci_results
+          verify_ci_results(json.loads(os.environ["RESULTS"]))
           PY

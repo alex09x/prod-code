@@ -35,11 +35,23 @@ and installs it only as a disposable test fixture. Required negative tests must
 execute and pass; an empty test filter cannot satisfy the job. This job has no
 signing/notarization secrets and does not sign a release.
 
-Only Cargo registry/git downloads are cached, not build outputs. Test debug
+Only Mitts's persistent Content-Addressed Store (`ac`, `cas`, `env_macros`, `index`,
+`sources`, and `toolchain` — excluding transient lockfiles and jobserver FIFOs) is
+cached across runs and bounded with `mitts gc`; `target/` build directories are not
+uploaded. On lockfile or toolchain changes, a dedicated `warm` job populates the
+Mitts CAS once (`lookup-only` skips work in seconds when the exact CAS key already
+exists) so downstream shards restore prebuilt dependency artifacts read-only.
+Pull requests scope test shards to affected workspace crates and their reverse
+dependents (including runtime binary consumers), documentation-only edits skip
+compilation jobs, and verified workspace-only version bumps run a fast locked
+metadata and `build_fingerprint` smoke gate; pushes to `main` and manual
+dispatches always run the full workspace suite so every tagged release commit
+has complete verification. Test debug
 information and incremental compilation are disabled on hosted runners to bound
-disk usage. Runtime Linux shards override development/test optimization to level
-1 in their disposable Cargo configuration, including analyzer dependencies and
-source-built gateway children. Interactive query deadlines remain unchanged.
+disk usage. Runtime Linux shards and the `warm` job override development/test
+optimization to level 1 in their disposable Cargo configuration, including analyzer
+dependencies and source-built gateway children, keeping Mitts `ActionKey`s identical.
+Interactive query deadlines remain unchanged.
 The gateway `live` target runs its process-heavy fixtures sequentially to bound
 memory on the standard VM; concurrency exercised inside each fixture is retained.
 No paid larger runner is selected. Release artifacts expire after

@@ -241,20 +241,6 @@ fn source_cli() -> PathBuf {
             .and_then(Path::parent)
             .expect("gateway crate below workspace")
             .to_path_buf();
-        let mut build = Command::new("cargo")
-            .args(["build", "-p", "prod-code-client", "--bin", "prod-code"])
-            .current_dir(&workspace)
-            .process_group(0)
-            .spawn()
-            .expect("source client build starts");
-        let status = match wait_for_exit(&mut build, Duration::from_secs(900)) {
-            Ok(Some(status)) => status,
-            result => {
-                retire_owned_group(&mut build, None, Duration::from_secs(2));
-                panic!("source client build did not finish within its setup budget: {result:?}");
-            }
-        };
-        assert!(status.success(), "source client build: {status}");
         let target = std::env::var_os("CARGO_TARGET_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| workspace.join("target"));
@@ -263,6 +249,23 @@ fn source_cli() -> PathBuf {
         } else {
             workspace.join(target)
         };
+        let mut build = live_tools::workspace_build_command(
+            &workspace,
+            &target,
+            "prod-code-client",
+            "prod-code",
+        )
+        .process_group(0)
+        .spawn()
+        .expect("source client build starts");
+        let status = match wait_for_exit(&mut build, Duration::from_secs(900)) {
+            Ok(Some(status)) => status,
+            result => {
+                retire_owned_group(&mut build, None, Duration::from_secs(2));
+                panic!("source client build did not finish within its setup budget: {result:?}");
+            }
+        };
+        assert!(status.success(), "source client build: {status}");
         let binary = target
             .join("debug")
             .join(format!("prod-code{}", std::env::consts::EXE_SUFFIX));

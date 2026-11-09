@@ -14,15 +14,37 @@ import re
 import subprocess
 from pathlib import Path
 
+from scope import (
+    SHA_RE,
+    affected_workspace_packages,
+    is_doc_file,
+    is_version_bump_only,
+)
+
+SHARD_SIZE = 16
+SKIPPED_MATRIX = {"include": [{"package": "none", "kind": "none", "targets": []}]}
+VERSION_SMOKE_MATRIX = {
+    "include": [
+        {
+            "package": "prod-code-protocol",
+            "kind": "test",
+            "targets": ["build_fingerprint"],
+        }
+    ]
+}
+
 
 def command(*args, cwd=None):
     return subprocess.check_output(args, cwd=cwd, text=True).strip()
 
 
-def test_matrix(metadata):
+def test_matrix(metadata, packages=None, shard_size=SHARD_SIZE):
     rows = []
+    members = set(metadata["workspace_members"])
     for package in metadata["packages"]:
-        if package["id"] not in metadata["workspace_members"]:
+        if package["id"] not in members:
+            continue
+        if packages is not None and package["name"] not in packages:
             continue
         targets = sorted(package["targets"], key=lambda item: item["name"])
         for target in targets:
@@ -44,17 +66,92 @@ def test_matrix(metadata):
                         }
                     )
         tests = [t["name"] for t in targets if "test" in t["kind"]]
-        for offset in range(0, len(tests), 8):
+        for offset in range(0, len(tests), shard_size):
             rows.append(
                 {
                     "package": package["name"],
                     "kind": "test",
-                    "targets": tests[offset : offset + 8],
+                    "targets": tests[offset : offset + shard_size],
                 }
             )
     if not rows or len(rows) > 256:
         raise ValueError("test matrix is empty or exceeds GitHub's 256-job limit")
     return {"include": rows}
+
+
+def plan_ci(metadata, root, event_name="", base_sha="", head_sha="HEAD"):
+    members = set(metadata["workspace_members"])
+    ws_names = {p["name"] for p in metadata["packages"] if p["id"] in members}
+
+    def full():
+        return {
+            "scope": "full",
+            "run_lint": "true",
+            "run_warm": "true",
+            "run_tests": "true",
+            "run_macos": "true",
+            "matrix": require_integration_targets(test_matrix(metadata)),
+        }
+
+    if (
+        event_name != "pull_request"
+        or not base_sha
+        or set(base_sha) == {"0"}
+        or not SHA_RE.fullmatch(base_sha)
+    ):
+        return full()
+
+    try:
+        subprocess.run(
+            ["git", "cat-file", "-e", f"{base_sha}^{{commit}}"],
+            cwd=root,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        diff_base = command("git", "merge-base", base_sha, head_sha, cwd=root)
+        raw = command("git", "diff", "--name-only", f"{diff_base}..{head_sha}", cwd=root)
+    except subprocess.CalledProcessError:
+        return full()
+
+    changed = {line for line in raw.splitlines() if line}
+    if not changed or all(is_doc_file(path) for path in changed):
+        return {
+            "scope": "docs",
+            "run_lint": "false",
+            "run_warm": "false",
+            "run_tests": "false",
+            "run_macos": "false",
+            "matrix": SKIPPED_MATRIX,
+        }
+
+    if is_version_bump_only(root, diff_base, head_sha, changed, ws_names):
+        return {
+            "scope": "version",
+            "run_lint": "false",
+            "run_warm": "false",
+            "run_tests": "true",
+            "run_macos": "false",
+            "matrix": VERSION_SMOKE_MATRIX,
+        }
+
+    affected = affected_workspace_packages(metadata, root, changed)
+    if affected is not None and affected < ws_names:
+        matrix = test_matrix(metadata, packages=affected)
+        needs_warm = any(
+            r["package"] != "prod-code-protocol" for r in matrix["include"]
+        )
+        needs_macos = bool(affected & {"prod-code-client", "prod-code-protocol"})
+        return {
+            "scope": "affected",
+            "run_lint": "true",
+            "run_warm": "true" if needs_warm else "false",
+            "run_tests": "true",
+            "run_macos": "true" if needs_macos else "false",
+            "matrix": matrix,
+        }
+
+    return full()
 
 
 def release_input(root, tag):
@@ -137,7 +234,14 @@ def main():
                 cwd=args.root,
             )
         )
-        emit("matrix", require_integration_targets(test_matrix(metadata)))
+        planned = plan_ci(
+            metadata,
+            args.root,
+            event_name=os.environ.get("CI_EVENT_NAME", ""),
+            base_sha=os.environ.get("CI_BASE_SHA", ""),
+        )
+        for key, value in planned.items():
+            emit(key, value)
     elif args.mode == "release":
         for name, value in release_input(args.root, os.environ["RELEASE_TAG"]).items():
             emit(name, value)

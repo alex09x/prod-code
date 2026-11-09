@@ -23,6 +23,9 @@ use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+#[path = "common/live_tools.rs"]
+mod live_tools;
+
 const CHILD: &str = "PROD_CODE_SAFE_DELETE_TYPESCRIPT_CHILD";
 const CHILD_ROOT: &str = "PROD_CODE_SAFE_DELETE_TYPESCRIPT_ROOT";
 const CHILD_ADDR: &str = "PROD_CODE_SAFE_DELETE_TYPESCRIPT_ADDR";
@@ -284,14 +287,6 @@ fn source_cli(deadline: Instant) -> PathBuf {
             .and_then(Path::parent)
             .expect("workspace")
             .to_path_buf();
-        let (ok, output) = run_command(
-            Command::new("cargo")
-                .args(["build", "-p", "prod-code-client", "--bin", "prod-code"])
-                .current_dir(&workspace),
-            deadline,
-            "source client build",
-        );
-        assert!(ok, "source client build: {output}");
         let target = std::env::var_os("CARGO_TARGET_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| workspace.join("target"));
@@ -300,6 +295,14 @@ fn source_cli(deadline: Instant) -> PathBuf {
         } else {
             workspace.join(target)
         };
+        let mut build = live_tools::workspace_build_command(
+            &workspace,
+            &target,
+            "prod-code-client",
+            "prod-code",
+        );
+        let (ok, output) = run_command(&mut build, deadline, "source client build");
+        assert!(ok, "source client build: {output}");
         target
             .join("debug")
             .join(format!("prod-code{}", std::env::consts::EXE_SUFFIX))

@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- **Hosted CI Warms Mitts's CAS and Scopes Pull-Request Shards** (`.github/workflows/ci.yml`, `scripts/ci`, #2004): `plan` previously saved `mitts-cache-*` right after `mitts fetch --locked`, locking out compiled `ac/` and `cas/` entries so 50 shards cold-compiled the workspace across 7 waves even on version-only pull requests. Hosted CI now warms and bounds Mitts's persistent CAS (`mitts gc`), caches pinned test language tools, prefers `mitts` in source-building integration test helpers, sizes shards to 16 targets at `max-parallel: 16`, skips compilation on docs-only changes, runs a fast `build_fingerprint` smoke check on verified workspace-only version bumps, and narrows pull-request shards to affected workspace packages while keeping full matrix runs on code pushes to `main`.
+
 ## v0.3.57 — 2026-11-08
 
 ### Fixed
