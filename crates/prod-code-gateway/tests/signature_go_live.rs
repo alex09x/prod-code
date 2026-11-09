@@ -549,30 +549,14 @@ fn source_cli() -> PathBuf {
         };
         // A seeded target can contain an older binary. Always establish that this checkout's
         // client is current via Mitts (when present and uninstrumented) or Cargo.
-        let builder = if std::env::var_os("LLVM_PROFILE_FILE").is_none()
-            && Command::new("mitts")
-                .arg("--version")
-                .output()
-                .is_ok_and(|o| o.status.success())
-        {
-            "mitts"
-        } else {
-            "cargo"
-        };
-        let status = Command::new(builder)
-            .args([
-                "build",
-                "--locked",
-                "-p",
-                "prod-code-client",
-                "--bin",
-                "prod-code",
-                "--target-dir",
-            ])
-            .arg(&target)
-            .current_dir(&workspace)
-            .status()
-            .expect("build source client");
+        let status = live_tools::workspace_build_command(
+            &workspace,
+            &target,
+            "prod-code-client",
+            "prod-code",
+        )
+        .status()
+        .expect("build source client");
         assert!(status.success(), "build source client: {status}");
         let cli = target
             .join("debug")

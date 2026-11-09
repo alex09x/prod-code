@@ -249,31 +249,15 @@ fn source_cli() -> PathBuf {
         } else {
             workspace.join(target)
         };
-        let builder = if std::env::var_os("LLVM_PROFILE_FILE").is_none()
-            && Command::new("mitts")
-                .arg("--version")
-                .output()
-                .is_ok_and(|o| o.status.success())
-        {
-            "mitts"
-        } else {
-            "cargo"
-        };
-        let mut build = Command::new(builder)
-            .args([
-                "build",
-                "--locked",
-                "-p",
-                "prod-code-client",
-                "--bin",
-                "prod-code",
-                "--target-dir",
-            ])
-            .arg(&target)
-            .current_dir(&workspace)
-            .process_group(0)
-            .spawn()
-            .expect("source client build starts");
+        let mut build = live_tools::workspace_build_command(
+            &workspace,
+            &target,
+            "prod-code-client",
+            "prod-code",
+        )
+        .process_group(0)
+        .spawn()
+        .expect("source client build starts");
         let status = match wait_for_exit(&mut build, Duration::from_secs(900)) {
             Ok(Some(status)) => status,
             result => {

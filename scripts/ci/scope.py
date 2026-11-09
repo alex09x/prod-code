@@ -184,16 +184,47 @@ def affected_workspace_packages(
     return affected
 
 
+VALID_FLAGS = {"true", "false"}
+VALID_SCOPES = {"docs", "version", "affected", "full"}
+
+
 def verify_ci_results(needs: dict) -> None:
     if needs.get("plan", {}).get("result") != "success":
         raise AssertionError(f"plan did not succeed: {needs}")
     outputs = needs["plan"].get("outputs") or {}
+    scope = outputs.get("scope")
+    if scope not in VALID_SCOPES:
+        raise AssertionError(f"invalid or missing plan scope: {outputs}")
+    flags = {
+        key: outputs.get(key)
+        for key in ("run_lint", "run_warm", "run_tests", "run_macos")
+    }
+    if any(value not in VALID_FLAGS for value in flags.values()):
+        raise AssertionError(f"missing or malformed plan flags: {outputs}")
+    if scope == "docs" and any(v != "false" for v in flags.values()):
+        raise AssertionError(f"docs scope must skip heavy jobs: {outputs}")
+    if scope == "version" and flags != {
+        "run_lint": "true",
+        "run_warm": "false",
+        "run_tests": "false",
+        "run_macos": "true",
+    }:
+        raise AssertionError(f"unexpected version scope flags: {outputs}")
+    if scope == "affected" and (
+        flags["run_lint"] != "true"
+        or flags["run_warm"] != "true"
+        or flags["run_tests"] != "true"
+    ):
+        raise AssertionError(f"affected scope must run lint/warm/tests: {outputs}")
+    if scope == "full" and any(v != "true" for v in flags.values()):
+        raise AssertionError(f"full scope must run every job: {outputs}")
+
     expected = {
-        "lint": "success" if outputs.get("run_lint") == "true" else "skipped",
-        "warm": "success" if outputs.get("run_warm") == "true" else "skipped",
-        "test": "success" if outputs.get("run_tests") == "true" else "skipped",
+        "lint": "success" if flags["run_lint"] == "true" else "skipped",
+        "warm": "success" if flags["run_warm"] == "true" else "skipped",
+        "test": "success" if flags["run_tests"] == "true" else "skipped",
         "macos-signatures": (
-            "success" if outputs.get("run_macos") == "true" else "skipped"
+            "success" if flags["run_macos"] == "true" else "skipped"
         ),
     }
     actual = {name: needs.get(name, {}).get("result") for name in expected}

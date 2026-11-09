@@ -205,24 +205,72 @@ class ScopePlanningTests(unittest.TestCase):
                 "plan": {
                     "result": "success",
                     "outputs": {
+                        "scope": "affected",
+                        "run_lint": "true",
+                        "run_warm": "true",
+                        "run_tests": "true",
+                        "run_macos": "false",
+                    },
+                },
+                "lint": {"result": "success"},
+                "warm": {"result": "success"},
+                "test": {"result": "success"},
+                "macos-signatures": {"result": "skipped"},
+            }
+        )
+        verify_ci_results(
+            {
+                "plan": {
+                    "result": "success",
+                    "outputs": {
+                        "scope": "docs",
                         "run_lint": "false",
                         "run_warm": "false",
-                        "run_tests": "true",
+                        "run_tests": "false",
                         "run_macos": "false",
                     },
                 },
                 "lint": {"result": "skipped"},
                 "warm": {"result": "skipped"},
-                "test": {"result": "success"},
+                "test": {"result": "skipped"},
                 "macos-signatures": {"result": "skipped"},
             }
         )
+        # Empty or malformed outputs must fail closed rather than silently skipping.
+        for bad_outputs in (
+            {},
+            {
+                "scope": "docs",
+                "run_lint": "",
+                "run_warm": "false",
+                "run_tests": "false",
+                "run_macos": "false",
+            },
+            {
+                "scope": "full",
+                "run_lint": "true",
+                "run_warm": "true",
+                "run_tests": "false",
+                "run_macos": "true",
+            },
+        ):
+            with self.assertRaises(AssertionError):
+                verify_ci_results(
+                    {
+                        "plan": {"result": "success", "outputs": bad_outputs},
+                        "lint": {"result": "skipped"},
+                        "warm": {"result": "skipped"},
+                        "test": {"result": "skipped"},
+                        "macos-signatures": {"result": "skipped"},
+                    }
+                )
         with self.assertRaises(AssertionError):
             verify_ci_results(
                 {
                     "plan": {
                         "result": "success",
                         "outputs": {
+                            "scope": "full",
                             "run_lint": "true",
                             "run_warm": "true",
                             "run_tests": "true",

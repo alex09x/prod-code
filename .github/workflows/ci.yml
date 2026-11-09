@@ -111,6 +111,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Configure shared Mitts test profile
+        run: bash scripts/ci/configure-test-profile.sh
       - id: probe
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -153,7 +155,6 @@ jobs:
       - name: Populate Mitts CAS for workspace libraries, binaries and dev-dependencies
         if: steps.probe.outputs.cache-hit != 'true'
         run: |
-          bash scripts/ci/configure-test-profile.sh
           mitts build --locked -p prod-code-gateway -p prod-code-client --bins
           mitts test --locked --workspace --lib --bins --no-run
           mitts gc --cache-dir "$RUNNER_TEMP/mitts-cache" --max-bytes 3500000000
@@ -276,21 +277,16 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Require every planned CI scope to pass
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           python3 - <<'PY'
-          import json, os
-          needs = json.loads(os.environ['RESULTS'])
-          assert needs['plan']['result'] == 'success', needs
-          outputs = needs['plan'].get('outputs') or {}
-          expected = {
-              'lint': 'success' if outputs.get('run_lint') == 'true' else 'skipped',
-              'warm': 'success' if outputs.get('run_warm') == 'true' else 'skipped',
-              'test': 'success' if outputs.get('run_tests') == 'true' else 'skipped',
-              'macos-signatures': 'success' if outputs.get('run_macos') == 'true' else 'skipped',
-          }
-          actual = {name: needs[name]['result'] for name in expected}
-          assert actual == expected, {'expected': expected, 'actual': actual}
+          import json, os, sys
+          sys.path.insert(0, "scripts/ci")
+          from scope import verify_ci_results
+          verify_ci_results(json.loads(os.environ["RESULTS"]))
           PY

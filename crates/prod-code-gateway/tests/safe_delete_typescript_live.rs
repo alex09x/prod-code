@@ -23,6 +23,9 @@ use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+#[path = "common/live_tools.rs"]
+mod live_tools;
+
 const CHILD: &str = "PROD_CODE_SAFE_DELETE_TYPESCRIPT_CHILD";
 const CHILD_ROOT: &str = "PROD_CODE_SAFE_DELETE_TYPESCRIPT_ROOT";
 const CHILD_ADDR: &str = "PROD_CODE_SAFE_DELETE_TYPESCRIPT_ADDR";
@@ -292,32 +295,13 @@ fn source_cli(deadline: Instant) -> PathBuf {
         } else {
             workspace.join(target)
         };
-        let builder = if std::env::var_os("LLVM_PROFILE_FILE").is_none()
-            && Command::new("mitts")
-                .arg("--version")
-                .output()
-                .is_ok_and(|o| o.status.success())
-        {
-            "mitts"
-        } else {
-            "cargo"
-        };
-        let (ok, output) = run_command(
-            Command::new(builder)
-                .args([
-                    "build",
-                    "--locked",
-                    "-p",
-                    "prod-code-client",
-                    "--bin",
-                    "prod-code",
-                    "--target-dir",
-                ])
-                .arg(&target)
-                .current_dir(&workspace),
-            deadline,
-            "source client build",
+        let mut build = live_tools::workspace_build_command(
+            &workspace,
+            &target,
+            "prod-code-client",
+            "prod-code",
         );
+        let (ok, output) = run_command(&mut build, deadline, "source client build");
         assert!(ok, "source client build: {output}");
         target
             .join("debug")
