@@ -44,8 +44,9 @@ exists) so downstream shards restore prebuilt dependency artifacts read-only.
 Pull requests scope test shards to affected workspace crates and their reverse
 dependents (including runtime binary consumers), documentation-only edits skip
 compilation jobs, and verified workspace-only version bumps run a fast locked
-metadata and `build_fingerprint` smoke gate; code pushes to `main` and manual
-dispatches run the full workspace matrix. Test debug
+metadata and `build_fingerprint` smoke gate; pushes to `main` and manual
+dispatches always run the full workspace suite so every tagged release commit
+has complete verification. Test debug
 information and incremental compilation are disabled on hosted runners to bound
 disk usage. Runtime Linux shards and the `warm` job override development/test
 optimization to level 1 in their disposable Cargo configuration, including analyzer

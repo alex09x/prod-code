@@ -88,20 +88,19 @@ class ScopePlanningTests(unittest.TestCase):
         self.git("commit", "-m", "baseline")
         return meta, self.git("rev-parse", "HEAD")
 
-    def test_docs_only_change_skips_compilation_jobs(self):
+    def test_docs_only_change_skips_compilation_jobs_on_pull_request(self):
         meta, base = self.baseline_repo()
         self.write("CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n- note\n")
         self.write("docs/guide.md", "# Guide\n")
         self.git("add", ".")
         self.git("commit", "-m", "docs")
-        for event in ("pull_request", "push"):
-            planned = plan_ci(meta, self.root, event_name=event, base_sha=base)
-            self.assertEqual(planned["scope"], "docs")
-            self.assertEqual(planned["run_lint"], "false")
-            self.assertEqual(planned["run_warm"], "false")
-            self.assertEqual(planned["run_tests"], "false")
-            self.assertEqual(planned["run_macos"], "false")
-            self.assertEqual(planned["matrix"], SKIPPED_MATRIX)
+        planned = plan_ci(meta, self.root, event_name="pull_request", base_sha=base)
+        self.assertEqual(planned["scope"], "docs")
+        self.assertEqual(planned["run_lint"], "false")
+        self.assertEqual(planned["run_warm"], "false")
+        self.assertEqual(planned["run_tests"], "false")
+        self.assertEqual(planned["run_macos"], "false")
+        self.assertEqual(planned["matrix"], SKIPPED_MATRIX)
 
     def test_crate_markdown_fixture_is_not_treated_as_docs_only(self):
         meta, base = self.baseline_repo()
@@ -112,7 +111,7 @@ class ScopePlanningTests(unittest.TestCase):
         self.assertEqual(planned["scope"], "affected")
         self.assertEqual(planned["run_tests"], "true")
 
-    def test_verified_workspace_version_bump_uses_fast_smoke_matrix(self):
+    def test_verified_workspace_version_bump_uses_fast_smoke_matrix_on_pull_request(self):
         meta, base = self.baseline_repo()
         self.write(
             "Cargo.toml",
@@ -125,23 +124,55 @@ class ScopePlanningTests(unittest.TestCase):
         self.write("CHANGELOG.md", "# Changelog\n\n## v0.3.57\n")
         self.git("add", ".")
         self.git("commit", "-m", "release prepare v0.3.57")
-        for event in ("pull_request", "push"):
+        planned = plan_ci(meta, self.root, event_name="pull_request", base_sha=base)
+        self.assertEqual(planned["scope"], "version")
+        self.assertEqual(planned["run_lint"], "false")
+        self.assertEqual(planned["run_warm"], "false")
+        self.assertEqual(planned["run_tests"], "true")
+        self.assertEqual(planned["run_macos"], "false")
+        self.assertEqual(planned["matrix"], VERSION_SMOKE_MATRIX)
+        verify_ci_results(
+            {
+                "plan": {"result": "success", "outputs": planned},
+                "lint": {"result": "skipped"},
+                "warm": {"result": "skipped"},
+                "test": {"result": "success"},
+                "macos-signatures": {"result": "skipped"},
+            }
+        )
+
+    def test_push_and_manual_dispatch_always_run_full_suite(self):
+        meta, base = self.baseline_repo()
+        self.write("docs/guide.md", "# Guide\n")
+        self.git("add", ".")
+        self.git("commit", "-m", "docs on main")
+        for event in ("push", "workflow_dispatch"):
             planned = plan_ci(meta, self.root, event_name=event, base_sha=base)
-            self.assertEqual(planned["scope"], "version")
-            self.assertEqual(planned["run_lint"], "false")
-            self.assertEqual(planned["run_warm"], "false")
+            self.assertEqual(planned["scope"], "full")
+            self.assertEqual(planned["run_lint"], "true")
+            self.assertEqual(planned["run_warm"], "true")
             self.assertEqual(planned["run_tests"], "true")
-            self.assertEqual(planned["run_macos"], "false")
-            self.assertEqual(planned["matrix"], VERSION_SMOKE_MATRIX)
-            verify_ci_results(
-                {
-                    "plan": {"result": "success", "outputs": planned},
-                    "lint": {"result": "skipped"},
-                    "warm": {"result": "skipped"},
-                    "test": {"result": "success"},
-                    "macos-signatures": {"result": "skipped"},
-                }
-            )
+            self.assertEqual(planned["run_macos"], "true")
+
+        base = self.git("rev-parse", "HEAD")
+        self.write(
+            "Cargo.toml",
+            '[workspace]\nmembers = ["crates/*"]\n\n[workspace.package]\nversion = "0.3.57"\nedition = "2024"\n',
+        )
+        self.write(
+            "Cargo.lock",
+            'version = 4\n\n[[package]]\nname = "prod-code-protocol"\nversion = "0.3.57"\n\n[[package]]\nname = "time"\nversion = "0.3.55"\nsource = "registry"\n',
+        )
+        self.write("CHANGELOG.md", "# Changelog\n\n## v0.3.57\n")
+        self.git("add", ".")
+        self.git("commit", "-m", "release prepare v0.3.57 on main")
+        for event in ("push", "workflow_dispatch"):
+            planned = plan_ci(meta, self.root, event_name=event, base_sha=base)
+            self.assertEqual(planned["scope"], "full")
+            self.assertEqual(planned["run_lint"], "true")
+            self.assertEqual(planned["run_warm"], "true")
+            self.assertEqual(planned["run_tests"], "true")
+            self.assertEqual(planned["run_macos"], "true")
 
     def test_third_party_lockfile_edit_is_never_classified_as_version_bump(self):
         meta, base = self.baseline_repo()

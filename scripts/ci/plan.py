@@ -94,7 +94,7 @@ def plan_ci(metadata, root, event_name="", base_sha="", head_sha="HEAD"):
         }
 
     if (
-        event_name not in {"pull_request", "push"}
+        event_name != "pull_request"
         or not base_sha
         or set(base_sha) == {"0"}
         or not SHA_RE.fullmatch(base_sha)
@@ -109,15 +109,7 @@ def plan_ci(metadata, root, event_name="", base_sha="", head_sha="HEAD"):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        if event_name == "pull_request":
-            diff_base = command("git", "merge-base", base_sha, head_sha, cwd=root)
-        else:
-            subprocess.run(
-                ["git", "merge-base", "--is-ancestor", base_sha, head_sha],
-                cwd=root,
-                check=True,
-            )
-            diff_base = base_sha
+        diff_base = command("git", "merge-base", base_sha, head_sha, cwd=root)
         raw = command("git", "diff", "--name-only", f"{diff_base}..{head_sha}", cwd=root)
     except subprocess.CalledProcessError:
         return full()
@@ -143,22 +135,21 @@ def plan_ci(metadata, root, event_name="", base_sha="", head_sha="HEAD"):
             "matrix": VERSION_SMOKE_MATRIX,
         }
 
-    if event_name == "pull_request":
-        affected = affected_workspace_packages(metadata, root, changed)
-        if affected is not None and affected < ws_names:
-            matrix = test_matrix(metadata, packages=affected)
-            needs_warm = any(
-                r["package"] != "prod-code-protocol" for r in matrix["include"]
-            )
-            needs_macos = bool(affected & {"prod-code-client", "prod-code-protocol"})
-            return {
-                "scope": "affected",
-                "run_lint": "true",
-                "run_warm": "true" if needs_warm else "false",
-                "run_tests": "true",
-                "run_macos": "true" if needs_macos else "false",
-                "matrix": matrix,
-            }
+    affected = affected_workspace_packages(metadata, root, changed)
+    if affected is not None and affected < ws_names:
+        matrix = test_matrix(metadata, packages=affected)
+        needs_warm = any(
+            r["package"] != "prod-code-protocol" for r in matrix["include"]
+        )
+        needs_macos = bool(affected & {"prod-code-client", "prod-code-protocol"})
+        return {
+            "scope": "affected",
+            "run_lint": "true",
+            "run_warm": "true" if needs_warm else "false",
+            "run_tests": "true",
+            "run_macos": "true" if needs_macos else "false",
+            "matrix": matrix,
+        }
 
     return full()
 
