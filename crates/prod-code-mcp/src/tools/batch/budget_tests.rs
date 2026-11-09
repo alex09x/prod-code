@@ -86,3 +86,72 @@ async fn definition_timeout_millis_sets_the_shared_batch_budget() {
         "timeout_millis was not used as the shared batch budget: {budgets:?}"
     );
 }
+
+/// The first lookup in a fresh checkout pays for the sync and the server's start and runs out of
+/// its share, while the others answer at once: the time they left is given to it again (#2006).
+#[tokio::test]
+async fn a_lookup_that_ran_out_of_its_share_is_asked_again_with_what_the_others_left() {
+    let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = std::sync::Arc::clone(&calls);
+    let symbols: Vec<String> = ["Cold::first", "Warm::second", "Warm::third"]
+        .map(String::from)
+        .to_vec();
+    let started = std::time::Instant::now();
+    let result = run_symbol_batch(
+        "code_definition",
+        serde_json::json!({ "symbols": symbols.clone(), "budget_ms": 1500 }),
+        &symbols,
+        move |args| {
+            let symbol = args["symbol"].as_str().unwrap().to_string();
+            let first_time = !seen.lock().unwrap().contains(&symbol);
+            seen.lock().unwrap().push(symbol.clone());
+            async move {
+                if symbol == "Cold::first" && first_time {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+                Ok(McpToolCallResult::text(format!("definition of {symbol}")))
+            }
+        },
+    )
+    .await
+    .unwrap();
+
+    let McpContentItem::Text { text } = &result.content[0];
+    assert!(text.contains("definition of Cold::first"), "{text}");
+    assert!(!text.contains("Timed out on symbol"), "{text}");
+    assert!(
+        text.find("Cold::first").unwrap() < text.find("Warm::second").unwrap(),
+        "the answers stay in the order asked: {text}"
+    );
+    assert_eq!(
+        *calls.lock().unwrap(),
+        ["Cold::first", "Warm::second", "Warm::third", "Cold::first"]
+    );
+    assert!(started.elapsed() < std::time::Duration::from_millis(1500));
+}
+
+/// A lookup that is slow both times keeps its timeout message, and the batch still ends within
+/// its budget.
+#[tokio::test]
+async fn a_lookup_that_is_slow_both_times_stays_timed_out_within_the_budget() {
+    let symbols: Vec<String> = ["Slow::one", "Fast::two"].map(String::from).to_vec();
+    let started = std::time::Instant::now();
+    let result = run_symbol_batch(
+        "code_definition",
+        serde_json::json!({ "symbols": symbols.clone(), "budget_ms": 1400 }),
+        &symbols,
+        |args| async move {
+            if args["symbol"] == "Slow::one" {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+            Ok(McpToolCallResult::text("definition"))
+        },
+    )
+    .await
+    .unwrap();
+
+    assert!(!result.is_error, "the fast one answered");
+    let McpContentItem::Text { text } = &result.content[0];
+    assert!(text.contains("Timed out on symbol 1/2"), "{text}");
+    assert!(started.elapsed() < std::time::Duration::from_millis(1600));
+}

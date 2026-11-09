@@ -103,16 +103,15 @@ where
     };
     let path_scoped = has_path_hint(&base_args);
     let deadline = std::time::Instant::now() + shared_budget;
-    let mut out = String::new();
+    // One section of text per symbol, so that a second attempt can replace its first answer.
+    let mut sections: Vec<String> = Vec::with_capacity(total);
+    let mut ran_out: Vec<usize> = Vec::new();
     let mut any_ok = false;
 
     for (idx, sym) in symbols.iter().enumerate() {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
-            if idx > 0 {
-                out.push('\n');
-            }
-            out.push_str(&format!(
+            sections.push(format!(
                 "[Batch budget expired before symbol {}/{total} (`{sym}`); retry it alone or provide a path and position to narrow the lookup.]\n",
                 idx + 1
             ));
@@ -132,21 +131,9 @@ where
         } else {
             share
         };
-        let mut sym_args = base_args.clone();
-        if let Some(obj) = sym_args.as_object_mut() {
-            obj.remove("symbols");
-            obj.insert("symbol".into(), serde_json::Value::String(sym.clone()));
-            obj.insert(
-                "budget_ms".into(),
-                serde_json::json!((share.as_millis() as u64).max(1)),
-            );
-        }
-        if idx > 0 {
-            out.push('\n');
-        }
-        out.push_str(&format!("=== [{}/{total}] {sym} ===\n", idx + 1));
-
-        let future = execute(sym_args);
+        let mut out = format!("=== [{}/{total}] {sym} ===\n", idx + 1);
+        let started = std::time::Instant::now();
+        let future = execute(symbol_args(&base_args, sym, share));
         let result = if short_reference_share {
             Ok(future.await)
         } else {
@@ -156,12 +143,11 @@ where
             Ok(Ok(res)) => {
                 if !res.is_error {
                     any_ok = true;
+                } else if !short_reference_share && spent_its_share(started.elapsed(), share) {
+                    // The tool's own timeout, at the share it was given.
+                    ran_out.push(idx);
                 }
-                for item in &res.content {
-                    let McpContentItem::Text { text } = item;
-                    out.push_str(text.trim_end());
-                    out.push('\n');
-                }
+                push_content(&mut out, &res);
                 // The 2 s was this batch's default for a bare name, not the tool's 45 s: say so,
                 // and how to get more (#1985).
                 if short_reference_share && res.is_error {
@@ -173,6 +159,7 @@ where
                 out.push_str(&format!("Error: {err:#}\n"));
             }
             Err(_) => {
+                ran_out.push(idx);
                 out.push_str(&format!(
                     "[Timed out on symbol {}/{total} (`{sym}`) after its {:.1}s share of the {:.1}s batch budget; retry this symbol alone or provide its file and position to narrow the lookup. Run `prod-code cluster` if the gateway remains busy.]\n",
                     idx + 1,
@@ -181,14 +168,74 @@ where
                 ));
             }
         }
+        sections.push(out);
     }
 
+    // The first lookup in a checkout pays for what the others then share: the sync and the
+    // server's start. It can run out of its share while the rest answer at once and leave most
+    // of the budget unspent, so what is left goes to the lookups that ran out (#2006).
+    for (position, &idx) in ran_out.iter().enumerate() {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining < MIN_SECOND_ATTEMPT {
+            break;
+        }
+        let share = remaining / u32::try_from(ran_out.len() - position).unwrap_or(u32::MAX);
+        let sym = &symbols[idx];
+        let future = execute(symbol_args(&base_args, sym, share));
+        if let Ok(Ok(res)) = tokio::time::timeout(share, future).await
+            && !res.is_error
+        {
+            any_ok = true;
+            let mut out = format!("=== [{}/{total}] {sym} ===\n", idx + 1);
+            push_content(&mut out, &res);
+            sections[idx] = out;
+        }
+    }
+
+    let out = sections.join("\n");
     let trimmed = out.trim_end().to_string();
     if any_ok {
         Ok(McpToolCallResult::text(trimmed))
     } else {
         Ok(McpToolCallResult::error(trimmed))
     }
+}
+
+/// The least time worth giving a lookup that ran out of its share a second time.
+const MIN_SECOND_ATTEMPT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The arguments of one symbol's call: the batch's own, with this symbol and its share.
+fn symbol_args(
+    base_args: &serde_json::Value,
+    symbol: &str,
+    share: std::time::Duration,
+) -> serde_json::Value {
+    let mut args = base_args.clone();
+    if let Some(obj) = args.as_object_mut() {
+        obj.remove("symbols");
+        obj.insert(
+            "symbol".into(),
+            serde_json::Value::String(symbol.to_string()),
+        );
+        obj.insert(
+            "budget_ms".into(),
+            serde_json::json!((share.as_millis() as u64).max(1)),
+        );
+    }
+    args
+}
+
+fn push_content(out: &mut String, res: &McpToolCallResult) {
+    for item in &res.content {
+        let McpContentItem::Text { text } = item;
+        out.push_str(text.trim_end());
+        out.push('\n');
+    }
+}
+
+/// Whether a failed lookup failed by using up its share, the tool's own timeout included.
+fn spent_its_share(elapsed: std::time::Duration, share: std::time::Duration) -> bool {
+    elapsed.as_millis() * 10 >= share.as_millis() * 9
 }
 
 /// What a batch of references adds under a bare name that ran out of its default share.
