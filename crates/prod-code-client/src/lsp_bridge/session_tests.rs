@@ -59,6 +59,12 @@ async fn session_handshake_refusals_are_actionable() {
                 Some(prod_code_protocol::PURPOSE_EDITOR)
             );
             assert_eq!(request.redirect_count, 0);
+            // No TLS is configured here, so a redirect could not be followed: it is not offered,
+            // and the gateway keeps the session instead of handing it an error.
+            assert_eq!(
+                request.capabilities.as_ref().map(|c| c.redirects),
+                Some(false)
+            );
             if let Some(response) = response {
                 framed.send(response).await.unwrap();
             }
