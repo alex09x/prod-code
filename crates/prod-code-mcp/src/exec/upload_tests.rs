@@ -304,14 +304,28 @@ async fn issue_1836_untracked_site_data_json_warns_then_uploads_with_sync_includ
         "{text1}"
     );
     assert!(text1.contains("[sync] include"), "{text1}");
+    let structured = res1
+        .structured_content
+        .as_ref()
+        .expect("structured content");
     assert_eq!(
-        res1.structured_content,
-        Some(serde_json::json!({
-            "sync_omitted": [{
-                "path": "site/data/benchmarks-v0.3.17.json",
-                "reason": "output_or_data_directory"
-            }]
-        }))
+        structured["sync_omitted"],
+        serde_json::json!([{
+            "path": "site/data/benchmarks-v0.3.17.json",
+            "reason": "output_or_data_directory"
+        }])
+    );
+    // A host that shows only the structured channel still gets the command's result (#2009).
+    assert!(structured["exit_code"].is_number(), "{structured}");
+    assert_eq!(structured["timed_out"], false, "{structured}");
+    let output = structured["output"].as_str().expect("output");
+    assert!(
+        !output.is_empty() && text1.ends_with(output),
+        "{structured}"
+    );
+    assert_eq!(
+        structured["output_bytes"].as_u64(),
+        Some(output.len() as u64)
     );
 
     // Opting `site/data/**` into `prod-code.toml` uploads all 539 KiB and clears the warning.
