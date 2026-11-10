@@ -15,8 +15,12 @@
 /// The open literal a line ends inside, carried to the next line.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Open {
-    /// `"…"`, with backslash escapes; Swift's `"""` opens and closes as three of these.
+    /// `"…"`, with backslash escapes.
     Quoted,
+    /// Swift and Python `"""…"""`: a single `"` inside does not close it.
+    TripleQuoted,
+    /// `/* … */`: its text is not code, and a quote in it opens nothing.
+    BlockComment,
     /// Rust `r"…"` / `r#"…"#`: no escapes, closed by `"` and this many `#`.
     Raw(usize),
     /// `` `…` ``: Go raw strings and JavaScript templates.
@@ -55,6 +59,32 @@ fn mask_line(line: &str, open: &mut Option<Open>) -> String {
                     out.push(' ');
                 }
             }
+            Some(Open::TripleQuoted) => {
+                if c == '\\' {
+                    out.push(' ');
+                    if i + 1 < chars.len() {
+                        out.push(' ');
+                    }
+                    i += 2;
+                    continue;
+                }
+                if starts_triple_quote(&chars, i) {
+                    *open = None;
+                    out.push_str("\"\"\"");
+                    i += 3;
+                    continue;
+                }
+                out.push(' ');
+            }
+            Some(Open::BlockComment) => {
+                if c == '*' && chars.get(i + 1) == Some(&'/') {
+                    *open = None;
+                    out.push_str("*/");
+                    i += 2;
+                    continue;
+                }
+                out.push(' ');
+            }
             Some(Open::Raw(hashes)) => {
                 if c == '"'
                     && chars[i + 1..]
@@ -86,6 +116,18 @@ fn mask_line(line: &str, open: &mut Option<Open>) -> String {
                 if c == '/' && chars.get(i + 1) == Some(&'/') {
                     out.extend(&chars[i..]);
                     break;
+                }
+                if c == '/' && chars.get(i + 1) == Some(&'*') {
+                    *open = Some(Open::BlockComment);
+                    out.push_str("/*");
+                    i += 2;
+                    continue;
+                }
+                if starts_triple_quote(&chars, i) {
+                    *open = Some(Open::TripleQuoted);
+                    out.push_str("\"\"\"");
+                    i += 3;
+                    continue;
                 }
                 if c == 'r' && !is_ident(i.checked_sub(1).map(|p| chars[p])) {
                     let hashes = chars[i + 1..].iter().take_while(|&&h| h == '#').count();
@@ -136,6 +178,10 @@ fn mask_line(line: &str, open: &mut Option<Open>) -> String {
         i += 1;
     }
     out
+}
+
+fn starts_triple_quote(chars: &[char], i: usize) -> bool {
+    chars.get(i..i + 3) == Some(&['"', '"', '"'][..])
 }
 
 fn is_ident(c: Option<char>) -> bool {
@@ -194,5 +240,45 @@ mod tests {
         for (line, before) in masked.iter().zip(lines) {
             assert_eq!(line.chars().count(), before.chars().count(), "{line}");
         }
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::mask_literals;
+
+    /// A quote in a block comment opens nothing, and the comment's own braces are not code.
+    #[test]
+    fn a_block_comment_hides_its_quotes_and_braces() {
+        let masked = mask_literals(&[
+            "/**",
+            " * Say \"hello { there.",
+            " */",
+            "fn after() {",
+            "    let x = 1; /* a \" quote */ let y = 2;",
+            "}",
+        ]);
+        assert!(!masked[1].contains('{'), "{masked:?}");
+        assert_eq!(masked[2], " */");
+        assert_eq!(masked[3], "fn after() {", "code after the comment is kept");
+        assert!(masked[4].ends_with("*/ let y = 2;"), "{masked:?}");
+        assert_eq!(masked[5], "}");
+    }
+
+    /// A single `"` inside a Swift `"""` literal does not close it, and code after it is code.
+    #[test]
+    fn a_single_quote_inside_a_triple_quoted_literal_does_not_close_it() {
+        let masked = mask_literals(&[
+            "let fixture = \"\"\"",
+            "let s = \"unclosed {",
+            "\"\"\"",
+            "func after() {",
+            "}",
+        ]);
+        assert_eq!(masked[0], "let fixture = \"\"\"");
+        assert!(!masked[1].contains('{'), "{masked:?}");
+        assert_eq!(masked[2], "\"\"\"");
+        assert_eq!(masked[3], "func after() {");
+        assert_eq!(masked[4], "}");
     }
 }
