@@ -41,13 +41,16 @@ fn find_enclosing_symbol_in_str_lines(lines: &[&str], target_line_1based: u32) -
         return find_enclosing_python_symbol(lines, idx);
     }
 
-    // Brace-scoped scan from the start of the file up to `idx`.
+    // Brace-scoped scan from the start of the file up to `idx`. Text inside string and character
+    // literals is blanked first: a fixture that writes `"final class View: NSView {"` in a test
+    // is neither a declaration nor an opening brace.
+    let masked = super::literals::mask_literals(&lines[..=idx]);
     let mut stack: Vec<(usize, ScopeKind, String)> = Vec::new();
     let mut brace_depth: usize = 0;
     let mut pending: Option<(ScopeKind, String)> = None;
 
-    for (line_idx, raw_line) in lines.iter().enumerate().take(idx + 1) {
-        let trimmed = strip_line_comment(raw_line).trim();
+    for (line_idx, masked_line) in masked.iter().enumerate() {
+        let trimmed = strip_line_comment(masked_line).trim();
         let in_container = stack
             .iter()
             .any(|(_, k, _)| matches!(k, ScopeKind::Container));

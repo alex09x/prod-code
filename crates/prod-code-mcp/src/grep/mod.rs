@@ -16,6 +16,7 @@
 pub mod enclosing;
 pub mod execute;
 pub(crate) mod fallback;
+mod literals;
 
 #[cfg(test)]
 mod tests;

@@ -218,3 +218,32 @@ async fn code_grep_missing_path_suggests_closest_existing_sibling() {
         "expected closest existing sibling suggestion in error, got: {err}"
     );
 }
+
+/// A test that writes Swift source into a string literal declares nothing: the functions after
+/// it are not inside its `class` (they were named `GhosttyTerminalNSView::…` in reference lists).
+#[test]
+fn a_declaration_inside_a_string_literal_is_not_a_scope() {
+    let lines = [
+        "#[test]",
+        "fn writes_a_fixture() {",
+        "    std::fs::write(",
+        "        &swift_file,",
+        "        \"final class TerminalView: NSView {\",",
+        "    );",
+        "}",
+        "",
+        "#[test]",
+        "fn next_test() {",
+        "    let brace = '{';",
+        "    call();",
+        "}",
+    ];
+    assert_eq!(
+        crate::grep::enclosing::find_enclosing_symbol_in_lines(&lines, 5).as_deref(),
+        Some("writes_a_fixture")
+    );
+    assert_eq!(
+        crate::grep::enclosing::find_enclosing_symbol_in_lines(&lines, 12).as_deref(),
+        Some("next_test")
+    );
+}
