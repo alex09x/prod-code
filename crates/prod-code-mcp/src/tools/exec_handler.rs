@@ -251,6 +251,15 @@ async fn run_exec_command(
         }
     }
     if !structured.is_empty() {
+        // A host that shows `structuredContent` in place of the text showed only these lists and
+        // lost the command's output and exit status (#2009): the result itself goes here too.
+        structured.insert("exit_code".into(), serde_json::json!(exit.exit_code));
+        structured.insert("timed_out".into(), exit.timed_out.into());
+        if let Some(error) = &exit.error {
+            structured.insert("error".into(), error.clone().into());
+        }
+        structured.insert("output".into(), tail.text().into());
+        structured.insert("output_bytes".into(), tail.total.into());
         result.structured_content = Some(serde_json::Value::Object(structured));
     }
     Ok(result)

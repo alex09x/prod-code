@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Fixed
+- **`code_exec` Carries Its Output and Exit Status in `structuredContent` Too** (`crates/prod-code-mcp`, #2009): in a checkout where sync left out a file under a data directory, `code_exec` returned the command's output and exit status in its text and, beside it, a `structuredContent` that held only `sync_omitted`. A host that shows the structured channel in place of the text showed `{"sync_omitted":[...]}` and nothing of the command, for `echo ok` and for a test run alike. Whenever the structured channel is sent, it now also holds `exit_code`, `timed_out`, `error` (when the command did not start), `output` and `output_bytes`; the text is unchanged. The test for #1836 checks the new members and fails without the change.
+
+### Fixed
 - **A Batch Lookup That Ran Out of Its Share Is Asked Again With the Time the Others Left** (`crates/prod-code-mcp`, #2006): `code_definition` with `symbols` and `budget_ms: 12000` in a fresh sibling worktree answered the first of three Swift members with `did not finish within 3999 ms`, while the other two answered at once and most of the budget went unused. The first lookup in a checkout pays for the sync and the server's start, which the rest then share, and each symbol was held to an even share. A symbol that ran out of its share is now asked once more with what is left of the budget when the others have answered; a slow lookup still cannot spend the others' shares (#1168), and a batch still ends within its budget. Two tests pin it.
 
 ### Changed
