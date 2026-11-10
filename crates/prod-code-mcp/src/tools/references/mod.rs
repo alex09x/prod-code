@@ -25,6 +25,7 @@ pub(crate) mod lexical;
 mod locations;
 pub(crate) mod multi_target;
 pub(crate) mod render;
+mod scan_order;
 #[cfg(test)]
 mod tests;
 

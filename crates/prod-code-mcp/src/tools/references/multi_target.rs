@@ -83,18 +83,20 @@ pub(crate) async fn collect_multi_target_references(
     let is_unexported_go =
         language == "go" && name.chars().next().is_some_and(|c| c.is_ascii_lowercase());
     let decl_parent = declaration.parent();
-    let candidates = scan_order(
-        declaration,
-        source_files(workspace_root)
-            .filter(|path| engine_can_reference(crate::sync::engine_for_file(path), language))
-            .take(MAX_SCANNED_FILES),
-    );
     let declares_swift = declaration.extension().and_then(|e| e.to_str()) == Some("swift");
+    let sources = source_files(workspace_root)
+        .filter(|path| engine_can_reference(crate::sync::engine_for_file(path), language))
+        .take(MAX_SCANNED_FILES);
+    let expired_on_entry = tokio::time::Instant::now() >= deadline;
+    let Some(candidates) =
+        super::scan_order::candidates(declaration, declares_swift, expired_on_entry, sources)
+    else {
+        return multi_target_budget_note(checkout_use_note);
+    };
     for path in candidates {
         let is_declaration_file = path == declaration;
-        // A Swift declaring file is read even when the budget is gone: its uses are recorded
-        // from the text without asking the server (#1135), and a cold server's first answer can
-        // take the whole budget before the scan starts (#2008).
+        // A Swift declaring file is read with the budget gone: its uses come from the text
+        // (#1135), and a cold server can take the whole budget first (#2008).
         if tokio::time::Instant::now() >= deadline && !(is_declaration_file && declares_swift) {
             return multi_target_budget_note(checkout_use_note);
         }
@@ -201,13 +203,6 @@ pub(crate) async fn collect_multi_target_references(
         let is_swift = path.extension().and_then(|e| e.to_str()) == Some("swift")
             && declaration.extension().and_then(|e| e.to_str()) == Some("swift");
 
-        if is_swift && is_declaration_file && tokio::time::Instant::now() >= deadline {
-            if !non_shadowed.is_empty() {
-                seen_files.insert(norm_path);
-                record_file_uses(&uri_str, &non_shadowed, wanted_units, seen_locs, all_locs);
-            }
-            return multi_target_budget_note(checkout_use_note);
-        }
         for &(index, col, byte_off) in file_uses.iter().take(MAX_USES_ASKED_PER_FILE) {
             if tokio::time::Instant::now() >= deadline {
                 if is_swift && is_declaration_file && !non_shadowed.is_empty() {
@@ -386,27 +381,12 @@ pub(crate) async fn collect_multi_target_references(
             }
         }
     }
-    checkout_use_note
-}
-
-/// The files to scan, nearest first: the declaring file, then the files beside it, then the
-/// rest in their walk order. A common name (`present`, `update`) is written in many files, each
-/// asked within the budget, and in walk order the declaring file, where a `private` member's
-/// only uses are, could come after the budget ran out (#2008).
-pub(crate) fn scan_order(declaration: &Path, files: impl Iterator<Item = PathBuf>) -> Vec<PathBuf> {
-    let parent = declaration.parent();
-    let canonical =
-        |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let declared = canonical(declaration);
-    let mut files: Vec<PathBuf> = files.filter(|path| canonical(path) != declared).collect();
-    // A stable sort keeps the walk order within each group.
-    files.sort_by_key(|path| path.parent() != parent);
-    let mut ordered = Vec::with_capacity(files.len() + 1);
-    if declaration.is_file() {
-        ordered.push(declaration.to_path_buf());
+    // A scan that started with no time left read at most the declaring file: the answer is
+    // partial even when that file held no use.
+    if expired_on_entry {
+        return multi_target_budget_note(checkout_use_note);
     }
-    ordered.extend(files);
-    ordered
+    checkout_use_note
 }
 
 fn multi_target_budget_note(previous: Option<String>) -> Option<String> {
@@ -416,7 +396,3 @@ fn multi_target_budget_note(previous: Option<String>) -> Option<String> {
         None => note.to_string(),
     })
 }
-
-#[cfg(test)]
-#[path = "multi_target_order_tests.rs"]
-mod order_tests;

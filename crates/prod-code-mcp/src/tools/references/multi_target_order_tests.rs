@@ -50,3 +50,17 @@ fn the_declaring_file_is_not_scanned_twice() {
     let ordered = scan_order(&declaring, vec![spelled_otherwise].into_iter());
     assert_eq!(ordered, vec![declaring]);
 }
+
+/// A declaration outside the checkout's files (a dependency on disk, an excluded directory) is
+/// not put first: its own uses are not the checkout's references.
+#[test]
+fn a_declaration_that_is_not_a_checkout_file_is_not_scanned() {
+    let root = tempfile::tempdir().unwrap();
+    let dependency = tempfile::tempdir().unwrap();
+    let declaring = dependency.path().join("lib.rs");
+    std::fs::write(&declaring, "pub struct Widget;\nimpl Widget {}\n").unwrap();
+    let checkout_file = root.path().join("main.rs");
+    std::fs::write(&checkout_file, "use dep::Widget;\n").unwrap();
+    let ordered = scan_order(&declaring, vec![checkout_file.clone()].into_iter());
+    assert_eq!(ordered, vec![checkout_file]);
+}
