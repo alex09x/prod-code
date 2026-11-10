@@ -301,3 +301,98 @@ async fn expired_multi_target_deadline_returns_partial_guidance_without_querying
     assert!(note.contains("partial references"), "{note}");
     assert!(all_locs.is_empty());
 }
+
+/// A cold Swift server can take the whole budget on its first answer, so the scan starts with
+/// none left. The declaring file's own uses are still recorded from its text, as they are when
+/// there is time (#1135); before, the answer was "No references found" with a call two screens
+/// up in the same file (#2008).
+#[tokio::test]
+async fn an_expired_scan_still_records_the_uses_in_a_swift_declaring_file() {
+    use std::collections::HashSet;
+
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::write(
+        root.join("Package.swift"),
+        "// swift-tools-version:5.9\nimport PackageDescription\nlet package = Package(name: \"P\", targets: [.target(name: \"P\")])\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("Sources/P")).unwrap();
+    let declaration = root.join("Sources/P/Presentation.swift");
+    std::fs::write(
+        &declaration,
+        "enum Presentation {\n    static func scan() {\n        present(1)\n    }\n    private static func present(_ n: Int) {}\n}\n",
+    )
+    .unwrap();
+    let mut seen_locs = HashSet::new();
+    let mut seen_files = HashSet::new();
+    let mut all_locs = Vec::new();
+    let mut unindexed_callers = Vec::new();
+
+    let note = super::multi_target::collect_multi_target_references(
+        std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+        root,
+        &declaration,
+        5,
+        25,
+        "present",
+        false,
+        true,
+        &mut seen_locs,
+        &mut seen_files,
+        &mut all_locs,
+        &mut unindexed_callers,
+        tokio::time::Instant::now(),
+    )
+    .await
+    .expect("the expired scan still says its result is partial");
+    assert!(note.contains("partial references"), "{note}");
+    assert_eq!(all_locs.len(), 1, "{all_locs:?}");
+    assert_eq!(all_locs[0]["range"]["start"]["line"], 2, "{all_locs:?}");
+}
+
+/// A scan that starts with no time left says its answer is partial even when the Swift
+/// declaring file holds no use of the name besides the declaration.
+#[tokio::test]
+async fn an_expired_scan_with_no_use_in_the_declaring_file_is_still_partial() {
+    use std::collections::HashSet;
+
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::write(
+        root.join("Package.swift"),
+        "// swift-tools-version:5.9\nimport PackageDescription\nlet package = Package(name: \"P\", targets: [.target(name: \"P\")])\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("Sources/P")).unwrap();
+    let declaration = root.join("Sources/P/Lonely.swift");
+    std::fs::write(
+        &declaration,
+        "enum Lonely {\n    static func alone() {}\n}\n",
+    )
+    .unwrap();
+    let mut seen_locs = HashSet::new();
+    let mut seen_files = HashSet::new();
+    let mut all_locs = Vec::new();
+    let mut unindexed_callers = Vec::new();
+
+    let note = super::multi_target::collect_multi_target_references(
+        std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+        root,
+        &declaration,
+        2,
+        17,
+        "alone",
+        false,
+        true,
+        &mut seen_locs,
+        &mut seen_files,
+        &mut all_locs,
+        &mut unindexed_callers,
+        tokio::time::Instant::now(),
+    )
+    .await
+    .expect("an expired scan is partial");
+    assert!(note.contains("partial references"), "{note}");
+    assert!(all_locs.is_empty());
+}

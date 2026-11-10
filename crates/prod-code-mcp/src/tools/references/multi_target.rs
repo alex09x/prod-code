@@ -83,17 +83,26 @@ pub(crate) async fn collect_multi_target_references(
     let is_unexported_go =
         language == "go" && name.chars().next().is_some_and(|c| c.is_ascii_lowercase());
     let decl_parent = declaration.parent();
-    let candidates = source_files(workspace_root)
+    let declares_swift = declaration.extension().and_then(|e| e.to_str()) == Some("swift");
+    let sources = source_files(workspace_root)
         .filter(|path| engine_can_reference(crate::sync::engine_for_file(path), language))
         .take(MAX_SCANNED_FILES);
+    let expired_on_entry = tokio::time::Instant::now() >= deadline;
+    let Some(candidates) =
+        super::scan_order::candidates(declaration, declares_swift, expired_on_entry, sources)
+    else {
+        return multi_target_budget_note(checkout_use_note);
+    };
     for path in candidates {
-        if tokio::time::Instant::now() >= deadline {
+        let is_declaration_file = path == declaration;
+        // A Swift declaring file is read with the budget gone: its uses come from the text
+        // (#1135), and a cold server can take the whole budget first (#2008).
+        if tokio::time::Instant::now() >= deadline && !(is_declaration_file && declares_swift) {
             return multi_target_budget_note(checkout_use_note);
         }
         if is_unexported_go && path.parent() != decl_parent {
             continue;
         }
-        let is_declaration_file = path == declaration;
         let norm_path = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
         if seen_files.contains(&norm_path) && (!is_declaration_file || !initial_was_empty) {
             continue;
@@ -196,6 +205,10 @@ pub(crate) async fn collect_multi_target_references(
 
         for &(index, col, byte_off) in file_uses.iter().take(MAX_USES_ASKED_PER_FILE) {
             if tokio::time::Instant::now() >= deadline {
+                if is_swift && is_declaration_file && !non_shadowed.is_empty() {
+                    seen_files.insert(norm_path.clone());
+                    record_file_uses(&uri_str, &non_shadowed, wanted_units, seen_locs, all_locs);
+                }
                 return multi_target_budget_note(checkout_use_note);
             }
             asked += 1;
@@ -367,6 +380,11 @@ pub(crate) async fn collect_multi_target_references(
                 }
             }
         }
+    }
+    // A scan that started with no time left read at most the declaring file: the answer is
+    // partial even when that file held no use.
+    if expired_on_entry {
+        return multi_target_budget_note(checkout_use_note);
     }
     checkout_use_note
 }
