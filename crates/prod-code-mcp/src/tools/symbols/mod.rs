@@ -18,6 +18,7 @@ pub mod declared_at;
 mod dependencies;
 pub mod matching;
 pub mod nested_projects;
+mod nested_swift;
 mod reexport;
 mod relative;
 pub mod resolve;
