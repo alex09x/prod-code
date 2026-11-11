@@ -364,6 +364,11 @@ pub(crate) async fn unindexed_declarations(remote: SocketAddr, root: &Path, name
                     "in a file the analyzer does not load: no target includes it (for Rust, no \
                      `mod` chain from a crate root reaches it)"
                 }
+            } else if path.extension().is_some_and(|e| e == "swift") {
+                // sourcekit-lsp answers `workspace/symbol` from a build index only; an
+                // extension's members are not in a function body (#2014).
+                "which the analyzer sees but lists no workspace symbols for until the package \
+                 has a build index: ask by its position or pass its file as `path`"
             } else {
                 "which the analyzer sees but its index does not list (an item inside a function \
                  body is not indexed): ask by its position"

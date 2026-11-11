@@ -195,6 +195,17 @@ pub(crate) async fn symbol_search_across_projects(
         }
     }
     if named(&hits) {
+        // The root's match does not stand for a Swift package nested in it, whose server has
+        // no index to answer `workspace/symbol` from (#2014).
+        let swift = super::nested_swift::nested_swift_declarations(
+            remote,
+            root,
+            name,
+            qualifier_word,
+            deadline,
+        )
+        .await;
+        extend_unique(&mut hits, swift);
         return Ok(hits);
     }
     // Prefix or substring matches in the root still leave an exact declaration in a nested
