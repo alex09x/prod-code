@@ -57,3 +57,53 @@ pub const SYSTEM_SOURCE_ROOTS: [&str; 14] = [
     "/System/Library/Frameworks",
     "/opt/conda",
 ];
+
+/// Whether `path` is written like a source location of a node: under a system location, or
+/// with the directories of a home location in it (`…/.cargo/registry/…`; which home is the
+/// node's is not known here), or in a Go module cache (`…/pkg/mod/…`). The node decides what
+/// it serves; this tells a dependency's source from another directory of the machine that
+/// asks, such as a second checkout.
+pub fn names_source_location(path: &std::path::Path) -> bool {
+    if SYSTEM_SOURCE_ROOTS
+        .iter()
+        .any(|root| path.starts_with(root))
+    {
+        return true;
+    }
+    let parts: Vec<&std::ffi::OsStr> = path.iter().collect();
+    HOME_SOURCE_ROOTS
+        .iter()
+        .copied()
+        .chain(["pkg/mod"])
+        .any(|relative| {
+            let wanted: Vec<&std::ffi::OsStr> = std::path::Path::new(relative).iter().collect();
+            parts.windows(wanted.len()).any(|window| window == wanted)
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::names_source_location;
+    use std::path::Path;
+
+    #[test]
+    fn a_dependency_cache_is_told_from_another_directory() {
+        for source in [
+            "/home/build/.cargo/registry/src/index.crates.io-1/demo-1.0.0/src",
+            "/Users/build/.rustup/toolchains/stable/lib/rustlib/src/rust/library/core",
+            "/home/build/go/pkg/mod/example.com/demo@v1.0.0",
+            "/srv/gopath/pkg/mod/example.com/demo@v1.0.0",
+            "/usr/include/stdio.h",
+        ] {
+            assert!(names_source_location(Path::new(source)), "{source}");
+        }
+        for other in [
+            "/home/build/checkouts/second/src/lib.rs",
+            "/home/build/.cargo-notes/registry.txt",
+            "/usr/includes/stdio.h",
+            "/tmp/pkg/models",
+        ] {
+            assert!(!names_source_location(Path::new(other)), "{other}");
+        }
+    }
+}

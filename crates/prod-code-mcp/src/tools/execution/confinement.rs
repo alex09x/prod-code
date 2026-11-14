@@ -67,14 +67,18 @@ pub(super) fn validate_workspace_paths(
 /// registry file that `code_definition` returned (#1955), and `code_grep` searches a directory
 /// of it (#2021). The node reads it, and refuses what is not a dependency cache or toolchain
 /// source; the checkout's confinement is for the paths a call may change or run in. A path
-/// with `..` segments is still checked.
+/// with `..` segments is still checked. A search is passed on only for a path written as such
+/// a source: another checkout of this machine stays outside the selected workspace.
 fn reads_external_source(root: &Path, tool_name: &str, raw: &str) -> bool {
-    matches!(tool_name, "code_source" | "code_grep")
-        && Path::new(raw).is_absolute()
-        && !Path::new(raw)
-            .components()
-            .any(|part| part == Component::ParentDir)
-        && crate::remote_fs::is_external(root, raw)
+    let path = Path::new(raw);
+    let external = path.is_absolute()
+        && !path.components().any(|part| part == Component::ParentDir)
+        && crate::remote_fs::is_external(root, raw);
+    match tool_name {
+        "code_source" => external,
+        "code_grep" => external && prod_code_protocol::source_roots::names_source_location(path),
+        _ => false,
+    }
 }
 
 fn validate_single_workspace_path(root: &Path, raw: &str) -> Result<()> {
@@ -236,6 +240,14 @@ mod workspace_confinement_regressions {
         });
         validate_workspace_paths(&root, "code_grep", &directory, true)
             .expect("a search of an external dependency directory reaches the node's own check");
+        // A directory that is no dependency's, such as another checkout, is not searched.
+        let elsewhere =
+            serde_json::json!({ "path": "/home/someone/second-checkout/src", "pattern": "spawn" });
+        let err = validate_workspace_paths(&root, "code_grep", &elsewhere, true).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("outside the selected workspace"),
+            "{err:#}"
+        );
 
         for tool in ["code_outline", "code_exec", "code_test"] {
             let key = if tool == "code_exec" { "cwd" } else { "path" };

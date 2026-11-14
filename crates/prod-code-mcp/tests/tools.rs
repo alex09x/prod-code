@@ -6141,9 +6141,18 @@ async fn code_grep_rejects_paths_outside_the_workspace() {
         .expect("temporary directory has a name")
         .to_string_lossy();
     let traversal = format!("../{outside_dir_name}/secret.txt");
-    let remote = mock_gateway(Script::default()).await;
+    let outside = outside_file.to_string_lossy().into_owned();
 
-    for path in [traversal, outside_file.to_string_lossy().into_owned()] {
+    // A path that leaves the workspace through `..` is refused here: a node that would run
+    // the search (exit 0) is never asked. An absolute path outside the workspace is the
+    // node's to judge (#2021), and its guard refuses it: 65 for a path outside its source
+    // locations, 64 for one it does not have.
+    for (path, node_exit) in [(traversal, 0), (outside.clone(), 65), (outside, 64)] {
+        let remote = mock_gateway(Script {
+            exec_exit: Some(node_exit),
+            ..Script::default()
+        })
+        .await;
         let error = execute_tool(
             remote,
             &ws.root(),
