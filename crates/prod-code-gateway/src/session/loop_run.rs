@@ -163,6 +163,14 @@ pub async fn run_session_loop(
                         {
                             continue;
                         }
+                        if !session_moves(meta.redirects, reason.as_deref()) {
+                            tracing::debug!(
+                                session_id = meta.session_id,
+                                target = %target_addr,
+                                "session stays: its client follows no redirect and would reconnect here"
+                            );
+                            continue;
+                        }
                         tracing::info!(
                             session_id = meta.session_id,
                             target = %target_addr,
@@ -249,6 +257,15 @@ fn workspace_model_change_applies(
 ) -> bool {
     reason == Some(prod_code_protocol::WORKSPACE_MODEL_CHANGED_REASON)
         && accounted.has_stale_manifests()
+}
+
+/// Whether a session closes when its workspace is told to move. One whose client follows no
+/// redirect (`redirects` false: an editor bridge without server-authenticated TLS) can only
+/// reconnect to the node it knows, this one. A node short of memory closed such a session at
+/// every sweep, once a minute, and got it straight back: 13 times in one editor session
+/// (#2018). It stays through an evacuation; any other move still closes it.
+fn session_moves(redirects: bool, reason: Option<&str>) -> bool {
+    redirects || reason != Some(crate::janitor_task::EVACUATION_REASON)
 }
 
 #[cfg(test)]

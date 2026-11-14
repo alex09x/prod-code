@@ -26,6 +26,7 @@ pub mod snapshot;
 mod tests;
 
 pub use caps::EditorCaps;
+pub use engine::EditorDiagnosticsPass;
 pub use extensions::InvalidExtensionParams;
 pub use lines::Lines;
 pub use snapshot::EDITOR_METHODS;

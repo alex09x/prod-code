@@ -109,6 +109,7 @@ impl Fixture {
             editor: false,
             redirects: false,
             edits: Arc::default(),
+            cancels: Arc::default(),
         });
         let (tx, rx) = rapidfire::mpsc::bounded(32);
         Session {

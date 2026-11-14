@@ -18,6 +18,9 @@ mod tests;
 /// long `--idle-evict-secs` lets it stay otherwise (#396).
 pub(crate) const PRESSURE_EVICT_IDLE: Duration = Duration::from_secs(300);
 
+/// Why a session is told to move when the node it is on is short of memory.
+pub(crate) const EVACUATION_REASON: &str = "evacuating node under memory pressure";
+
 /// After how long idle engines are unloaded: `--idle-evict-secs` (0 keeps them), cut to
 /// [`PRESSURE_EVICT_IDLE`] while the host is short of memory, even when eviction is off.
 pub(crate) fn evict_after(idle_evict_secs: u64, memory_short: bool) -> Option<Duration> {
@@ -86,6 +89,10 @@ async fn janitor_loop(
     let mut ticker = tokio::time::interval(period);
     ticker.tick().await;
     let mut was_short: Option<String> = None;
+    // The workspaces already asked to move while the node has been short this time. Each is
+    // asked once: asked every sweep, the first one whose sessions stayed kept the others,
+    // whose sessions could have moved, from ever being asked (#2018).
+    let mut asked_to_move: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     let mut tick_counter: u64 = 0;
     loop {
         ticker.tick().await;
@@ -158,6 +165,9 @@ async fn janitor_loop(
             _ => {}
         }
         was_short = short;
+        if was_short.is_none() {
+            asked_to_move.clear();
+        }
         if was_short.is_some() {
             let view = state.cluster_view().await;
             let own_addr = state.advertise.read().await.clone();
@@ -166,7 +176,7 @@ async fn janitor_loop(
                 .loaded_workspaces_for_rebalance()
                 .await;
             for (ws, active) in ws_summary {
-                if active > 0 {
+                if active > 0 && !asked_to_move.contains(&ws.root) {
                     let ws_name = ws
                         .root
                         .file_name()
@@ -188,9 +198,10 @@ async fn janitor_loop(
                         if target != own_addr && target != view.this_node {
                             let notified = ws.trigger_rebalance(
                                 target.clone(),
-                                Some("evacuating node under memory pressure".to_string()),
+                                Some(EVACUATION_REASON.to_string()),
                             );
                             if notified > 0 {
+                                asked_to_move.insert(ws.root.clone());
                                 tracing::info!(
                                     workspace = %ws.root.display(),
                                     target = %target,

@@ -13,6 +13,7 @@ use crate::*;
 #[path = "bounded_query_control.rs"]
 mod control;
 use control::CancelOnDrop;
+pub(crate) use control::RequestCancelled;
 
 pub(crate) const SEMANTIC_QUERY_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -80,9 +81,68 @@ where
     T: Send + 'static,
     F: Fn(&prod_code_engine_rust::RustEngineSnapshot) -> anyhow::Result<T> + Clone + Send + 'static,
 {
+    execute_query(
+        engine_lock,
+        session_id,
+        file_path,
+        is_single_owner,
+        timeout,
+        None,
+        query_fn,
+    )
+    .await
+}
+
+/// [`execute_bounded_query`] for a request its client may cancel (`$/cancelRequest`): once
+/// `cancelled` is set, a query that has not begun, or that a write to the database sends back
+/// to begin again, ends with [`RequestCancelled`] instead of being computed. An editor cancels
+/// what it no longer shows after every change; computing those kept the answers it does want
+/// waiting (#2018). A query already inside the analyzer runs to its end.
+pub(crate) async fn execute_cancellable_query<T, F>(
+    engine_lock: &Arc<tokio::sync::Mutex<prod_code_engine_rust::RustEngine>>,
+    session_id: u64,
+    file_path: &Path,
+    is_single_owner: bool,
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    query_fn: F,
+) -> anyhow::Result<T>
+where
+    T: Send + 'static,
+    F: Fn(&prod_code_engine_rust::RustEngineSnapshot) -> anyhow::Result<T> + Clone + Send + 'static,
+{
+    execute_query(
+        engine_lock,
+        session_id,
+        file_path,
+        is_single_owner,
+        SEMANTIC_QUERY_TIMEOUT,
+        Some(cancelled),
+        query_fn,
+    )
+    .await
+}
+
+async fn execute_query<T, F>(
+    engine_lock: &Arc<tokio::sync::Mutex<prod_code_engine_rust::RustEngine>>,
+    session_id: u64,
+    file_path: &Path,
+    is_single_owner: bool,
+    timeout: Duration,
+    cancelled: Option<Arc<std::sync::atomic::AtomicBool>>,
+    query_fn: F,
+) -> anyhow::Result<T>
+where
+    T: Send + 'static,
+    F: Fn(&prod_code_engine_rust::RustEngineSnapshot) -> anyhow::Result<T> + Clone + Send + 'static,
+{
     let timeout = timeout.min(SEMANTIC_QUERY_TIMEOUT);
     let deadline = Instant::now() + timeout;
     let timed_out = || anyhow::anyhow!("query timed out after {}", timeout_label(timeout));
+    let is_cancelled = move || {
+        cancelled
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+    };
     let permit = tokio::time::timeout(timeout, SEMANTIC_QUERY_SEMAPHORE.clone().acquire_owned())
         .await
         .map_err(|_| anyhow::anyhow!("query timed out waiting for available execution slot"))?
@@ -91,6 +151,9 @@ where
     let mut retries = 0;
 
     loop {
+        if is_cancelled() {
+            return Err(anyhow::Error::new(RequestCancelled));
+        }
         if Instant::now() >= deadline {
             return Err(timed_out());
         }
@@ -107,6 +170,9 @@ where
                 timeout_label(timeout)
             )
         })?;
+        if is_cancelled() {
+            return Err(anyhow::Error::new(RequestCancelled));
+        }
         let mut cancellation = CancelOnDrop::new(engine_lock);
         let control = Arc::clone(&cancellation.control);
         let path = file_path.to_path_buf();

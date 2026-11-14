@@ -58,6 +58,7 @@ async fn an_unloaded_workspace_disconnects_its_existing_session_before_the_next_
         editor: false,
         redirects: false,
         edits: Arc::new(Mutex::new(HashMap::new())),
+        cancels: Arc::default(),
     });
     let (raw_out, mut output_rx) = rapidfire::mpsc::bounded(4);
     let out = SharedOutputSender::new(raw_out, Duration::from_secs(1));
@@ -121,6 +122,7 @@ async fn post_handshake_sync_probe_disconnects_cleanly_instead_of_hanging_silent
         editor: false,
         redirects: false,
         edits: Arc::new(Mutex::new(HashMap::new())),
+        cancels: Arc::default(),
     });
     let (raw_out, mut output_rx) = rapidfire::mpsc::bounded(4);
     let out = SharedOutputSender::new(raw_out, Duration::from_secs(1));

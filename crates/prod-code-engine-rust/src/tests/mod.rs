@@ -17,6 +17,7 @@ mod dependency_cases;
 mod diagnostics;
 mod editor_caps;
 mod editor_diagnostic_docs;
+mod editor_diagnostics_pass;
 mod engine;
 mod engine_path_attributes;
 mod extract_function;
