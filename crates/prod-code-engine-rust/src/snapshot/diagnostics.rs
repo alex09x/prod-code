@@ -31,9 +31,22 @@ impl RustEngineSnapshot {
         let text = self.analysis()?.file_text(file_id)?;
         let config = DiagnosticsConfig::test_sample();
         let started = std::time::Instant::now();
-        let diagnostics =
-            self.analysis()?
-                .full_diagnostics(&config, AssistResolveStrategy::None, file_id)?;
+        let (diagnostics, failure) = {
+            // The guard is let go before the passes below take their own: it is not re-entrant.
+            let analysis = self.analysis()?;
+            super::analyzer_failure::or_syntax_only(
+                || analysis.full_diagnostics(&config, AssistResolveStrategy::None, file_id),
+                || analysis.syntax_diagnostics(&config, file_id),
+            )?
+        };
+        if let Some(why) = &failure {
+            tracing::warn!(
+                file = %path.display(),
+                engine = self.label,
+                why,
+                "the analyzer panicked in a diagnostics pass; syntax diagnostics only"
+            );
+        }
         let analyzer = started.elapsed();
         let unused_imports = self.unused_imports(file_id, &text);
         let imports = started.elapsed() - analyzer;
@@ -53,7 +66,7 @@ impl RustEngineSnapshot {
             unresolved_paths_ms = (started.elapsed() - analyzer - imports).as_millis() as u64,
             "diagnostics pass by part"
         );
-        Ok(diagnostics
+        let mut found: Vec<FileDiagnostic> = diagnostics
             .into_iter()
             .filter(|d| d.range.file_id == file_id)
             // Without the sysroot, a standard name resolves to nothing by design (#1447).
@@ -83,7 +96,12 @@ impl RustEngineSnapshot {
             })
             .chain(unused_imports)
             .chain(unresolved)
-            .collect())
+            .collect();
+        // What the analyzer could not check is said first, where an editor shows it (#2025).
+        if let Some(why) = &failure {
+            found.insert(0, super::analyzer_failure::file_notice(why, &text));
+        }
+        Ok(found)
     }
 
     /// Paths in `file_id` that name nothing (#181): rustc's "cannot find type" (E0412) and
@@ -243,20 +261,41 @@ impl RustEngineSnapshot {
             let Ok(analysis) = self.analysis() else {
                 return Vec::new();
             };
-            let Ok(assists) = analysis.assists_with_fixes(
-                &assist_config,
-                &diagnostics_config,
-                AssistResolveStrategy::None,
-                range,
-            ) else {
-                continue;
-            };
+            // The analyzer computes every assist of the item to answer, and a panic in one
+            // nobody asked for (`merge_imports`, building the merged tree) used to end the
+            // whole pass: the item is skipped and says so, the rest of the file is checked.
+            let asked = super::analyzer_failure::caught(|| {
+                analysis.assists_with_fixes(
+                    &assist_config,
+                    &diagnostics_config,
+                    AssistResolveStrategy::None,
+                    range,
+                )
+            });
             drop(analysis);
+            let (line_no, col) = offset_to_line_col(text, item_range.start());
+            let (end_line, end_col) = offset_to_line_col(text, item_range.end());
+            let assists = match asked {
+                Ok(Ok(assists)) => assists,
+                Ok(Err(_)) => continue,
+                Err(why) => {
+                    tracing::warn!(
+                        engine = self.label,
+                        line = line_no,
+                        why,
+                        "the analyzer panicked on the assists of a `use` item; item skipped"
+                    );
+                    out.push(super::analyzer_failure::use_item_notice(
+                        &why,
+                        (line_no, col),
+                        (end_line, end_col),
+                    ));
+                    continue;
+                }
+            };
             if !assists.iter().any(|a| a.id.0 == "remove_unused_imports") {
                 continue;
             }
-            let (line_no, col) = offset_to_line_col(text, item_range.start());
-            let (end_line, end_col) = offset_to_line_col(text, item_range.end());
             out.push(FileDiagnostic {
                 code: "unused_imports".to_string(),
                 message: "unused import".to_string(),
