@@ -23,19 +23,27 @@ const NOT_ON_NODE: i32 = 64;
 /// The guard's exit code for a path outside every source location.
 const NOT_A_SOURCE_LOCATION: i32 = 65;
 
-/// Whether `search_path`, which the checkout does not have, may name something on the node: an
-/// absolute path outside the workspace. A missing path inside the workspace is a mistyped one.
+/// Whether `search_path` names something the node has rather than the checkout: an absolute
+/// path outside the workspace, whether or not this machine has a directory of that path too
+/// (`/usr/include` here is not what the node builds with). A path written inside the workspace
+/// is the workspace's, missing or linked elsewhere, and so is another spelling of a path
+/// inside it (`/tmp/…` for `/private/tmp/…`).
 pub(super) fn names_node_path(root: &Path, search_path: &Path) -> bool {
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    search_path.is_absolute()
-        && !search_path.starts_with(root)
-        && !search_path.starts_with(canonical_root)
+    if !search_path.is_absolute()
+        || search_path.starts_with(root)
+        || search_path.starts_with(&canonical_root)
+    {
+        return false;
+    }
+    !std::fs::canonicalize(search_path).is_ok_and(|resolved| resolved.starts_with(&canonical_root))
 }
 
 /// What the node runs before ripgrep. The path is resolved there, symbolic links included, and
-/// searched only when it lies in a source location the gateway also reads files from, so a
-/// search reaches what `code_source` reaches and nothing else on the host. The path and the
-/// ripgrep arguments are positional parameters: none of them is part of the script's text.
+/// searched only when it lies in a source location the gateway also reads files from (its
+/// `GOROOT` and the module cache and sources of its `GOPATH` among them), so a search reaches
+/// what `code_source` reaches and nothing else on the host. The path and the ripgrep arguments
+/// are positional parameters: none of them is part of the script's text.
 pub(super) fn guard_script() -> String {
     let mut roots = String::new();
     for relative in HOME_SOURCE_ROOTS {
@@ -45,11 +53,19 @@ pub(super) fn guard_script() -> String {
         roots.push_str(&format!(" \"{root}\""));
     }
     format!(
-        "resolved=$(realpath -- \"$1\" 2>/dev/null) || exit {NOT_ON_NODE}\n\
+        "set -f\n\
+         resolved=$(realpath -- \"$1\" 2>/dev/null) || exit {NOT_ON_NODE}\n\
          [ -e \"$resolved\" ] || exit {NOT_ON_NODE}\n\
          shift\n\
+         within() {{ case \"$resolved\" in \"$1\"|\"$1\"/*) return 0 ;; esac; return 1; }}\n\
          for root in{roots}; do\n\
-         case \"$resolved\" in \"$root\"|\"$root\"/*) exec rg \"$@\" \"$resolved\" ;; esac\n\
+         within \"$root\" && exec rg \"$@\" \"$resolved\"\n\
+         done\n\
+         [ -n \"${{GOROOT:-}}\" ] && within \"$GOROOT\" && exec rg \"$@\" \"$resolved\"\n\
+         IFS=:\n\
+         for go in ${{GOPATH:-}}; do\n\
+         [ -n \"$go\" ] || continue\n\
+         if within \"$go/pkg/mod\" || within \"$go/src\"; then exec rg \"$@\" \"$resolved\"; fi\n\
          done\n\
          exit {NOT_A_SOURCE_LOCATION}\n"
     )
@@ -112,6 +128,12 @@ pub(super) async fn grep_node_source(
             context,
             "remote-ripgrep",
         )),
+        // A directory of this machine outside the workspace is not searched: the node, which
+        // has the workspace's copy and the sources it builds with, has no such path.
+        Some(NOT_ON_NODE) if search_path.exists() => bail!(
+            "search path is outside the workspace: {target} (the build node that serves this \
+             checkout has no such path)"
+        ),
         Some(NOT_ON_NODE) => bail!(
             "search path does not exist: {target} (neither in this checkout nor on the build \
              node that serves it)"

@@ -64,21 +64,24 @@ pub async fn run_grep(
         Some(p) => root.join(p),
         None => root.to_path_buf(),
     };
+    // An absolute path outside the workspace names a dependency's, a toolchain's or an SDK's
+    // source, and those are the node's: its registry cache is not in the checkout, and a
+    // directory of the same path on this machine (`/usr/include`) is not what it builds with
+    // (#2021). Asked before the path is looked for here, as `code_source` asks.
+    if let Some(addr) = remote
+        && super::node_source::names_node_path(root, &search_path)
+    {
+        return super::node_source::grep_node_source(
+            addr,
+            root,
+            &search_path,
+            opts,
+            max_results,
+            context,
+        )
+        .await;
+    }
     if !search_path.exists() {
-        // A dependency's source in the node's registry cache is not in the checkout (#2021).
-        if let Some(addr) = remote
-            && super::node_source::names_node_path(root, &search_path)
-        {
-            return super::node_source::grep_node_source(
-                addr,
-                root,
-                &search_path,
-                opts,
-                max_results,
-                context,
-            )
-            .await;
-        }
         let hint = crate::remote_fs::suggest_nearest_path(root, &search_path)
             .map(|h| format!(" (did you mean `{h}`?)"))
             .unwrap_or_default();
