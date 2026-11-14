@@ -264,8 +264,11 @@ mod tests {
     async fn test_run_tool_times_out_with_actionable_error() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        // A gateway that accepts and then says nothing. The connection is held for the whole
+        // wait: dropped at once (`let _ = …`), it was reset under the client, which then
+        // sometimes reported the reset before its own timeout.
         tokio::spawn(async move {
-            let _ = listener.accept().await;
+            let _silent = listener.accept().await;
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         });
 
