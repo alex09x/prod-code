@@ -17,6 +17,7 @@ pub mod messages;
 pub mod negotiation;
 pub mod path;
 pub mod readiness;
+pub mod source_roots;
 pub mod tls;
 pub mod transport;
 

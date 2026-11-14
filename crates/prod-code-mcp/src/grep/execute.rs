@@ -64,6 +64,23 @@ pub async fn run_grep(
         Some(p) => root.join(p),
         None => root.to_path_buf(),
     };
+    // An absolute path outside the workspace names a dependency's, a toolchain's or an SDK's
+    // source, and those are the node's: its registry cache is not in the checkout, and a
+    // directory of the same path on this machine (`/usr/include`) is not what it builds with
+    // (#2021). Asked before the path is looked for here, as `code_source` asks.
+    if let Some(addr) = remote
+        && super::node_source::names_node_path(root, &search_path)
+    {
+        return super::node_source::grep_node_source(
+            addr,
+            root,
+            &search_path,
+            opts,
+            max_results,
+            context,
+        )
+        .await;
+    }
     if !search_path.exists() {
         let hint = crate::remote_fs::suggest_nearest_path(root, &search_path)
             .map(|h| format!(" (did you mean `{h}`?)"))
@@ -123,7 +140,7 @@ pub async fn run_grep(
     .context("grep worker task panicked")?
 }
 
-fn build_rg_args(rel_target: &str, opts: &GrepOptions) -> Vec<String> {
+pub(super) fn build_rg_args(rel_target: &str, opts: &GrepOptions) -> Vec<String> {
     let mut cmd = vec![
         "--json".to_string(),
         "--line-number".to_string(),
@@ -280,7 +297,7 @@ fn try_local_rg(
     )))
 }
 
-fn parse_rg_json_output(
+pub(super) fn parse_rg_json_output(
     root: &Path,
     stdout: &[u8],
     opts: &GrepOptions,
