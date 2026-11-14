@@ -13,6 +13,20 @@ use crate::workspace::shared::SharedWorkspace;
 use std::sync::Arc;
 
 #[test]
+fn an_evacuation_closes_only_the_sessions_whose_clients_can_follow_it() {
+    let evacuation = Some(crate::janitor_task::EVACUATION_REASON);
+    // A client that follows redirects is sent to the roomier node.
+    assert!(session_moves(true, evacuation));
+    // One that does not would come straight back: it stays.
+    assert!(!session_moves(false, evacuation));
+    // Any other move closes both, with the address to reconnect to for the second (#1495).
+    for reason in [Some("rebalance requested by an operator"), None] {
+        assert!(session_moves(true, reason));
+        assert!(session_moves(false, reason));
+    }
+}
+
+#[test]
 fn shared_worktree_invalidation_only_retires_stale_workspace_views() {
     let temp = tempfile::tempdir().unwrap();
     let base_root = temp.path().join("base");

@@ -11,6 +11,19 @@
 use super::*;
 use prod_code_engine_rust::snapshot::SnapshotCancellation;
 
+/// The client cancelled the request before it was computed (`$/cancelRequest`). Its text
+/// avoids the word a Salsa cancellation is recognised by: that one is retried, this one ends.
+#[derive(Debug)]
+pub(crate) struct RequestCancelled;
+
+impl std::fmt::Display for RequestCancelled {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("the client withdrew the request")
+    }
+}
+
+impl std::error::Error for RequestCancelled {}
+
 #[derive(Default)]
 pub(super) struct QueryControl {
     state: std::sync::Mutex<(bool, Option<SnapshotCancellation>)>,

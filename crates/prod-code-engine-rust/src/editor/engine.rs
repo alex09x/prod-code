@@ -36,8 +36,50 @@ impl RustEngine {
     /// The diagnostics of `path` as LSP `Diagnostic`s, for `textDocument/publishDiagnostics`:
     /// what [`RustEngine::diagnostics`] reports, placed in UTF-16 columns.
     pub fn editor_diagnostics(&self, path: &Path) -> Result<Value> {
+        self.editor_diagnostics_pass(path).run()
+    }
+
+    /// The work of [`Self::editor_diagnostics`] with its snapshots already taken. Making it is
+    /// quick and needs the engine; running it does not, so a caller behind a lock makes the
+    /// pass under the lock and runs it after letting go. A pass run under the lock held every
+    /// other request of the workspace, an edit included, for as long as a large file took to
+    /// check. A write to the database cancels a running pass, which then ends with an error
+    /// [`crate::is_salsa_cancelled`] recognises.
+    pub fn editor_diagnostics_pass(&self, path: &Path) -> EditorDiagnosticsPass {
+        let mut inference = self.priming_job(&[path]);
+        // The pass itself computes the file's diagnostics; the job only infers.
+        inference.files.clear();
+        EditorDiagnosticsPass {
+            inference,
+            snapshot: self.snapshot_for_path(path),
+            path: path.to_path_buf(),
+        }
+    }
+}
+
+/// See [`RustEngine::editor_diagnostics_pass`].
+pub struct EditorDiagnosticsPass {
+    inference: crate::priming::PrimingJob,
+    snapshot: crate::RustEngineSnapshot,
+    path: std::path::PathBuf,
+}
+
+impl EditorDiagnosticsPass {
+    /// Infers the file's functions on several threads, then computes its diagnostics.
+    pub fn run(self) -> Result<Value> {
+        // One function gains nothing from a thread of its own.
+        if self.inference.threads() >= 2 {
+            self.inference.run();
+        }
+        self.snapshot.editor_diagnostics(&self.path)
+    }
+}
+
+impl crate::RustEngineSnapshot {
+    /// The diagnostics of `path` in this snapshot as LSP `Diagnostic`s, in UTF-16 columns.
+    pub fn editor_diagnostics(&self, path: &Path) -> Result<Value> {
         let diagnostics = self.diagnostics(path)?;
-        let snapshot = self.snapshot();
+        let snapshot = self;
         let file_id = snapshot
             .file_id_for_path(path)
             .with_context(|| format!("File not found in VFS: {}", path.display()))?;

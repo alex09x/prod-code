@@ -99,7 +99,24 @@ pub async fn handle_rust_lsp(
         }
         Some(m) if prod_code_engine_rust::editor::EDITOR_METHODS.contains(&m) => {
             let params = val.get("params").cloned().unwrap_or_default();
-            lsp_editor_request(out_tx, translator, view, id, m, params, engine_lock);
+            lsp_editor_request(
+                out_tx,
+                translator,
+                view,
+                &meta.cancels,
+                id,
+                m,
+                params,
+                engine_lock,
+            );
+            return Some(Flow::Next);
+        }
+        // An editor cancels what it no longer shows after every change and cursor move; the
+        // request is then not computed (#2018).
+        Some("$/cancelRequest") => {
+            if let Some(cancelled) = val.pointer("/params/id") {
+                meta.cancels.cancel(cancelled);
+            }
             return Some(Flow::Next);
         }
         Some("textDocument/didOpen") => {

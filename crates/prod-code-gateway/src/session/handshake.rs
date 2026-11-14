@@ -251,6 +251,7 @@ pub async fn handle_handshake(
         editor: req.purpose.as_deref() == Some(prod_code_protocol::PURPOSE_EDITOR),
         redirects: req.capabilities.as_ref().is_some_and(|c| c.redirects),
         edits: Arc::default(),
+        cancels: Arc::default(),
     });
 
     let session_res =

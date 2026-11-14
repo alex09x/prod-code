@@ -184,6 +184,55 @@ async fn evacuation_moves_on_from_a_workspace_nobody_follows_and_never_targets_t
     assert!(redirects.try_recv().is_err());
 }
 
+/// Asked every sweep, the first workspace took every evacuation: its sessions were closed
+/// once a minute and came back, and the second was never asked (#2018).
+#[tokio::test]
+async fn a_node_short_of_memory_asks_each_workspace_to_move_once() {
+    crate::test_cache_support::isolated!();
+    let temp = tempfile::tempdir().unwrap();
+    let state = state_with_storage(temp.path());
+    *state.advertise.write().await = "127.0.0.1:9400".into();
+    add_peer(&state, "127.0.0.2:9400").await;
+    let first = load_active(&state, "first").await;
+    let second = load_active(&state, "second").await;
+    let mut first_moves = first.rebalance_tx.subscribe();
+    let mut second_moves = second.rebalance_tx.subscribe();
+    let state = Arc::new(state);
+    let probes = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&probes);
+    let task = tokio::spawn(janitor_with_probe(
+        Arc::clone(&state),
+        0,
+        0,
+        0,
+        0,
+        Duration::from_millis(5),
+        move |path| {
+            counted.fetch_add(1, Ordering::Relaxed);
+            SHORT(path)
+        },
+    ));
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while probes.load(Ordering::Relaxed) < 12 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+
+    let asked = |moves: &mut tokio::sync::broadcast::Receiver<(String, Option<String>)>| {
+        let mut count = 0;
+        while moves.try_recv().is_ok() {
+            count += 1;
+        }
+        count
+    };
+    assert_eq!(asked(&mut first_moves), 1);
+    assert_eq!(asked(&mut second_moves), 1);
+}
+
 #[tokio::test]
 async fn the_toolchain_inventory_is_collected_again_on_every_sixtieth_sweep() {
     crate::test_cache_support::isolated!();

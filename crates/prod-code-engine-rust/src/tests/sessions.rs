@@ -13,6 +13,50 @@
 use super::create_test_fixture;
 use crate::engine::RustEngine;
 
+/// Two sessions that opened a file as it is on disk have one view of it. Switching between
+/// them wrote the same text again, and every write cancels the queries in flight (#2018).
+#[test]
+fn switching_between_sessions_with_the_same_text_writes_nothing() {
+    let (temp, lib_path) = create_test_fixture();
+    let mut engine = RustEngine::load(temp.path()).expect("Must load fixture");
+    let base = std::fs::read_to_string(&lib_path).unwrap();
+    engine
+        .set_session_overlay(1, &lib_path, Some(base.clone()))
+        .unwrap();
+    engine
+        .set_session_overlay(2, &lib_path, Some(base.clone()))
+        .unwrap();
+    engine.activate_session(1).unwrap();
+    let writes = engine.changes;
+    // To the other session, back, to one with no buffer at all, and to the second again.
+    for session in [2, 1, 3, 2] {
+        engine.activate_session(session).unwrap();
+    }
+    assert_eq!(engine.changes, writes);
+
+    // A buffer that differs from the file is still what its session sees, and only it.
+    engine
+        .set_session_overlay(
+            2,
+            &lib_path,
+            Some(format!("{base}pub const EDITED_IN_TWO: u8 = 1;\n")),
+        )
+        .unwrap();
+    let names = |engine: &RustEngine| -> Vec<String> {
+        engine
+            .document_symbols(&lib_path)
+            .unwrap()
+            .into_iter()
+            .map(|symbol| symbol.name)
+            .collect()
+    };
+    engine.activate_session(1).unwrap();
+    assert!(!names(&engine).contains(&"EDITED_IN_TWO".to_string()));
+    engine.activate_session(2).unwrap();
+    assert!(names(&engine).contains(&"EDITED_IN_TWO".to_string()));
+    assert!(engine.changes > writes);
+}
+
 #[test]
 fn test_session_overlays_do_not_bleed_between_sessions() {
     let (temp, lib_path) = create_test_fixture();

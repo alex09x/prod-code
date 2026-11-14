@@ -137,7 +137,7 @@ impl RustEngine {
             .collect();
         for norm in foreign {
             let base = self.overlays.base.get(&norm).cloned().flatten();
-            self.apply_text(&norm, base)?;
+            self.switch_text(&norm, base)?;
             self.overlays.owner.remove(&norm);
             switched += 1;
         }
@@ -146,11 +146,24 @@ impl RustEngine {
             if self.overlays.owner.get(&norm) == Some(&session) {
                 continue;
             }
-            self.apply_text(&norm, text)?;
+            self.switch_text(&norm, text)?;
             self.overlays.owner.insert(norm, session);
             switched += 1;
         }
         Ok(switched)
+    }
+
+    /// Makes the database hold `text` for `norm`. When it already does, nothing is written: two
+    /// sessions whose buffers are the file as it is on disk have the same view, and a write
+    /// to switch between them would cancel every query in flight, of both, for nothing. With
+    /// editor requests answered side by side, that is one cancellation per request (#2018).
+    fn switch_text(&mut self, norm: &Path, text: Option<String>) -> Result<()> {
+        if let Some(wanted) = &text
+            && self.current_db_text(norm).as_deref() == Some(wanted.as_str())
+        {
+            return Ok(());
+        }
+        self.apply_text(norm, text)
     }
 
     /// Records new shared base text for `path` (a workspace sync landed on disk). It is applied
