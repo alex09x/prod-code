@@ -13,6 +13,7 @@
 pub mod across_projects;
 pub mod alias;
 mod ambiguity;
+mod bare_members;
 pub(crate) mod bindings;
 pub mod declared_at;
 mod dependencies;

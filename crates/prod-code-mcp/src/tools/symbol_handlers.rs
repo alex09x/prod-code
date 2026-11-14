@@ -15,7 +15,7 @@ use std::path::Path;
 use super::resolve_file_path;
 use super::symbols::{
     SymbolHit, bare_symbol_name, match_rank, qualifier_matches, symbol_search_across_projects,
-    type_members, unindexed_declarations,
+    type_members, unindexed_declarations, unindexed_members,
 };
 use crate::protocol::McpToolCallResult;
 
@@ -77,7 +77,29 @@ pub(crate) async fn search_ranked_symbols(
             hits.retain(under_hint);
         }
     }
-    let exact_match = hits.iter().any(|h| bare_symbol_name(&h.name) == name);
+    let mut exact_match = hits.iter().any(|h| bare_symbol_name(&h.name) == name);
+    // rust-analyzer's index holds no struct field, and no server's holds every member: a bare
+    // name the index knows nothing better for than its letters in order is looked for in the
+    // outlines of the files that declare it, as `Type::name` is (#2023).
+    if !exact_match
+        && qualifiers.is_empty()
+        && hits.iter().all(|hit| match_rank(&hit.name, query) == 4)
+        && let Ok(members) = unindexed_members(remote, workspace_root, name, hint.as_deref()).await
+    {
+        for member in members {
+            // A local of a Rust method is listed under its `impl`, and is no member of the type.
+            let rust_local =
+                member.kind == "Variable" && member.path.extension().is_some_and(|e| e == "rs");
+            if !rust_local
+                && !hits
+                    .iter()
+                    .any(|hit| hit.path == member.path && hit.line == member.line)
+            {
+                hits.push(member);
+            }
+        }
+        exact_match = hits.iter().any(|h| bare_symbol_name(&h.name) == name);
+    }
     let (omitted_fuzzy, all_fuzzy) = rank_symbol_hits(query, &mut hits);
     Ok(RankedSymbolSearch {
         hits,
