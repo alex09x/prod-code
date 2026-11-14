@@ -39,6 +39,11 @@ pub(crate) async fn unindexed_members(
     member: &str,
     hint: Option<&Path>,
 ) -> Result<Vec<SymbolHit>> {
+    // No file declares a member whose name is no identifier (an empty query, `::`, `a b`):
+    // looking for one only read the checkout's files until the scan's budget ran out.
+    if member.is_empty() || !member.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return Ok(Vec::new());
+    }
     let deadline = tokio::time::Instant::now() + UNINDEXED_MEMBERS_BUDGET;
     let mut files: Vec<std::path::PathBuf> = Vec::new();
     if let Some(h) = hint {

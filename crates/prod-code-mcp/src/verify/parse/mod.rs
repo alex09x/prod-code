@@ -16,6 +16,7 @@ pub mod js_ts;
 pub mod python;
 pub mod rust;
 pub mod swift;
+pub mod toolchain;
 
 pub use bench::*;
 pub use common::*;
@@ -179,6 +180,9 @@ pub fn parse_verification_output(
             diagnostics.extend(parse_colon_diagnostics(stderr));
             diagnostics.extend(parse_colon_diagnostics(stdout));
         }
+    }
+    if language == "rust" {
+        diagnostics.extend(toolchain::toolchain_notes(stderr));
     }
     diagnostics.dedup();
     (

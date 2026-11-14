@@ -243,20 +243,41 @@ impl RustEngineSnapshot {
             let Ok(analysis) = self.analysis() else {
                 return Vec::new();
             };
-            let Ok(assists) = analysis.assists_with_fixes(
-                &assist_config,
-                &diagnostics_config,
-                AssistResolveStrategy::None,
-                range,
-            ) else {
-                continue;
-            };
+            // The analyzer computes every assist of the item to answer, and a panic in one
+            // nobody asked for (`merge_imports`, building the merged tree) used to end the
+            // whole pass: the item is skipped and says so, the rest of the file is checked.
+            let asked = super::analyzer_failure::caught(|| {
+                analysis.assists_with_fixes(
+                    &assist_config,
+                    &diagnostics_config,
+                    AssistResolveStrategy::None,
+                    range,
+                )
+            });
             drop(analysis);
+            let (line_no, col) = offset_to_line_col(text, item_range.start());
+            let (end_line, end_col) = offset_to_line_col(text, item_range.end());
+            let assists = match asked {
+                Ok(Ok(assists)) => assists,
+                Ok(Err(_)) => continue,
+                Err(why) => {
+                    tracing::warn!(
+                        engine = self.label,
+                        line = line_no,
+                        why,
+                        "the analyzer panicked on the assists of a `use` item; item skipped"
+                    );
+                    out.push(super::analyzer_failure::use_item_notice(
+                        &why,
+                        (line_no, col),
+                        (end_line, end_col),
+                    ));
+                    continue;
+                }
+            };
             if !assists.iter().any(|a| a.id.0 == "remove_unused_imports") {
                 continue;
             }
-            let (line_no, col) = offset_to_line_col(text, item_range.start());
-            let (end_line, end_col) = offset_to_line_col(text, item_range.end());
             out.push(FileDiagnostic {
                 code: "unused_imports".to_string(),
                 message: "unused import".to_string(),

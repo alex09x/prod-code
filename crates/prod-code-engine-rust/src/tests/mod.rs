@@ -12,6 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
+mod analyzer_failure;
 mod config;
 mod dependency_cases;
 mod diagnostics;
