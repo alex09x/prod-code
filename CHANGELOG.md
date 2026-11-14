@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+- **`code_grep` Searches a Dependency's Source on the Build Node** (`crates/prod-code-mcp`, `crates/prod-code-protocol`, `crates/prod-code-gateway`, #2021): `prod-code grep 'macro_rules! bail' <node home>/.cargo/registry/src/<index>/anyhow-1.0.100/src` answered `search path does not exist`, because the path was looked for in the checkout only, while `code_source` read files of that directory from the node. An absolute path the checkout does not have and that lies outside the workspace is now searched on the node. The node resolves it, symbolic links included, and runs ripgrep only inside the locations the gateway reads library files from (dependency caches, toolchains, system SDKs; one list in `prod_code_protocol::source_roots` for both). Hits carry the node's path. A path outside those locations is refused with a pointer to `code_source`, and one the node does not have says so. A missing path inside the workspace is answered as before.
+- **A Qualified Rust Name No Longer Resolves to a Parameter or a Local** (`crates/prod-code-mcp`, #2020): `prod-code def --symbol ledger_math::payable` answered with the parameter `payable: i64` of a function in `ledger_math.rs`, and `ledger_math::reserved` with a `let reserved` in another one, as the definition. Two source fallbacks took any line that declares the name in a file whose module path, or name, matches the qualifier. Both now take an item (`fn`, `struct`, `enum`, `trait`, `type`, `const`, `static`, `mod`, `macro_rules!`), and a field only for a qualifier that is a struct of that file and outside a parameter list. A bare name still finds a local.
+
 ## v0.3.58 — 2026-11-11
 
 ### Fixed

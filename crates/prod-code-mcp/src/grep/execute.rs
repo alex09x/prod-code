@@ -65,6 +65,20 @@ pub async fn run_grep(
         None => root.to_path_buf(),
     };
     if !search_path.exists() {
+        // A dependency's source in the node's registry cache is not in the checkout (#2021).
+        if let Some(addr) = remote
+            && super::node_source::names_node_path(root, &search_path)
+        {
+            return super::node_source::grep_node_source(
+                addr,
+                root,
+                &search_path,
+                opts,
+                max_results,
+                context,
+            )
+            .await;
+        }
         let hint = crate::remote_fs::suggest_nearest_path(root, &search_path)
             .map(|h| format!(" (did you mean `{h}`?)"))
             .unwrap_or_default();
@@ -123,7 +137,7 @@ pub async fn run_grep(
     .context("grep worker task panicked")?
 }
 
-fn build_rg_args(rel_target: &str, opts: &GrepOptions) -> Vec<String> {
+pub(super) fn build_rg_args(rel_target: &str, opts: &GrepOptions) -> Vec<String> {
     let mut cmd = vec![
         "--json".to_string(),
         "--line-number".to_string(),
@@ -280,7 +294,7 @@ fn try_local_rg(
     )))
 }
 
-fn parse_rg_json_output(
+pub(super) fn parse_rg_json_output(
     root: &Path,
     stdout: &[u8],
     opts: &GrepOptions,

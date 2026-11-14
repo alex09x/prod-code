@@ -31,33 +31,7 @@ pub fn is_readable_source_path_with_home(
         return true;
     }
     if let Some(home) = home {
-        let allowed_home = [
-            ".cargo/registry",
-            ".cargo/git",
-            ".rustup/toolchains",
-            "go/pkg/mod",
-            ".local/go",
-            ".local/lib",
-            ".npm-global/lib",
-            ".bun/install",
-            ".pnpm-store",
-            ".local/share/pnpm",
-            ".yarn/cache",
-            ".cache/yarn",
-            ".local/share/uv",
-            ".cache/uv",
-            ".cache/pypoetry",
-            ".virtualenvs",
-            ".pyenv",
-            ".local/share/virtualenvs",
-            ".local/pipx",
-            ".conda",
-            ".nvm",
-            ".fnm",
-            "Library/Developer",
-            "prod-code-storage",
-        ];
-        if allowed_home
+        if prod_code_protocol::source_roots::HOME_SOURCE_ROOTS
             .iter()
             .any(|rel| canonical.starts_with(home.join(rel)))
         {
@@ -73,23 +47,10 @@ pub fn is_readable_source_path_with_home(
             return true;
         }
     }
-    const SYSTEM_ROOTS: [&str; 14] = [
-        "/snap",
-        "/usr/include",
-        "/usr/local/include",
-        "/usr/local/Cellar",
-        "/usr/lib",
-        "/usr/local/lib",
-        "/usr/local/go",
-        "/usr/share",
-        "/opt/homebrew",
-        "/Applications/Xcode.app",
-        "/Library/Developer",
-        "/Library/Frameworks",
-        "/System/Library/Frameworks",
-        "/opt/conda",
-    ];
-    if SYSTEM_ROOTS.iter().any(|root| canonical.starts_with(root)) {
+    if prod_code_protocol::source_roots::SYSTEM_SOURCE_ROOTS
+        .iter()
+        .any(|root| canonical.starts_with(root))
+    {
         return true;
     }
     false

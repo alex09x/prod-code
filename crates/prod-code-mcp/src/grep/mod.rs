@@ -17,6 +17,7 @@ pub mod enclosing;
 pub mod execute;
 pub(crate) mod fallback;
 mod literals;
+mod node_source;
 
 #[cfg(test)]
 mod tests;

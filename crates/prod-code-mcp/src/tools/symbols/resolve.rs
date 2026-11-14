@@ -16,6 +16,7 @@ use super::sources::{
     find_identifier_on_line, identifier_at, identifier_starts_at, is_extension_declaration,
     is_use_declaration, remote_sources, source_text,
 };
+use super::stdlib_hits::find_stdlib_or_usage_hits;
 use super::type_members::type_members;
 use super::types::{MalformedLspCoordinate, SymbolHit};
 use super::unindexed::{
@@ -99,18 +100,25 @@ pub(crate) async fn resolve_symbol_ties(
                 if !stdlib_hits.is_empty() {
                     stdlib_hits
                 } else {
+                    // Read from source, these have no owner, so only the file's module path
+                    // qualifies them: an item of the module, never a local or a parameter of
+                    // one of its functions (#2020).
+                    let of_module = |hit: &SymbolHit| {
+                        qualifier_matches(root, hit, qualifiers)
+                            && super::module_items::names_module_item(hit)
+                    };
                     let mut unindexed_qualified: Vec<SymbolHit> =
                         find_unindexed_declarations(root, name, hint)
                             .await
                             .into_iter()
-                            .filter(|hit| qualifier_matches(root, hit, qualifiers))
+                            .filter(of_module)
                             .collect();
                     if unindexed_qualified.is_empty() {
                         unindexed_qualified =
                             find_loaded_unindexed_declarations(remote, root, name, hint)
                                 .await
                                 .into_iter()
-                                .filter(|hit| qualifier_matches(root, hit, qualifiers))
+                                .filter(of_module)
                                 .collect();
                     }
                     if !unindexed_qualified.is_empty() {
@@ -347,60 +355,4 @@ pub async fn resolve_symbol_candidates(
         return Ok(deduped);
     }
     Err(ambiguous_candidates_error(root, symbol, &deduped))
-}
-
-/// Resolves standard library symbols (e.g. `std::process::Command`) or workspace usages when
-/// not indexed by `workspace/symbol` (#935).
-pub(crate) fn find_stdlib_or_usage_hits(
-    root: &Path,
-    symbol: &str,
-    qualifiers: &[&str],
-    name: &str,
-    hint: Option<&Path>,
-) -> Vec<SymbolHit> {
-    let mut hits = Vec::new();
-    let is_stdlib = matches!(qualifiers.first().copied(), Some("std" | "core" | "alloc"));
-    if !is_stdlib {
-        return hits;
-    }
-    let mut files_to_check = Vec::new();
-    if let Some(h) = hint {
-        let p = if h.is_absolute() {
-            h.to_path_buf()
-        } else {
-            root.join(h)
-        };
-        if p.is_file() {
-            files_to_check.push(p);
-        }
-    }
-    for file in files_to_check
-        .into_iter()
-        .chain(super::nested_projects::source_files(root).take(200))
-    {
-        let Ok(text) = std::fs::read_to_string(&file) else {
-            continue;
-        };
-        if !text.contains(name) {
-            continue;
-        }
-        for (idx, line) in text.lines().enumerate() {
-            if line.contains(symbol)
-                || (line.contains(name) && qualifiers.iter().all(|q| line.contains(q)))
-            {
-                if let Some(col) = find_identifier_on_line(line, name) {
-                    hits.push(SymbolHit {
-                        path: file.clone(),
-                        name: name.to_string(),
-                        kind: "Struct",
-                        container: Some(qualifiers.join("::")),
-                        line: idx as u32 + 1,
-                        col: line[..col].chars().count() as u32 + 1,
-                    });
-                    return hits;
-                }
-            }
-        }
-    }
-    hits
 }

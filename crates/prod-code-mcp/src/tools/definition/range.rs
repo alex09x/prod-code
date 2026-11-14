@@ -129,7 +129,24 @@ pub(crate) fn find_unindexed_rust_declarations(
                 continue;
             }
         }
+        // A qualified name asks for an item of that owner, or a field of that struct: the
+        // parameter `payable: i64` of a function in `ledger_math.rs` is not
+        // `ledger_math::payable` (#2020). A bare name still finds a local.
+        let qualified = qualifier.map(|qual| {
+            use crate::tools::references::across::{mask_executable_code, masked_code_string};
+            crate::tools::symbols::module_items::qualified_declaration_lines(
+                &masked_code_string(&text, &mask_executable_code(&text, &path)),
+                name,
+                text.contains(&format!("struct {qual}")),
+            )
+        });
         for (index, col) in code_declarations(&text, &path, name) {
+            if qualified
+                .as_ref()
+                .is_some_and(|lines| !lines.contains(&index))
+            {
+                continue;
+            }
             hits.push(SymbolHit {
                 path: path.clone(),
                 name: name.to_string(),
