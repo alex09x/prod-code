@@ -36,7 +36,11 @@ def logger(path, maximum):
 
 
 def retain_sessions(root):
-    """Prune only our completed sessions, retaining twenty plus every live session."""
+    """Prune only our completed sessions, retaining twenty plus every live session.
+
+    Several language servers start at once and prune the same directory: a session another
+    launcher removed meanwhile is skipped, never an error that stops this bridge from starting.
+    """
     sessions = []
     for directory in root.glob("session-*"):
         try:
@@ -49,13 +53,12 @@ def retain_sessions(root):
                     continue
                 except ProcessLookupError:
                     pass
-            sessions.append(directory)
+            sessions.append((directory.stat().st_mtime, directory))
         except (OSError, ValueError, KeyError):
             continue
-    for directory in sorted(sessions, key=lambda p: p.stat().st_mtime, reverse=True)[
-        20:
-    ]:
-        shutil.rmtree(directory)
+    sessions.sort(key=lambda session: session[0], reverse=True)
+    for _, directory in sessions[20:]:
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 def main():
@@ -94,7 +97,10 @@ def main():
         metadata["version"] = subprocess.check_output(
             [args.binary, "--version"], stderr=subprocess.STDOUT, timeout=5, text=True
         ).strip()
-        metadata["binary_inode"] = os.stat(args.binary).st_ino
+        # A bare name is found on PATH, as the two launches of it are.
+        metadata["binary_inode"] = os.stat(
+            shutil.which(args.binary) or args.binary
+        ).st_ino
     except (OSError, subprocess.SubprocessError) as error:
         metadata["version_probe_error"] = str(error)
     fifo = directory / "trace.pipe"

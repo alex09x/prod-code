@@ -72,6 +72,49 @@ class LoggerTests(unittest.TestCase):
             )
             self.assertFalse((session / "trace.pipe").exists())
 
+    def test_launchers_started_together_prune_the_same_sessions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            command = self.fixture(root, "sys.exit(0)\n")
+            logs = root / "logs"
+            for index in range(60):
+                finished = logs / f"session-{index}-rust-{index}"
+                finished.mkdir(parents=True)
+                (finished / "session.json").write_text(
+                    json.dumps({"logger": "prod-code-zed", "exit_code": 0})
+                )
+                (finished / "stderr.log").write_text("x" * 4096)
+            launchers = [
+                subprocess.Popen(
+                    command, stdin=subprocess.DEVNULL, stderr=subprocess.PIPE
+                )
+                for _ in range(8)
+            ]
+            results = [(p.communicate(timeout=20)[1], p.returncode) for p in launchers]
+            for stderr, code in results:
+                self.assertEqual(code, 0, stderr.decode(errors="replace"))
+            self.assertLessEqual(len(list(logs.glob("session-*"))), 20 + 8)
+
+    def test_a_binary_named_without_a_path_is_found_on_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            command = self.fixture(root, "sys.exit(0)\n")
+            command[command.index("--binary") + 1] = "bridge"
+            env = dict(os.environ, PATH=f"{root}{os.pathsep}{os.environ['PATH']}")
+            result = subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=10,
+                check=False,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            session = next((root / "logs").iterdir())
+            meta = json.loads((session / "session.json").read_text())
+            self.assertNotIn("version_probe_error", meta)
+            self.assertEqual(meta["binary_inode"], (root / "bridge").stat().st_ino)
+
     @unittest.skipUnless(os.name == "posix", "editor launcher uses POSIX signals")
     def test_editor_termination_reaches_bridge(self):
         with tempfile.TemporaryDirectory() as temporary:
