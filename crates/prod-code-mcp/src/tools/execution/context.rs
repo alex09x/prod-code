@@ -283,7 +283,12 @@ pub(crate) fn routed_path<'a>(
     path: Option<&'a str>,
     root: &Path,
 ) -> Option<&'a str> {
+    // An outline read from the file itself (Markdown, protobuf, assembly, shell) needs no node
+    // that serves its language; routing by it failed with "no reachable gateway serves shell"
+    // before the outline was read (#2035), as the CLI already knew (#1851).
     if tool_name == "code_grep"
+        || (tool_name == "code_outline"
+            && path.is_some_and(|path| crate::tools::outline::is_read_locally(Path::new(path))))
         || (tool_name == "code_source"
             && path.is_some_and(|path| {
                 !matches!(crate::remote_fs::checkout_source_path(root, path), Ok(None))

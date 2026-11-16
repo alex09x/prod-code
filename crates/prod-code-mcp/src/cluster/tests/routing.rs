@@ -348,11 +348,62 @@ async fn a_text_search_is_not_routed_by_the_files_engine() {
         None
     );
     assert_eq!(
-        routed_path("code_outline", Some("notes.md"), std::path::Path::new(".")),
+        routed_path("code_hover", Some("notes.md"), std::path::Path::new(".")),
         Some("notes.md")
     );
     assert_eq!(
         routed_path("code_definition", None, std::path::Path::new(".")),
         None
+    );
+}
+
+/// #2035: the outline of a shell script is read from the file, with no language server, so it
+/// is not routed by the script's engine: with no node serving shell that routing failed before
+/// the outline was read. A tool that does ask a server about the file is still routed by it.
+#[tokio::test]
+async fn an_outline_read_from_the_file_is_not_routed_by_its_engine() {
+    use crate::tools::execution::routed_path;
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    std::fs::create_dir_all(root.join("scripts")).unwrap();
+    std::fs::write(
+        root.join("scripts/remote.sh"),
+        "#!/bin/sh\nconnect() {\n  :\n}\n",
+    )
+    .unwrap();
+    let rust = node_serving(&["rust", "python"]).await;
+    let other = node_serving(&["rust"]).await;
+    let err = route_in(
+        &[rust, other],
+        "tools",
+        rust,
+        &root,
+        "scripts/remote.sh",
+        None,
+    )
+    .await
+    .expect_err("no node serves shell");
+    assert!(format!("{err:#}").contains("serves shell"), "{err:#}");
+
+    for script in [
+        "scripts/remote.sh",
+        "a.bash",
+        "b.zsh",
+        "notes.md",
+        "api.proto",
+    ] {
+        assert_eq!(
+            routed_path("code_outline", Some(script), &root),
+            None,
+            "{script}"
+        );
+    }
+    assert_eq!(
+        routed_path("code_definition", Some("scripts/remote.sh"), &root),
+        Some("scripts/remote.sh")
+    );
+    assert_eq!(
+        routed_path("code_outline", Some("src/lib.rs"), &root),
+        Some("src/lib.rs")
     );
 }
