@@ -1,0 +1,70 @@
+/*
+ * prod-code — Remote code intelligence
+ * Copyright (c) 2026 Alexander Panasenko
+ *
+ * Contact: alex@prod.codes
+ * Author: https://prod.codes/about/
+ * Project: https://github.com/alex09x/prod-code
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
+//! The source-reading fallbacks of `code_definition` keep a dotted qualifier (#2041).
+
+use super::range::find_unindexed_rust_declarations;
+use super::shell::find_shell_declarations;
+
+fn checkout() -> tempfile::TempDir {
+    let temp = tempfile::Builder::new()
+        .prefix("qualified")
+        .tempdir()
+        .unwrap();
+    let write = |rel: &str, text: &str| {
+        let path = temp.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write(
+        "src/terminal/state.rs",
+        "pub struct Terminal;\nimpl Terminal {\n    pub fn feed(&mut self, bytes: &[u8]) {}\n}\n",
+    );
+    write(
+        "tests/grid_dump.rs",
+        "fn feed(term: &mut Terminal, data: &str) {}\n",
+    );
+    write("scripts/run.sh", "feed() {\n  echo fed\n}\n");
+    write("scripts/dotted.sh", "Tako.feed() {\n  echo dotted\n}\n");
+    temp
+}
+
+/// #2041: a Swift member asked for by `Module.Type.name` matched every Rust `feed` and every
+/// shell `feed` of the checkout. Its type names none of them, so none is the answer.
+#[test]
+fn a_dotted_qualifier_is_kept_by_the_source_fallbacks() {
+    let temp = checkout();
+    let root = temp.path();
+    let rust = find_unindexed_rust_declarations(root, "Tako.SurfaceView.feed", None);
+    assert!(rust.is_empty(), "{rust:?}");
+    let shell = find_shell_declarations(root, "Tako.SurfaceView.feed", None);
+    assert!(shell.is_empty(), "{shell:?}");
+    assert!(find_shell_declarations(root, "Terminal::feed", None).is_empty());
+}
+
+/// The qualifier still finds what it names, spelled with a dot or with `::`, and a bare name
+/// still finds every declaration of it.
+#[test]
+fn a_qualifier_that_names_the_owner_still_finds_it() {
+    let temp = checkout();
+    let root = temp.path();
+    for symbol in ["Terminal::feed", "Terminal.feed", "state::feed"] {
+        let hits = find_unindexed_rust_declarations(root, symbol, None);
+        assert_eq!(hits.len(), 1, "{symbol}: {hits:?}");
+        assert!(hits[0].path.ends_with("src/terminal/state.rs"), "{symbol}");
+    }
+    assert_eq!(
+        find_unindexed_rust_declarations(root, "feed", None).len(),
+        2
+    );
+    assert_eq!(find_shell_declarations(root, "feed", None).len(), 1);
+    // Bash allows a dot in a function name: that name, whole, is still found.
+    assert_eq!(find_shell_declarations(root, "Tako.feed", None).len(), 1);
+}
