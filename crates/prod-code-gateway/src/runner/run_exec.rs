@@ -201,6 +201,7 @@ pub async fn run_exec_with_ram(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    super::project_toolchain::defer_to_project_toolchain(&mut cmd, &run_dir, &workspace, &req.env);
     // The cluster's secret credentials (token and TLS material) are never given to executed commands (#402, Phase 5.6).
     // Scrubbed AFTER request env is applied so that client requests cannot inject or read cluster secrets.
     cmd.scrub_cluster_secrets();
