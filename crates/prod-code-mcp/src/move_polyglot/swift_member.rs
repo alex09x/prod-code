@@ -11,7 +11,8 @@
 //! A Swift declaration that sits inside braces is a member of a type, an extension or a
 //! function. Moved alone to another file it becomes a free declaration outside its type: its
 //! `self` and its properties no longer resolve and a `private` one is no longer reachable, yet the
-//! preview reported zero errors (#1978). The move refuses it instead.
+//! preview reported zero errors (#1978). The move writes it into an extension of its type
+//! instead, or refuses it with the reason (`swift_extension`, #2040).
 
 /// Whether the declaration that starts on the 1-based `line` of `source` is inside braces.
 pub(super) fn is_member_at_line(source: &str, line: u32) -> bool {

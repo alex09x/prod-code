@@ -221,10 +221,11 @@ async fn cpp_move_to_implementation_file_refuses_before_writing() {
 }
 
 /// A member of a Swift type moved alone would be a free declaration outside its type, and the
-/// preview called it clean (#1978): the move refuses it, before writing anything, and still moves
-/// a declaration that is at the top level.
+/// preview called it clean (#1978). It now goes into an extension of its type (#2040), but a
+/// `private` one would be cut off from the rest of its type there: the move refuses it, before
+/// writing anything, and still moves a declaration that is at the top level.
 #[tokio::test]
-async fn a_swift_member_is_refused_and_a_top_level_declaration_is_not() {
+async fn a_private_swift_member_is_refused_and_a_top_level_declaration_is_not() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("Example.swift");
     let target = temp.path().join("ExampleSetup.swift");
@@ -236,8 +237,11 @@ async fn a_swift_member_is_refused_and_a_top_level_declaration_is_not() {
         .await
         .unwrap_err();
     let text = format!("{error:#}");
-    assert!(text.contains("cannot move `setup` alone"), "{text}");
-    assert!(text.contains("extension"), "{text}");
+    assert!(
+        text.contains("cannot move `setup` into an extension of its type"),
+        "{text}"
+    );
+    assert!(text.contains("`private`"), "{text}");
     assert_eq!(std::fs::read_to_string(&source).unwrap(), original);
     assert!(!target.exists());
 

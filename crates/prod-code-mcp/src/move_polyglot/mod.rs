@@ -12,7 +12,8 @@
 //!
 //! Relocates top-level declarations (functions, classes, interfaces, types, structs, enums, constants)
 //! into another module, updating declarations, carrying dependencies, and rewriting caller imports
-//! across the workspace with full diagnostic pre-validation.
+//! across the workspace with full diagnostic pre-validation. A member of a Swift type goes into
+//! an extension of its type in the target file (#2040).
 
 pub mod callers;
 pub mod decl;
@@ -24,6 +25,7 @@ pub mod imports;
 mod python_dependencies;
 mod python_header;
 pub mod specifiers;
+mod swift_extension;
 mod swift_member;
 pub mod target;
 
