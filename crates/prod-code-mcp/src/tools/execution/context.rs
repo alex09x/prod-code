@@ -290,10 +290,20 @@ pub(crate) fn routed_path<'a>(
             }))
     {
         None
+    } else if path.is_none() && VERIFY_TOOLS.contains(&tool_name) {
+        // A check of the whole checkout needs a node serving the checkout's own engine. The
+        // node this process was given was picked when it started, perhaps before the checkout
+        // had a `Package.swift`, so a SwiftPM package was tested on a Linux node without
+        // `swift` (#2033). Routing the root sends it to a node that serves its engine; a node
+        // that already does keeps the call.
+        Some(".")
     } else {
         path
     }
 }
+
+/// Tools that build, lint or test the checkout's project on a node.
+const VERIFY_TOOLS: [&str; 4] = ["code_check", "code_lint", "code_test", "code_benchmarks"];
 
 #[cfg(test)]
 mod workspace_tests {
