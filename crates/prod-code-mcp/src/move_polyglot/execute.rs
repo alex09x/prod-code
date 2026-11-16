@@ -81,21 +81,29 @@ pub async fn move_item(
     let (name, decl_start, decl_end) =
         resolve_polyglot_decl_span(symbols.as_ref(), &source_text, line, lang)?;
 
-    // A member moved alone would become a free declaration outside its type, and the preview
-    // would still call it clean (#1978).
-    anyhow::ensure!(
-        !(lang == Language::Swift
-            && super::swift_member::is_member_at_line(&source_text, decl_start)),
-        "cannot move `{name}` alone: it is declared inside a Swift type, extension or function, and in {} it would be a free declaration outside its type, where `self` and its properties no longer resolve. Move the whole type, or write the member in an `extension` of its type in the target file",
-        display(root, target)
-    );
-
-    if target_existed {
-        check_target_collision(&target_text, &name, target_lang)?;
-    }
-
     let start = with_doc_comment_polyglot(&source_text, decl_start, lang);
     let (source_new_cut, item_raw) = crate::move_item::cut(&source_text, start, decl_end);
+
+    // A member moved alone would become a free declaration outside its type, and the preview
+    // would still call it clean (#1978); it goes into an extension of its type instead (#2040).
+    let member_of = if lang == Language::Swift
+        && super::swift_member::is_member_at_line(&source_text, decl_start)
+    {
+        let path = super::swift_extension::member_destination(&source_text, decl_start, &item_raw)
+            .map_err(|reason| {
+                anyhow::anyhow!(
+                    "cannot move `{name}` into an extension of its type in {}: {reason}. Nothing was written",
+                    display(root, target)
+                )
+            })?;
+        Some(path)
+    } else {
+        None
+    };
+
+    if target_existed && member_of.is_none() {
+        check_target_collision(&target_text, &name, target_lang)?;
+    }
     let source_new_cut = if lang == Language::Go {
         remove_unused_go_imports(&source_new_cut)
     } else {
@@ -106,7 +114,9 @@ pub async fn move_item(
     let (target_with_carried, carried_notes) =
         carry_imports_polyglot(&source_text, &item, &target_text, file, target, lang, root);
 
-    let target_new = if target_with_carried.trim().is_empty() {
+    let target_new = if let Some(path) = &member_of {
+        super::swift_extension::insert_member(&target_with_carried, path, &item)
+    } else if target_with_carried.trim().is_empty() {
         format!("{}\n", item.trim())
     } else {
         crate::move_item::append_item(&target_with_carried, &item)
@@ -138,17 +148,19 @@ pub async fn move_item(
                 !l.is_empty() && !l.starts_with("//") && !l.starts_with("/*") && !l.starts_with('*')
             })
             .is_some_and(|l| l.starts_with("export default "));
-    let (source_new, source_import_note) =
-        if moved_default && is_symbol_used(&source_new_cut, &name) {
-            let rel = relative_import_specifier(file, target);
-            let (text, added) = insert_ts_default_import(&source_new_cut, &name, &rel);
-            (
-                text,
-                added.then(|| format!("imported default `{name}` from `{rel}`")),
-            )
-        } else {
-            update_source_imports(&source_new_cut, &name, file, target, root, lang)?
-        };
+    // A member is still reached through its type, which stays where it is: no import changes.
+    let (source_new, source_import_note) = if member_of.is_some() {
+        (source_new_cut, None)
+    } else if moved_default && is_symbol_used(&source_new_cut, &name) {
+        let rel = relative_import_specifier(file, target);
+        let (text, added) = insert_ts_default_import(&source_new_cut, &name, &rel);
+        (
+            text,
+            added.then(|| format!("imported default `{name}` from `{rel}`")),
+        )
+    } else {
+        update_source_imports(&source_new_cut, &name, file, target, root, lang)?
+    };
 
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
     rewritten.insert(file.to_path_buf(), source_new);
@@ -162,7 +174,12 @@ pub async fn move_item(
         import_notes.push(format!("{}: {note}", display(root, file)));
     }
 
-    let workspace_sources = crate::signature_polyglot::collect_workspace_sources(root, lang);
+    // A member's callers name its type, not the file it is declared in.
+    let workspace_sources = if member_of.is_some() {
+        Vec::new()
+    } else {
+        crate::signature_polyglot::collect_workspace_sources(root, lang)
+    };
     for src in workspace_sources {
         if src == file || src == target {
             continue;
@@ -219,7 +236,9 @@ pub async fn move_item(
     let new_path = match lang {
         Language::Python => format!("{to_mod}.{name}"),
         Language::Go => format!("{to_mod}.{name}"),
-        Language::Swift => name.clone(),
+        Language::Swift => member_of
+            .as_ref()
+            .map_or_else(|| name.clone(), |path| format!("{path}.{name}")),
         _ => format!("{to_mod}::{name}"),
     };
 
