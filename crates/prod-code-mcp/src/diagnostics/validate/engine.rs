@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::diagnostics::annotate::annotate_missing_symbols;
+use crate::diagnostics::carried::set_aside_carried;
 use crate::diagnostics::filter::{
     refuse_unchecked, removed_names, set_aside_derive_expansions, set_aside_preexisting,
     symbol_identities,
@@ -285,6 +286,8 @@ pub(super) async fn validate_texts_single_engine(
         reports.push(report);
         budget.completed(1);
     }
+    // Lines a move carries into another file keep the errors they had before it (#2038).
+    set_aside_carried(&mut reports, &sources, &baselines);
     let _ = budget
         .run(budget.auxiliary, "checking re-exports", async {
             suppress_used_public_reexport_warnings(
