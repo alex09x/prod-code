@@ -8,29 +8,35 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-//! Errors a batch carries unchanged from one edited file into another (#2038).
+//! Errors a move carries, unchanged, out of the file it cuts from (#2038).
 //!
-//! A move cuts lines out of one file and writes them, verbatim, into another. When the analyzer
-//! already reported an error on such a line before the move, it reports the same error on the
-//! same text after it; the error is not the move's. The per-file comparison cannot see this: the
-//! new file has no "before", and outside Rust a cut leaves no line correspondence it trusts. A
-//! Swift script compiled through an explicit `swiftc` file list, outside every SwiftPM target, is
-//! checked by the analyzer alone, so each peer declaration it uses is already "cannot find
-//! 'Driver' in scope" on disk, and every one of those lines was reported as the move's own error.
+//! A move cuts one block of lines out of a file and writes it into another file of the same
+//! batch. When the analyzer already reported an error before the move on a line the move left in
+//! place, or on a line it carried along, it reports the same error on the same text after it;
+//! that error is not the move's. The per-file comparison cannot see this outside Rust: the
+//! target has no "before", and a cut leaves no line correspondence it trusts. A Swift script
+//! compiled through an explicit `swiftc` file list, outside every SwiftPM target, is checked by
+//! the analyzer alone, so each peer declaration it uses is already "cannot find 'Driver' in
+//! scope" on disk, and every one of those lines was reported as the move's own error.
+//!
+//! The authority is taken from the move's shape, not from line text alone: a file counts as cut
+//! only when its proposed text is its text on disk with one contiguous block of lines removed,
+//! and that block appears, line for line, in another file of the batch. Any other edit — an
+//! insertion, a line moved within one file — gets nothing here and stays with the per-file
+//! comparison, which refuses to carry an error into another scope.
 
 use std::collections::HashMap;
 
-use crate::diagnostics::filter::{identity, refresh_hallucinations};
+use crate::diagnostics::filter::{identity, refresh_hallucinations, unchecked};
 use crate::diagnostics::types::{DiagnosticsReport, DocDiagnostic};
 
+/// Content, trimmed line text, column from the first non-blank character, and source.
 type Key = (
     (String, Option<String>, String, String),
     u32,
     Option<String>,
 );
 
-/// The diagnostic's content, the trimmed text of its line and its column from the first
-/// non-blank character, so a line keeps its key when it moves to another indentation.
 fn key(d: &DocDiagnostic, text: &str) -> Key {
     let line = text
         .lines()
@@ -44,11 +50,61 @@ fn key(d: &DocDiagnostic, text: &str) -> Key {
     )
 }
 
-/// Moves to `preexisting` each remaining error of a non-Rust edited file that some edited file
-/// already had before the batch, on a line of the same text at the same column with the same
-/// message and code. Every error before the batch accounts for at most one after it, and those
-/// already set aside by the per-file comparison are spent first. Rust keeps its structural
-/// comparison alone (#1286): a moved Rust line can resolve differently in its new module.
+/// The 0-based line range `[start, end)` of `before` whose removal gives `after`, when the edit
+/// removed exactly one non-empty block and changed nothing else.
+fn cut_block(before: &str, after: &str) -> Option<(usize, usize)> {
+    let b: Vec<&str> = before.lines().collect();
+    let a: Vec<&str> = after.lines().collect();
+    if a.len() >= b.len() {
+        return None;
+    }
+    let prefix = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let suffix = a[prefix..]
+        .iter()
+        .rev()
+        .zip(b.iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    (prefix + suffix == a.len()).then_some((prefix, b.len() - suffix))
+}
+
+/// Whether the non-blank lines of `block`, trimmed, appear consecutively in `text`.
+fn contains_block(text: &str, block: &[&str]) -> bool {
+    let wanted: Vec<&str> = block
+        .iter()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if wanted.is_empty() {
+        return false;
+    }
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    lines.windows(wanted.len()).any(|w| w == wanted.as_slice())
+}
+
+fn recount(report: &mut DiagnosticsReport) {
+    report.errors = report
+        .items
+        .iter()
+        .filter(|d| d.severity == "error")
+        .count();
+    report.warnings = report
+        .items
+        .iter()
+        .filter(|d| d.severity == "warning")
+        .count();
+    refresh_hallucinations(report);
+}
+
+/// Sets aside, in the non-Rust files of a move, the errors the analyzer already reported before
+/// it: in a cut file, an error on a line the move left in place, at the same line after the cut;
+/// in any other file of the batch, an error on a line the move carried out of the cut block.
+/// Each error before accounts for at most one after it. An unchecked file's marker is never set
+/// aside (#94, #467), and Rust keeps its structural comparison alone (#1286).
 ///
 /// `baselines` holds, per displayed file, the diagnostics and text on disk; `sources` the
 /// proposed text of each file.
@@ -57,21 +113,49 @@ pub fn set_aside_carried(
     sources: &HashMap<String, String>,
     baselines: &HashMap<String, (DiagnosticsReport, String)>,
 ) {
-    let mut before: HashMap<Key, usize> = HashMap::new();
-    for (report, text) in baselines.values() {
-        for d in report.items.iter().filter(|d| d.severity == "error") {
-            *before.entry(key(d, text)).or_default() += 1;
+    // Errors the move left in place, per cut file and line after the cut; errors it carried.
+    let mut kept: HashMap<(String, u32), Vec<Key>> = HashMap::new();
+    let mut carried: HashMap<Key, usize> = HashMap::new();
+    for (file, (before, before_text)) in baselines {
+        if file.ends_with(".rs") {
+            continue;
         }
-    }
-    for report in reports.iter() {
-        let Some(text) = sources.get(&report.file) else {
+        let Some(after) = sources.get(file) else {
             continue;
         };
-        for d in &report.preexisting {
-            if let Some(n) = before.get_mut(&key(d, text)) {
-                *n = n.saturating_sub(1);
+        let Some((start, end)) = cut_block(before_text, after) else {
+            continue;
+        };
+        let lines: Vec<&str> = before_text.lines().collect();
+        let block = &lines[start..end];
+        let landed = sources
+            .iter()
+            .any(|(other, text)| other != file && contains_block(text, block));
+        if !landed {
+            continue;
+        }
+        for d in before
+            .items
+            .iter()
+            .filter(|d| d.severity == "error" && !unchecked(d))
+        {
+            let line = d.line.saturating_sub(1) as usize;
+            if (start..end).contains(&line) {
+                *carried.entry(key(d, before_text)).or_default() += 1;
+            } else {
+                let after_line = if line < start {
+                    line
+                } else {
+                    line - (end - start)
+                };
+                kept.entry((file.clone(), after_line as u32 + 1))
+                    .or_default()
+                    .push(key(d, before_text));
             }
         }
+    }
+    if kept.is_empty() && carried.is_empty() {
+        return;
     }
     for report in reports.iter_mut() {
         if report.file.ends_with(".rs") {
@@ -80,13 +164,28 @@ pub fn set_aside_carried(
         let Some(text) = sources.get(&report.file) else {
             continue;
         };
+        let cut_here = baselines
+            .get(&report.file)
+            .is_some_and(|(_, before)| cut_block(before, text).is_some());
         let items = std::mem::take(&mut report.items);
         let mut moved = false;
         for d in items {
-            let count = (d.severity == "error")
-                .then(|| before.get_mut(&key(&d, text)))
-                .flatten();
-            match count {
+            if d.severity != "error" || unchecked(&d) {
+                report.items.push(d);
+                continue;
+            }
+            let k = key(&d, text);
+            let in_place = kept
+                .get_mut(&(report.file.clone(), d.line))
+                .and_then(|keys| keys.iter().position(|old| *old == k).map(|i| (keys, i)));
+            if let Some((keys, i)) = in_place {
+                keys.swap_remove(i);
+                moved = true;
+                report.preexisting.push(d);
+                continue;
+            }
+            // A cut file only loses lines; what it still reports elsewhere is not carried.
+            match (!cut_here).then(|| carried.get_mut(&k)).flatten() {
                 Some(n) if *n > 0 => {
                     *n -= 1;
                     moved = true;
@@ -96,157 +195,11 @@ pub fn set_aside_carried(
             }
         }
         if moved {
-            report.errors = report
-                .items
-                .iter()
-                .filter(|d| d.severity == "error")
-                .count();
-            report.warnings = report
-                .items
-                .iter()
-                .filter(|d| d.severity == "warning")
-                .count();
-            refresh_hallucinations(report);
+            recount(report);
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn error(line: u32, col: u32, message: &str) -> DocDiagnostic {
-        DocDiagnostic {
-            severity: "error".into(),
-            code: None,
-            message: message.into(),
-            line,
-            col,
-            source: Some("SourceKit".into()),
-            note: None,
-            end: None,
-        }
-    }
-
-    fn report(file: &str, items: Vec<DocDiagnostic>) -> DiagnosticsReport {
-        let errors = items.len();
-        DiagnosticsReport {
-            file: file.into(),
-            errors,
-            warnings: 0,
-            items,
-            preexisting: Vec::new(),
-            in_derive: Vec::new(),
-            auto_trait: Vec::new(),
-            hallucinations: Vec::new(),
-        }
-    }
-
-    const BEFORE: &str = "struct Runner {\n    let driver: Driver\n}\n\nenum DesktopKeys {\n    static let save: Key = .save\n    static let page = SettingsPage.general\n}\n";
-    const AFTER_SOURCE: &str = "struct Runner {\n    let driver: Driver\n}\n";
-    const AFTER_TARGET: &str = "enum DesktopKeys {\n    static let save: Key = .save\n    static let page = SettingsPage.general\n}\n";
-
-    /// #2038: a Swift file outside every SwiftPM target already fails to find its peers; moving
-    /// one declaration out carries those errors with the moved lines. None of them is the move's.
-    #[test]
-    fn errors_carried_with_the_moved_lines_are_not_the_moves() {
-        let baselines = HashMap::from([(
-            "Runner.swift".to_string(),
-            (
-                report(
-                    "Runner.swift",
-                    vec![
-                        error(2, 17, "cannot find type 'Driver' in scope"),
-                        error(6, 22, "cannot find type 'Key' in scope"),
-                        error(7, 23, "cannot find 'SettingsPage' in scope"),
-                    ],
-                ),
-                BEFORE.to_string(),
-            ),
-        )]);
-        let sources = HashMap::from([
-            ("Runner.swift".to_string(), AFTER_SOURCE.to_string()),
-            ("DesktopKeys.swift".to_string(), AFTER_TARGET.to_string()),
-        ]);
-        let mut reports = vec![
-            report(
-                "Runner.swift",
-                vec![error(2, 17, "cannot find type 'Driver' in scope")],
-            ),
-            report(
-                "DesktopKeys.swift",
-                vec![
-                    error(2, 22, "cannot find type 'Key' in scope"),
-                    error(3, 23, "cannot find 'SettingsPage' in scope"),
-                    // New: the move broke this name, which resolved before.
-                    error(3, 5, "cannot find 'Runner' in scope"),
-                ],
-            ),
-        ];
-        set_aside_carried(&mut reports, &sources, &baselines);
-        assert_eq!(reports[0].errors, 0, "{:?}", reports[0].items);
-        assert_eq!(reports[0].preexisting.len(), 1);
-        assert_eq!(reports[1].errors, 1, "{:?}", reports[1].items);
-        assert_eq!(reports[1].items[0].message, "cannot find 'Runner' in scope");
-        assert_eq!(reports[1].preexisting.len(), 2);
-    }
-
-    /// One error before accounts for one after, even when the moved line is now in two files,
-    /// and an error the per-file comparison already set aside is not counted twice.
-    #[test]
-    fn each_error_before_excuses_one_after() {
-        let text = "let a = Missing()\n";
-        let baselines = HashMap::from([(
-            "A.swift".to_string(),
-            (
-                report(
-                    "A.swift",
-                    vec![error(1, 9, "cannot find 'Missing' in scope")],
-                ),
-                text.to_string(),
-            ),
-        )]);
-        let sources = HashMap::from([
-            ("A.swift".to_string(), text.to_string()),
-            ("B.swift".to_string(), text.to_string()),
-        ]);
-        let mut a = report("A.swift", Vec::new());
-        a.preexisting
-            .push(error(1, 9, "cannot find 'Missing' in scope"));
-        let mut reports = vec![
-            a,
-            report(
-                "B.swift",
-                vec![error(1, 9, "cannot find 'Missing' in scope")],
-            ),
-        ];
-        set_aside_carried(&mut reports, &sources, &baselines);
-        assert_eq!(
-            reports[1].errors, 1,
-            "the one error before is already spent"
-        );
-    }
-
-    /// Rust keeps its own structural comparison: a moved Rust line can resolve differently.
-    #[test]
-    fn rust_files_are_left_to_the_structural_comparison() {
-        let text = "fn f() { secret() }\n";
-        let baselines = HashMap::from([(
-            "src/a.rs".to_string(),
-            (
-                report(
-                    "src/a.rs",
-                    vec![error(1, 10, "cannot find function `secret`")],
-                ),
-                text.to_string(),
-            ),
-        )]);
-        let sources = HashMap::from([("src/b.rs".to_string(), text.to_string())]);
-        let mut reports = vec![report(
-            "src/b.rs",
-            vec![error(1, 10, "cannot find function `secret`")],
-        )];
-        set_aside_carried(&mut reports, &sources, &baselines);
-        assert_eq!(reports[0].errors, 1);
-    }
-}
+#[path = "carried_tests.rs"]
+mod tests;
