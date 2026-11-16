@@ -38,7 +38,7 @@ pub fn refresh_hallucinations(report: &mut DiagnosticsReport) {
         .collect();
 }
 
-fn unchecked(d: &DocDiagnostic) -> bool {
+pub(crate) fn unchecked(d: &DocDiagnostic) -> bool {
     matches!(d.code.as_deref(), Some(code) if code == prod_code_protocol::ANALYZER_PANIC_CODE
         || code == UNLINKED_FILE || code == INVALID_DIAGNOSTICS)
 }

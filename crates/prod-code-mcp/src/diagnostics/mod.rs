@@ -12,6 +12,7 @@
 //! or of a proposed replacement text, without a build and without writing anything.
 
 pub mod annotate;
+mod carried;
 mod correspondence;
 pub mod filter;
 pub mod ident;

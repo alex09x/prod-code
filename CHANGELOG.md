@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **A Move Out of a Swift Script Outside Every SwiftPM Target Is No Longer Refused for Errors It Did Not Cause** (`crates/prod-code-mcp`, #2038): a `code_move` preview of a declaration out of a Swift command-line runner, compiled through an explicit `swiftc` file list rather than a SwiftPM target, proposed the move and then rejected both the new and the original file with `cannot find 'Driver' in scope` and the like for each peer declaration of the runner. The analyzer checks such a file alone, so those errors were already there on disk; but the new file has no state before the move to compare with, and outside Rust a cut leaves no line correspondence the comparison trusts, so every one was counted as the move's. When a non-Rust file's proposed text is its text on disk with exactly one block of lines removed, and that block appears line for line in another file of the batch, an error the analyzer already reported before is now set aside: on a line the move left in place, at its line after the cut; on a line the move carried, in the file it was carried into, with the same trimmed line text, column from the first non-blank character, message and code. Each error before accounts for one after; the marker of a file the analyzer did not check is never set aside. A name the move itself breaks is still reported, an edit that moves a line within one file keeps the per-file comparison alone, and Rust files keep their structural comparison.
+
 ## v0.3.61 — 2026-11-15
 
 ### Fixed
