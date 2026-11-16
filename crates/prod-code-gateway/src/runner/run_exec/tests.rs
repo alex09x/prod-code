@@ -282,6 +282,33 @@ async fn transport_security_production_wiring_scrubs_exec_children() {
     }
 }
 
+/// #2042: the gateway's `RUSTUP_TOOLCHAIN` reaches the command only where the project names no
+/// toolchain of its own, and a value the request sets is the one the command gets.
+#[tokio::test]
+async fn the_gateways_toolchain_yields_to_the_projects_in_the_child() {
+    crate::test_cache_support::isolated!();
+    unsafe { std::env::set_var("RUSTUP_TOOLCHAIN", "CANARY_GATEWAY_TOOLCHAIN") };
+    let probe = || sh("printf '%s' \"${RUSTUP_TOOLCHAIN-unset}\"");
+    let toolchain = [(
+        "rust-toolchain.toml",
+        "[toolchain]\nchannel = \"1.100.0\"\n",
+    )];
+
+    let named = run(probe(), &toolchain, true).await;
+    assert_eq!(named.output(false), "unset");
+    let mut nested = probe();
+    nested.subdir = Some("crates/app".to_string());
+    let nested = run(nested, &[toolchain[0], ("crates/app/x", "")], true).await;
+    assert_eq!(nested.output(false), "unset");
+
+    let bare = run(probe(), &[], true).await;
+    assert_eq!(bare.output(false), "CANARY_GATEWAY_TOOLCHAIN");
+    let mut asked = probe();
+    asked.env = vec![("RUSTUP_TOOLCHAIN".to_string(), "nightly".to_string())];
+    assert_eq!(run(asked, &toolchain, true).await.output(false), "nightly");
+    unsafe { std::env::remove_var("RUSTUP_TOOLCHAIN") };
+}
+
 #[tokio::test]
 async fn files_a_command_changed_are_sent_back_before_the_exit() {
     let mut req = sh("printf new > made.txt; printf changed > old.txt; rm gone.txt");

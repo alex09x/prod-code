@@ -193,6 +193,56 @@ async fn transport_security_production_wiring_scrubs_shadow_children() {
     }
 }
 
+/// #2042: a hypothesis that adds `rust-toolchain.toml` runs without the gateway's
+/// `RUSTUP_TOOLCHAIN`, though the file is only in its overlay; one without it keeps the node's.
+#[tokio::test]
+async fn a_hypothesis_naming_its_toolchain_does_not_get_the_gateways() {
+    crate::test_cache_support::isolated!();
+    let (_temp, state, _) = storage();
+    unsafe { std::env::set_var("RUSTUP_TOOLCHAIN", "CANARY_GATEWAY_TOOLCHAIN") };
+    let mut req = request();
+    req.command = vec![
+        "sh".into(),
+        "-c".into(),
+        "printf '%s' \"${RUSTUP_TOOLCHAIN-unset}\"".into(),
+    ];
+    req.env = Vec::new();
+    req.tail_bytes = 1024;
+    req.hypotheses = vec![
+        ShadowHypothesis {
+            name: "named".into(),
+            files: vec![prod_code_protocol::FileDelta {
+                relative_path: "rust-toolchain.toml".into(),
+                content: Some(b"[toolchain]\nchannel = \"1.100.0\"\n".to_vec()),
+                is_executable: false,
+            }],
+        },
+        ShadowHypothesis {
+            name: "bare".into(),
+            files: vec![],
+        },
+    ];
+    let (mut client, mut server) = connection();
+    let run = run_shadow(&state, &mut server, req);
+    let receive = async {
+        match client.next().await.unwrap().unwrap() {
+            WireMessage::ShadowRunResponse(response) => response,
+            other => panic!("expected shadow response, got {other:?}"),
+        }
+    };
+    let (result, response) = tokio::join!(run, receive);
+    result.unwrap();
+    assert_eq!(response.error, None);
+    let output = |name: &str| {
+        let result = response.results.iter().find(|r| r.name == name).unwrap();
+        assert_eq!(result.exit_code, Some(0), "{name}: {:?}", result.error);
+        String::from_utf8_lossy(result.output_tail.as_deref().unwrap_or_default()).to_string()
+    };
+    assert_eq!(output("named"), "unset");
+    assert_eq!(output("bare"), "CANARY_GATEWAY_TOOLCHAIN");
+    unsafe { std::env::remove_var("RUSTUP_TOOLCHAIN") };
+}
+
 #[tokio::test]
 async fn shadow_answers_pings_and_cancels_running_and_queued_jobs_when_the_client_leaves() {
     for leave in ["disconnect", "eof", "invalid-frame"] {

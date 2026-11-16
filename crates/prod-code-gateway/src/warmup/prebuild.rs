@@ -67,6 +67,10 @@ pub async fn run_prebuild(
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
     process.scrub_cluster_secrets();
+    // The prebuild writes the index the project's own toolchain reads (#2042).
+    if crate::runner::project_toolchain::yields_to_project(dir, dir, &[], &[]) {
+        process.env_remove(crate::runner::project_toolchain::VARIABLE);
+    }
     #[cfg(unix)]
     process.process_group(0);
     let mut child = match process.spawn() {
