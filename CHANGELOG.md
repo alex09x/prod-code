@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+- **`code_test` of a SwiftPM Package Runs on a Node That Has `swift`** (`crates/prod-code-mcp`, #2033): `code_test {filter: "MyTests"}` in a checkout with `Package.swift` at its root answered `swift test: FAILED (exit 127) … on linux x86_64` with `failed to start swift: No such file or directory`. A check, lint, test or benchmark run that names no `path` was not routed at all: it ran on the node the process was given when it started, which was picked for the checkout as it was then, before it had a `Package.swift`. Such a run is now routed by the checkout's root, as a run with a `path` already was: a node that serves the root's engine keeps it, otherwise it goes to one that does, remembered under `<workspace>#swift`.
+- **A Refused `code_source` Read Says What the Gateway Serves and How Else to Read the File** (`crates/prod-code-gateway`, #2032): `prod-code source <file outside the checkout> --line 82` answered only `… is not a readable source location on this gateway`. The answer now names the locations the gateway reads from (its synced workspace copies, the toolchain and dependency caches under its user's home, `GOPATH` and `GOROOT`, and the system SDK and library locations, listed) and points to `prod-code exec -- cat <path>` from a synced checkout for any other file on the node. A path the node does not have is now `… is not found on this gateway`, and a relative path is told that only absolute paths are read. The usage metrics still count the refusals as `refused` and a missing file as `not_found`.
+
 ## v0.3.60 — 2026-11-14
 
 ### Fixed

@@ -64,6 +64,33 @@ pub fn is_gopath_source_path(path: &std::path::Path, gopath: Option<&std::ffi::O
     })
 }
 
+/// Why the gateway does not hand out `path`, and what to do instead (#2032). A path outside
+/// the locations it serves used to get only "is not a readable source location", which named
+/// neither the locations nor another way to read the file. The phrases "not found" and "not a
+/// readable" are what the usage metrics classify these answers by.
+pub fn unreadable_source_message(requested: &str, path: &std::path::Path) -> String {
+    if !path.is_absolute() {
+        return format!(
+            "{requested} is not a readable source location on this gateway: the gateway reads \
+             absolute paths only."
+        );
+    }
+    if !path.is_file() {
+        return format!("{requested} is not found on this gateway, or is not a regular file");
+    }
+    format!(
+        "{requested} is not a readable source location on this gateway. It serves files from \
+         the workspace copies it syncs, from toolchain and dependency caches under its user's \
+         home (~/.cargo/registry, ~/.cargo/git, ~/.rustup/toolchains, ~/go/pkg/mod, \
+         package-manager and Python environment caches, ~/Library/Developer), from GOPATH and \
+         GOROOT, and from system SDK and library locations ({}). For a file of your own \
+         project, open it in a checkout synced to this gateway. Any other file on the node is \
+         not served by this reader: read it with `prod-code exec -- cat <path>` from a synced \
+         checkout, which runs as the gateway's user on the same node.",
+        prod_code_protocol::source_roots::SYSTEM_SOURCE_ROOTS.join(", ")
+    )
+}
+
 /// Serves a `ReadFileRequest` under the readable-path policy, capped in size.
 pub fn read_server_file(
     storage_root: &std::path::Path,
@@ -80,10 +107,7 @@ pub fn read_server_file(
         error: None,
     };
     if !is_readable_source_path(storage_root, &path) {
-        resp.error = Some(format!(
-            "{} is not a readable source location on this gateway",
-            req.path
-        ));
+        resp.error = Some(unreadable_source_message(&req.path, &path));
         return resp;
     }
     let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());

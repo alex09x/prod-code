@@ -209,6 +209,53 @@ fn is_readable_source_path_allows_polyglot_dependencies_and_rejects_arbitrary_fi
     ));
 }
 
+/// A refused read says which locations the gateway serves and how else to read the file
+/// (#2032), and stays classified as a refusal, not an I/O error, in the usage metrics.
+#[test]
+fn a_refused_read_names_the_served_locations_and_another_way_to_read_it() {
+    let storage = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let notes = outside.path().join("notes.py");
+    std::fs::write(&notes, "print('notes')\n").unwrap();
+
+    let ask = |path: &std::path::Path| {
+        let req = prod_code_protocol::ReadFileRequest {
+            path: path.to_string_lossy().into_owned(),
+            max_bytes: 0,
+        };
+        read_server_file(storage.path(), &req)
+            .error
+            .expect("refused")
+    };
+
+    let refused = ask(&notes);
+    for wanted in [
+        "is not a readable source location on this gateway",
+        "workspace copies it syncs",
+        "~/.cargo/registry",
+        "GOPATH and GOROOT",
+        "/usr/include",
+        "prod-code exec -- cat <path>",
+    ] {
+        assert!(
+            refused.contains(wanted),
+            "{wanted:?} missing from: {refused}"
+        );
+    }
+    assert_eq!(crate::metrics::classify_error(&refused, None), "refused");
+
+    let missing = ask(&outside.path().join("gone.py"));
+    assert!(
+        missing.contains("is not found on this gateway"),
+        "{missing}"
+    );
+    assert_eq!(crate::metrics::classify_error(&missing, None), "not_found");
+
+    let relative = ask(std::path::Path::new("src/lib.rs"));
+    assert!(relative.contains("absolute paths only"), "{relative}");
+    assert_eq!(crate::metrics::classify_error(&relative, None), "refused");
+}
+
 #[test]
 fn gopath_source_policy_checks_each_configured_root() {
     let temp = tempfile::tempdir().unwrap();

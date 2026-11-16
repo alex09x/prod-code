@@ -271,6 +271,49 @@ async fn test_route_in_routes_root_swift_project_away_from_incompatible_default_
     assert_eq!(routed, swift, "root swift repo must route to swift node");
 }
 
+/// #2033: `code_test` with only a filter names no path. It was not routed at all and ran on
+/// the node the process started with, a Linux node without `swift` for a SwiftPM package. A
+/// check of the whole checkout is now routed by the checkout's root.
+#[tokio::test]
+async fn a_whole_checkout_check_goes_to_a_node_serving_the_checkouts_engine() {
+    use crate::tools::execution::routed_path;
+    let temp = tempfile::tempdir().unwrap();
+    let swift_root = std::fs::canonicalize(temp.path()).unwrap().join("package");
+    std::fs::create_dir_all(swift_root.join("Tests/MyTests")).unwrap();
+    std::fs::write(
+        swift_root.join("Package.swift"),
+        "// swift-tools-version: 6.0\n",
+    )
+    .unwrap();
+    let rust_root = std::fs::canonicalize(temp.path()).unwrap().join("crate");
+    std::fs::create_dir_all(rust_root.join("src")).unwrap();
+    std::fs::write(rust_root.join("Cargo.toml"), "[package]\nname = \"r\"\n").unwrap();
+    std::fs::write(rust_root.join("src/lib.rs"), "").unwrap();
+
+    for tool in ["code_test", "code_check", "code_lint", "code_benchmarks"] {
+        assert_eq!(routed_path(tool, None, &swift_root), Some("."), "{tool}");
+        assert_eq!(
+            routed_path(tool, Some("Tests"), &swift_root),
+            Some("Tests"),
+            "{tool}"
+        );
+    }
+    assert_eq!(routed_path("code_exec", None, &swift_root), None);
+
+    let linux = node_serving(&["rust", "python"]).await;
+    let mac = node_serving(&["swift (sourcekit-lsp)"]).await;
+    let nodes = [linux, mac];
+    let placement = temp.path().join("placement.json");
+    let routed = route_in(&nodes, "package", linux, &swift_root, ".", Some(&placement))
+        .await
+        .unwrap();
+    assert_eq!(routed, mac);
+    let stays = route_in(&nodes, "crate", linux, &rust_root, ".", Some(&placement))
+        .await
+        .unwrap();
+    assert_eq!(stays, linux);
+}
+
 #[tokio::test]
 async fn test_single_node_refuses_when_it_does_not_serve_requested_engine() {
     let rust = node_serving(&["rust", "go"]).await;
