@@ -36,7 +36,18 @@ pub(crate) fn find_shell_declarations(
     symbol: &str,
     hint: Option<&Path>,
 ) -> Vec<SymbolHit> {
-    let name = bare_symbol_name(symbol.trim());
+    // A shell function has no owner, so a qualified name (`Type::name`, `Module.Type.name`)
+    // never names one; read as its last segment it found any function of that name (#2041).
+    // Bash allows a dot in a function name, so a dotted name is matched whole.
+    let raw = symbol.trim();
+    if raw.contains("::") {
+        return Vec::new();
+    }
+    let name = if raw.contains('.') {
+        raw
+    } else {
+        bare_symbol_name(raw)
+    };
     if name.is_empty() {
         return Vec::new();
     }

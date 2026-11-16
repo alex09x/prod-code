@@ -70,14 +70,17 @@ pub(crate) fn find_unindexed_rust_declarations(
         matching::bare_symbol_name,
         nested_projects::{MAX_SCANNED_FILES, source_files},
     };
-    let (qualifier, target) = match symbol.rsplit_once("::") {
-        Some((qual, name)) => (
-            Some(qual.rsplit("::").next().unwrap_or(qual).trim()),
-            name.trim(),
-        ),
-        None => (None, symbol.trim()),
-    };
-    let name = bare_symbol_name(target);
+    // `Type::name` and `Module.Type.name` both qualify: read as a bare name, the dotted Swift
+    // `Tako.SurfaceView.feed` matched every Rust function `feed` in the checkout (#2041).
+    let path = symbol.split('(').next().unwrap_or(symbol);
+    let segments: Vec<&str> = path
+        .split("::")
+        .flat_map(|segment| segment.split('.'))
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let qualifier = segments.len().checked_sub(2).map(|owner| segments[owner]);
+    let name = bare_symbol_name(symbol.trim());
     if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
         return Vec::new();
     }
