@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## v0.3.61 — 2026-11-15
+
 ### Fixed
 - **`code_outline` of a Shell Script Works Without a Shell Language Server** (`crates/prod-code-mcp`, #2035): `code_outline {path: "scripts/<name>.sh", max_bytes: 5000}` answered `no reachable gateway serves shell; add a node with the shell language server installed`. The outline of a shell script, like that of Markdown, protobuf and assembly, is read from the file itself (#1851, #1935), but the MCP call first looked for a node serving the file's language and failed when none did; the CLI already skipped that step. The MCP call now skips it too for those files, and lists the script's functions.
 - **`code_test` of a SwiftPM Package Runs on a Node That Has `swift`** (`crates/prod-code-mcp`, #2033): `code_test {filter: "MyTests"}` in a checkout with `Package.swift` at its root answered `swift test: FAILED (exit 127) … on linux x86_64` with `failed to start swift: No such file or directory`. A check, lint, test or benchmark run that names no `path` was not routed at all: it ran on the node the process was given when it started, which was picked for the checkout as it was then, before it had a `Package.swift`. Such a run is now routed by the checkout's root, as a run with a `path` already was: a node that serves the root's engine keeps it, otherwise it goes to one that does, remembered under `<workspace>#swift`.
