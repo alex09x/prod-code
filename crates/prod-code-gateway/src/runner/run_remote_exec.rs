@@ -182,6 +182,7 @@ pub async fn run_remote_exec_with_ram(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    super::project_toolchain::defer_to_project_toolchain(&mut cmd, &run_dir, &workspace, &req.env);
 
     cmd.scrub_cluster_secrets();
     {

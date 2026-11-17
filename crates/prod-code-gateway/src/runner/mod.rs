@@ -13,6 +13,7 @@ pub(crate) mod exec_stream;
 mod git_guidance;
 pub mod json_stream;
 pub mod process_group;
+pub(crate) mod project_toolchain;
 pub mod ram_cache;
 pub mod run_exec;
 pub mod run_remote_exec;

@@ -25,6 +25,16 @@ pub(crate) async fn run_child(
 ) -> ShadowHypothesisResult {
     // The cluster's secret credentials (token and TLS material) are never given to executed commands (#402, Phase 5.6).
     cmd.scrub_cluster_secrets();
+    // Overlay or in place, the hypothesis's own files decide whether the project names its
+    // toolchain; the gateway's `RUSTUP_TOOLCHAIN` does not outrank it (#2042).
+    if crate::runner::project_toolchain::yields_to_project(
+        &job.workspace.join(&job.subdir),
+        &job.workspace,
+        &job.files,
+        &job.env,
+    ) {
+        cmd.env_remove(crate::runner::project_toolchain::VARIABLE);
+    }
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
