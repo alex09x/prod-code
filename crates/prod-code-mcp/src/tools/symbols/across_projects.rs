@@ -256,6 +256,11 @@ pub(crate) async fn symbol_search_across_projects(
         }
     }
     for (anchor, subpath, engine) in anchors {
+        // No gateway runs a language server for shell scripts; they are read from source
+        // (#1940), so a shell project is neither asked nor reported as left unasked.
+        if engine == "shell" {
+            continue;
+        }
         if tokio::time::Instant::now() >= deadline {
             tracing::warn!(
                 query,
@@ -265,6 +270,7 @@ pub(crate) async fn symbol_search_across_projects(
         }
         let step_budget = std::time::Duration::from_secs(4);
         let route_deadline = deadline.min(tokio::time::Instant::now() + step_budget);
+        let project = format!("the {engine} project at `{subpath}`");
         let node = match tokio::time::timeout_at(
             route_deadline,
             crate::cluster::route_for_path(remote, root, anchor.to_str()),
@@ -272,12 +278,19 @@ pub(crate) async fn symbol_search_across_projects(
         .await
         {
             Ok(Ok(n)) => n,
-            Ok(Err(_)) => remote,
+            Ok(Err(error)) => {
+                // Asked on the checkout's node all the same, which may not serve its language.
+                super::unanswered::note(format!(
+                    "{project}: no node serving {engine} took it, so the checkout's own node was asked ({error:#})"
+                ));
+                remote
+            }
             Err(_) => {
                 tracing::warn!(
                     query,
                     "symbol search route_for_path reached budget; continuing to next project"
                 );
+                super::unanswered::note(format!("{project}: choosing its node ran out of time"));
                 continue;
             }
         };
@@ -299,6 +312,7 @@ pub(crate) async fn symbol_search_across_projects(
                 if is_malformed_lsp_coordinate(&err) {
                     return Err(err);
                 }
+                super::unanswered::note(format!("{project}: its language server failed ({err:#})"));
                 Vec::new()
             }
             Err(_) => {
@@ -306,6 +320,10 @@ pub(crate) async fn symbol_search_across_projects(
                     query,
                     "nested workspace_symbol_search reached budget; continuing to next project"
                 );
+                super::unanswered::note(format!(
+                    "{project}: its language server did not answer within {}s",
+                    step_budget.as_secs()
+                ));
                 Vec::new()
             }
         };

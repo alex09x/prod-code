@@ -19,6 +19,7 @@ pub mod declared_at;
 mod dependencies;
 pub mod matching;
 pub(crate) mod module_items;
+mod module_members;
 pub mod nested_projects;
 mod nested_swift;
 mod reexport;
@@ -30,6 +31,7 @@ pub mod sources;
 mod stdlib_hits;
 pub mod type_members;
 pub mod types;
+pub(crate) mod unanswered;
 pub mod unindexed;
 
 pub use matching::DEFAULT_AMBIGUOUS_CANDIDATE_LIMIT;

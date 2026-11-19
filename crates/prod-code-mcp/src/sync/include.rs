@@ -30,13 +30,24 @@ struct IncludePrefix {
 pub struct SyncInclude {
     matcher: Option<Gitignore>,
     prefixes: Vec<IncludePrefix>,
+    /// The checkout these rules were loaded for, where a data directory is looked into for
+    /// source code (#2048); `None` for rules compiled without one.
+    root: Option<PathBuf>,
 }
 
 impl SyncInclude {
     /// Load `[sync] include` from global and workspace `prod-code.toml` for `root`.
     pub fn load(root: &Path) -> Self {
         let config = load_config(root);
-        Self::from_patterns(root, &config.sync.include)
+        Self {
+            root: Some(root.to_path_buf()),
+            ..Self::from_patterns(root, &config.sync.include)
+        }
+    }
+
+    /// The checkout [`SyncInclude::load`] read the rules of.
+    pub fn root(&self) -> Option<&Path> {
+        self.root.as_deref()
     }
 
     /// Compile `patterns` against `root`, discarding empty, escaping, hidden or baseline-ignored
@@ -64,6 +75,7 @@ impl SyncInclude {
         Self {
             matcher: Some(matcher),
             prefixes,
+            root: None,
         }
     }
 

@@ -41,6 +41,9 @@ pub(crate) async fn resolve_symbol_ties(
     // And neither are the generic arguments of a type (`JournalInner<ENTRY>::load_code`), for
     // the search, the owner lookup and the dependency scope alike (#2000).
     let absolute = super::matching::without_generics(absolute);
+    // An owner spelled as rust-analyzer labels the block (`impl Element for TextElement::paint`,
+    // which the closest-names list itself offers) is that block's type (#2053).
+    let absolute = super::module_members::impl_owner_spelled_as_type(&absolute);
     let parts: Vec<&str> = absolute
         .split(['.', ':', '#', '/'])
         .map(|p| p.trim().trim_end_matches("()"))
@@ -83,9 +86,15 @@ pub(crate) async fn resolve_symbol_ties(
                     .filter(|hit| !qualifier_matches(root, hit, qualifiers))
                     .cloned(),
             );
-            let (mut eligible, exact): (Vec<SymbolHit>, Vec<SymbolHit>) = exact
+            let (eligible, exact): (Vec<SymbolHit>, Vec<SymbolHit>) = exact
                 .into_iter()
                 .partition(|hit| qualifier_matches(root, hit, qualifiers));
+            // A module is never a member of a type: `Exec::cancel` is not the `mod cancel;` of
+            // a file that also has an `impl Exec` (#2045). A module is a qualified answer only
+            // inside a module the qualifiers name; the rest stay suggestions, and the fallbacks
+            // below still run.
+            let mut eligible =
+                super::module_members::modules_of_qualifiers(root, eligible, qualifiers, name);
             if eligible.is_empty() {
                 // A path copied from a `use` line names the item where it is re-exported (#1582).
                 eligible = exact

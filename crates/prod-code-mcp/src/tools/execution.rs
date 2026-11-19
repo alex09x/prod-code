@@ -20,6 +20,7 @@ pub(crate) use super::workspace_writer::workspace_mutation_lock;
 use crate::protocol::McpToolCallResult;
 
 mod budgets;
+mod compile_database;
 use super::definition::html_fallback;
 mod confinement;
 mod context;
@@ -190,6 +191,13 @@ pub fn execute_tool_at_with<'a>(
             .await;
         }
         let fallback = html_fallback::request(tool_name, &args);
+        // For the C/C++ note: the checkout the call selects, by the arguments it came with.
+        let selection_args = args.clone();
+        let selected_root = || {
+            let mut selecting = selection_args.clone();
+            resolve_workspace_root(&configured_workspace_root, tool_name, &mut selecting)
+                .unwrap_or_else(|_| configured_workspace_root.clone())
+        };
         let run = execute_tool_inner(
             placement,
             remote,
@@ -204,7 +212,7 @@ pub fn execute_tool_at_with<'a>(
                 let sync_stage = crate::sync::types::SyncStageTracker::new();
                 let tracked =
                     crate::sync::types::scope_sync_stage(std::sync::Arc::clone(&sync_stage), run);
-                match tokio::time::timeout_at(budget.deadline, tracked).await {
+                let outcome = match tokio::time::timeout_at(budget.deadline, tracked).await {
                     Ok(Ok(result)) => Ok(result),
                     Ok(Err(error)) if is_timeout_error(&error) => Ok(McpToolCallResult::error(
                         definition_subrequest_timeout_message(budget, &error),
@@ -214,9 +222,15 @@ pub fn execute_tool_at_with<'a>(
                         budget,
                         sync_stage.get(),
                     ))),
-                }
+                };
+                // A C/C++ checkout clangd can index nothing of is told so, after a lookup by
+                // name that ran out of time or found nothing (#2047).
+                compile_database::annotate(tool_name, selected_root, outcome)
             }
-            None => run.await,
+            None => {
+                let outcome = run.await;
+                compile_database::annotate(tool_name, selected_root, outcome)
+            }
         }
     })
 }

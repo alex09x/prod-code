@@ -9,8 +9,8 @@
  */
 
 use crate::sync::git::git_listed_files;
-use crate::sync::include::SyncInclude;
-use crate::sync::relevance::is_relevant_code_or_manifest_file;
+use crate::sync::include::{SyncInclude, is_non_overridable_sync_path};
+use crate::sync::relevance::{is_code_source_or_manifest_file, is_relevant_code_or_manifest_file};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
@@ -140,24 +140,15 @@ pub fn is_synced_git_path(rel_path: &str) -> bool {
         if !under_code_dir && dir.as_ref() == "target" {
             return false;
         }
+        if !under_code_dir && !under_pkg_dir && is_output_dir(&dir) {
+            return false;
+        }
+        // Source code git tracks is a package, wherever it sits: a vendored Go package under
+        // `…/envoy/data/accesslog/v3` is what `-mod=vendor` builds (#2049).
         if !under_code_dir
             && !under_pkg_dir
-            && matches!(
-                dir.as_ref(),
-                "dist"
-                    | "build"
-                    | "results"
-                    | "samples"
-                    | "artifacts"
-                    | "dogfood-output"
-                    | "data"
-                    | "dataset"
-                    | "datasets"
-                    | "corpus"
-                    | "traces"
-                    | "state"
-                    | "research"
-            )
+            && is_data_dir(&dir)
+            && !is_code_source_or_manifest_file(path)
         {
             return false;
         }
@@ -165,7 +156,65 @@ pub fn is_synced_git_path(rel_path: &str) -> bool {
     path.file_name().and_then(|n| n.to_str()) != Some(".DS_Store")
 }
 
-/// [`is_synced_git_path`], plus explicit `[sync] include` paths from `prod-code.toml` (#1836).
-pub fn is_synced_git_path_with(rel_path: &str, include: &SyncInclude) -> bool {
-    is_synced_git_path(rel_path) || include.is_included(rel_path)
+fn is_output_dir(dir: &str) -> bool {
+    matches!(
+        dir,
+        "dist" | "build" | "results" | "samples" | "artifacts" | "dogfood-output"
+    )
 }
+
+fn is_data_dir(dir: &str) -> bool {
+    matches!(
+        dir,
+        "data" | "dataset" | "datasets" | "corpus" | "traces" | "state" | "research"
+    )
+}
+
+/// Whether a file of a data directory (`docs/data/backends/alias.yaml`) sits beside source code
+/// in its own directory (`embed.go`, which embeds `*.yaml`): that directory is a package, and
+/// its files are the package's inputs (#2048). Output directories stay out.
+fn is_beside_code(root: &Path, rel_path: &str) -> bool {
+    let path = Path::new(rel_path);
+    let dirs: Vec<String> = path
+        .parent()
+        .into_iter()
+        .flat_map(Path::components)
+        .filter_map(|component| match component {
+            std::path::Component::Normal(dir) => Some(dir.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect();
+    if !dirs.iter().any(|dir| is_data_dir(dir))
+        || dirs
+            .iter()
+            .any(|dir| is_output_dir(dir) || matches!(dir.as_str(), "node_modules" | "target"))
+        || is_non_overridable_sync_path(path)
+    {
+        return false;
+    }
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    std::fs::read_dir(root.join(parent)).is_ok_and(|entries| {
+        entries.flatten().any(|entry| {
+            let sibling = entry.path();
+            sibling.extension().is_some_and(|ext| ext != "json")
+                && entry.file_type().is_ok_and(|kind| kind.is_file())
+                && is_code_source_or_manifest_file(&sibling)
+        })
+    })
+}
+
+/// [`is_synced_git_path`], plus explicit `[sync] include` paths from `prod-code.toml` (#1836),
+/// plus the files of a data directory that holds source code (#2048).
+pub fn is_synced_git_path_with(rel_path: &str, include: &SyncInclude) -> bool {
+    is_synced_git_path(rel_path)
+        || include.is_included(rel_path)
+        || include
+            .root()
+            .is_some_and(|root| is_beside_code(root, rel_path))
+}
+
+#[cfg(test)]
+#[path = "data_package_tests.rs"]
+mod data_package_tests;

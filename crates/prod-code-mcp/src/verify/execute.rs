@@ -122,6 +122,13 @@ pub async fn run_verify_with(
         &outcome.exit.server_workspace_root,
         subdir.as_deref(),
     );
+    // A failed run on a mirror that lacks files the checkout has may fail for that reason:
+    // `go test` reports `[setup failed]` for an embed pattern the omitted files matched, and the
+    // streamed warning was not in the report (#2048).
+    let failed = outcome.exit.timed_out || outcome.exit.exit_code != Some(0);
+    if failed && let Some(warning) = outcome.sync_warning() {
+        diagnostics.insert(0, sync_diagnostic(warning));
+    }
     for failure in &mut failures {
         let prefix = format!(
             "{}/",
@@ -150,6 +157,18 @@ pub async fn run_verify_with(
         platform: outcome.exit.platform.clone(),
         executor: Some(outcome.executor.clone()),
     })
+}
+
+/// The mirror's omitted files as a warning of the report, ahead of the run's own diagnostics.
+pub(crate) fn sync_diagnostic(warning: String) -> crate::verify::types::Diagnostic {
+    crate::verify::types::Diagnostic {
+        level: "warning".to_string(),
+        code: Some("sync".to_string()),
+        message: warning,
+        file: None,
+        line: None,
+        column: None,
+    }
 }
 
 /// Diagnostic paths as the checkout names them: the node's copy at `server_root`, and the

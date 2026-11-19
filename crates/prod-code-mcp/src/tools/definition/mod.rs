@@ -21,6 +21,7 @@ use crate::protocol::McpToolCallResult;
 
 pub(crate) mod body;
 pub(crate) mod html_fallback;
+mod impl_scope;
 #[cfg(test)]
 mod qualified_fallback_tests;
 pub(crate) mod range;

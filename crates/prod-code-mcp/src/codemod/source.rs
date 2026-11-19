@@ -22,6 +22,7 @@ pub fn tokenize_source_for_lang(source: &str, lang: Option<Language>) -> Vec<Sou
     let bytes = source.as_bytes();
     let mut i = 0;
     let is_python = matches!(lang, Some(Language::Python));
+    let is_rust = matches!(lang, Some(Language::Rust));
 
     while i < bytes.len() {
         let b = bytes[i];
@@ -82,6 +83,25 @@ pub fn tokenize_source_for_lang(source: &str, lang: Option<Language>) -> Vec<Sou
             });
             i += 1;
             continue;
+        }
+
+        // A Rust lifetime or label (`'_`, `'a`, `'outer:`) is not a character literal: read as
+        // one, `SessionOp<'_>` swallowed the code up to the next quote, and every call after it
+        // was missed (#2052). `'a'` is still the character.
+        if is_rust && b == b'\'' {
+            let mut end = i + 1;
+            while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+                end += 1;
+            }
+            if end > i + 1 && bytes.get(end) != Some(&b'\'') {
+                tokens.push(SourceToken {
+                    kind: TokenKind::Ident(source[i..end].to_string()),
+                    start_byte: i,
+                    end_byte: end,
+                });
+                i = end;
+                continue;
+            }
         }
 
         // String literals (", ', `)

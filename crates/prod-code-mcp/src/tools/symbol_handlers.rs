@@ -121,14 +121,21 @@ pub(crate) async fn handle_symbols(
         .and_then(|v| v.as_str())
         .context("Missing 'query' argument")?;
     let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(30) as usize;
-    let ranked = search_ranked_symbols(
+    // A nested project the search could not ask leaves "nothing of that name" unproved (#2054).
+    let (ranked, unanswered) = super::symbols::unanswered::collect(search_ranked_symbols(
         remote,
         workspace_root,
         query,
         args.get("path").and_then(|v| v.as_str()),
         limit,
-    )
-    .await?;
+    ))
+    .await;
+    let ranked = ranked?;
+    let unasked = if ranked.exact_match {
+        String::new()
+    } else {
+        super::symbols::unanswered::sentence(&unanswered)
+    };
     // A declaration the index omits is looked for when nothing of exactly that name was found,
     // fuzzy matches such as `LostBuilder` for `Lost` or not (#1421).
     let name = bare_symbol_name(query);
@@ -140,7 +147,7 @@ pub(crate) async fn handle_symbols(
     };
     if ranked.hits.is_empty() {
         return Ok(McpToolCallResult::text(format!(
-            "No symbols match `{query}`.{unindexed}"
+            "No symbols match `{query}`.{unindexed}{unasked}"
         )));
     }
     let listed = format_ranked_symbol_hits(
@@ -151,7 +158,9 @@ pub(crate) async fn handle_symbols(
         ranked.omitted_fuzzy,
         ranked.all_fuzzy,
     );
-    Ok(McpToolCallResult::text(format!("{listed}{unindexed}")))
+    Ok(McpToolCallResult::text(format!(
+        "{listed}{unindexed}{unasked}"
+    )))
 }
 
 /// How many hits `code_symbols` asks the server for before ranking them.
