@@ -119,6 +119,10 @@ pub(crate) fn find_unindexed_rust_declarations(
         if !names_word(&text, name) {
             continue;
         }
+        // Whether the qualifier is only a type of this file, met in an `impl` header: then the
+        // item must be inside that `impl`, and a `mod cancel;` beside it is not
+        // `Exec::cancel` (#2045).
+        let mut owner_is_impl_only = false;
         if let Some(qual) = qualifier {
             let stem_matches = path.file_stem().and_then(|s| s.to_str()) == Some(qual);
             let parent_matches = path
@@ -126,11 +130,14 @@ pub(crate) fn find_unindexed_rust_declarations(
                 .and_then(|p| p.file_name())
                 .and_then(|s| s.to_str())
                 == Some(qual);
-            let text_matches =
-                text.contains(&format!("impl {qual}")) || text.contains(&format!("mod {qual}"));
-            if !stem_matches && !parent_matches && !text_matches {
+            let module_matches = text.contains(&format!("mod {qual}"));
+            let impl_matches =
+                text.contains(&format!("impl {qual}")) || text.contains(&format!(" for {qual}"));
+            if !stem_matches && !parent_matches && !module_matches && !impl_matches {
                 continue;
             }
+            owner_is_impl_only =
+                impl_matches && !stem_matches && !parent_matches && !module_matches;
         }
         // A qualified name asks for an item of that owner, or a field of that struct: the
         // parameter `payable: i64` of a function in `ledger_math.rs` is not
@@ -144,9 +151,16 @@ pub(crate) fn find_unindexed_rust_declarations(
             )
         });
         for (index, col) in code_declarations(&text, &path, name) {
-            if qualified
-                .as_ref()
-                .is_some_and(|lines| !lines.contains(&index))
+            let in_owner_impl = || {
+                qualifier.is_some_and(|qual| super::impl_scope::inside_impl_of(&text, index, qual))
+            };
+            if owner_is_impl_only && !in_owner_impl() {
+                continue;
+            }
+            if !owner_is_impl_only
+                && qualified
+                    .as_ref()
+                    .is_some_and(|lines| !lines.contains(&index))
             {
                 continue;
             }

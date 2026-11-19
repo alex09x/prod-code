@@ -41,6 +41,9 @@ pub(crate) async fn resolve_symbol_ties(
     // And neither are the generic arguments of a type (`JournalInner<ENTRY>::load_code`), for
     // the search, the owner lookup and the dependency scope alike (#2000).
     let absolute = super::matching::without_generics(absolute);
+    // An owner spelled as rust-analyzer labels the block (`impl Element for TextElement::paint`,
+    // which the closest-names list itself offers) is that block's type (#2053).
+    let absolute = super::module_members::impl_owner_spelled_as_type(&absolute);
     let parts: Vec<&str> = absolute
         .split(['.', ':', '#', '/'])
         .map(|p| p.trim().trim_end_matches("()"))
@@ -177,6 +180,18 @@ pub(crate) async fn resolve_symbol_ties(
         } else {
             exact
         }
+    };
+    // A module is never a member of a type: `Exec::cancel` is not the `mod cancel;` of a file
+    // that also has an `impl Exec`, which `code_definition` answered with that module's first
+    // line (#2045). A module is a qualified answer only inside a module the qualifiers name.
+    let exact = if qualifier.is_some() {
+        let kept = super::module_members::modules_of_qualifiers(root, exact, qualifiers, name);
+        if kept.is_empty() {
+            anyhow::bail!("{}", no_symbol_message(symbol, name, &[]));
+        }
+        kept
+    } else {
+        exact
     };
     // The overload the caller spelled out, when the declarations tell their labels apart. A
     // selector nothing declares leaves the candidates as they were.

@@ -49,6 +49,34 @@ fn a_dotted_qualifier_is_kept_by_the_source_fallbacks() {
     assert!(find_shell_declarations(root, "Terminal::feed", None).is_empty());
 }
 
+/// #2045: `Exec::cancel` is not the `#[path] mod cancel;` of a file that also has `impl Exec`;
+/// the method inside that `impl` is still found.
+#[test]
+fn a_module_beside_an_impl_is_not_its_member() {
+    let temp = tempfile::Builder::new()
+        .prefix("modimpl")
+        .tempdir()
+        .unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), "pub struct Exec;\nmod liq;\n").unwrap();
+    std::fs::write(
+        root.join("src/liq.rs"),
+        "use super::*;\n\n#[path = \"liq_cancel.rs\"]\nmod cancel;\n\nimpl Exec {\n    pub fn sweep(&self) {}\n}\n",
+    )
+    .unwrap();
+    let hits = find_unindexed_rust_declarations(root, "Exec::cancel", None);
+    assert!(hits.is_empty(), "{hits:?}");
+    let sweep = find_unindexed_rust_declarations(root, "Exec::sweep", None);
+    assert_eq!(sweep.len(), 1, "{sweep:?}");
+    assert_eq!(sweep[0].line, 7);
+    // The module is still the module's.
+    assert_eq!(
+        find_unindexed_rust_declarations(root, "liq::cancel", None).len(),
+        1
+    );
+}
+
 /// The qualifier still finds what it names, spelled with a dot or with `::`, and a bare name
 /// still finds every declaration of it.
 #[test]

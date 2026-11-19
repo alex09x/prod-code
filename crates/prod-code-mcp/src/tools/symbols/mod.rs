@@ -19,6 +19,7 @@ pub mod declared_at;
 mod dependencies;
 pub mod matching;
 pub(crate) mod module_items;
+mod module_members;
 pub mod nested_projects;
 mod nested_swift;
 mod reexport;

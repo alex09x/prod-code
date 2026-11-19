@@ -299,7 +299,10 @@ pub fn find_structural_matches_in_source(
         }
     }
 
-    let tokens = tokenize_source(source);
+    let lang = rel_path
+        .ends_with(".rs")
+        .then_some(crate::parameter_object::Language::Rust);
+    let tokens = super::source::tokenize_source_for_lang(source, lang);
     if tokens.is_empty() {
         return Vec::new();
     }

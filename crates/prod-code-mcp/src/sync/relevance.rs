@@ -194,7 +194,7 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
 }
 
 /// Returns true if the path points to a programming language source code file or manifest.
-fn is_code_source_or_manifest_file(path: &Path) -> bool {
+pub(crate) fn is_code_source_or_manifest_file(path: &Path) -> bool {
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
         let ext_lower = ext.to_lowercase();
         matches!(

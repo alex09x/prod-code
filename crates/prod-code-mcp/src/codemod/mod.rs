@@ -21,6 +21,8 @@ pub mod types;
 
 pub mod boundaries;
 #[cfg(test)]
+mod nested_tests;
+#[cfg(test)]
 mod tests;
 
 pub use execute::{run_codemod, run_structural_search};

@@ -20,6 +20,7 @@ pub(crate) use super::workspace_writer::workspace_mutation_lock;
 use crate::protocol::McpToolCallResult;
 
 mod budgets;
+mod compile_database;
 use super::definition::html_fallback;
 mod confinement;
 mod context;
@@ -204,15 +205,30 @@ pub fn execute_tool_at_with<'a>(
                 let sync_stage = crate::sync::types::SyncStageTracker::new();
                 let tracked =
                     crate::sync::types::scope_sync_stage(std::sync::Arc::clone(&sync_stage), run);
+                // A C/C++ checkout clangd can index nothing of is told so, after a name lookup
+                // that ran out of time or found nothing (#2047).
+                let with_database_note =
+                    |message: String| match compile_database::compile_database_note(workspace_root)
+                    {
+                        Some(note) => format!("{message}\n{note}"),
+                        None => message,
+                    };
                 match tokio::time::timeout_at(budget.deadline, tracked).await {
                     Ok(Ok(result)) => Ok(result),
                     Ok(Err(error)) if is_timeout_error(&error) => Ok(McpToolCallResult::error(
-                        definition_subrequest_timeout_message(budget, &error),
+                        with_database_note(definition_subrequest_timeout_message(budget, &error)),
                     )),
+                    Ok(Err(error))
+                        if format!("{error:#}").contains("no symbol named")
+                            && compile_database::lacks_compile_database(workspace_root) =>
+                    {
+                        Ok(McpToolCallResult::error(with_database_note(format!(
+                            "{error:#}"
+                        ))))
+                    }
                     Ok(Err(error)) => Err(error),
-                    Err(_) => Ok(McpToolCallResult::error(definition_busy_message(
-                        budget,
-                        sync_stage.get(),
+                    Err(_) => Ok(McpToolCallResult::error(with_database_note(
+                        definition_busy_message(budget, sync_stage.get()),
                     ))),
                 }
             }
