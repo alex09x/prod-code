@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## v0.3.62 — 2026-11-19
+
 ### Added
 - **`code_move` Moves a Member of a Swift Type into an Extension of Its Type in Another File** (`crates/prod-code-mcp`, #2040): a method of a Swift type was refused, because moved alone it would become a free declaration outside its type (#1978), and the member had to be cut into an extension by hand. The move now writes it, unchanged, into the target file's `extension` of the same type — the first one without a `where` clause — or appends a new `extension Type { … }` (a nested type gets `extension Outer.Inner`); its signature and every caller stay as they were, and no import is touched. What an extension cannot hold, or what the move would cut off from its type, is refused with the reason, before anything is written: a stored property, an enum case, `deinit`, an `override`, a designated or `required` initializer of a class, a `private` or `fileprivate` member, a member that uses a `private` or `fileprivate` declaration of its file (sourcekit-lsp accepts such a call from another file; the compiler does not), a protocol requirement, a member of a constrained extension, and a declaration inside a function or an accessor. Live on a macOS node: a method moved into an existing extension and into a new file, `swift build` and `swift run` succeed; a method calling a `private` one is refused where the analyzer had called it clean.
 
