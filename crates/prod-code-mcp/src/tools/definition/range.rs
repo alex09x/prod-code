@@ -131,8 +131,8 @@ pub(crate) fn find_unindexed_rust_declarations(
                 .and_then(|s| s.to_str())
                 == Some(qual);
             let module_matches = text.contains(&format!("mod {qual}"));
-            let impl_matches =
-                text.contains(&format!("impl {qual}")) || text.contains(&format!(" for {qual}"));
+            // `impl Owner`, `impl<T> Owner<T>`, `impl Trait for Owner`, over one line or more.
+            let impl_matches = super::impl_scope::has_impl_of(&text, qual);
             if !stem_matches && !parent_matches && !module_matches && !impl_matches {
                 continue;
             }

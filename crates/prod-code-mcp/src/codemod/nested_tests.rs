@@ -68,6 +68,17 @@ fn labelled<'a>(x: &'a str) -> char {
     assert_eq!(count(source, "Sha256::digest($ARG)"), 2);
 }
 
+/// `code_codemod` reads a Rust file as Rust too: the call after a lifetime is rewritten.
+#[test]
+fn a_rewrite_after_a_lifetime_applies() {
+    let rule = super::types::CodemodRule::parse("Sha256::digest($ARG) ==>> sha256($ARG)")
+        .expect("valid rule");
+    let source = "fn m(op: &Op<'_>) {}\nfn d(b: &[u8]) -> Vec<u8> { Sha256::digest(b).to_vec() }\n";
+    let rewritten =
+        super::matcher::rewrite_source_in("src/lib.rs", source, &rule).expect("should match");
+    assert!(rewritten.contains("sha256(b).to_vec()"), "{rewritten}");
+}
+
 #[test]
 fn a_plain_call_still_matches() {
     assert_eq!(

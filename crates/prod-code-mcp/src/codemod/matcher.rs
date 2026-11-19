@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use super::source::{compute_matching_delims, tokenize_source};
+use super::source::compute_matching_delims;
 use super::types::{
     CodemodMatch, CodemodRule, CompiledPattern, MatchBindings, PatternMatch, PatternToken,
     ReplacementToken, SourceToken, StructuralMatchItem, TokenKind, byte_to_line_col,
@@ -237,6 +237,19 @@ pub fn match_at(
 
 /// Find all non-overlapping structural matches in `source` and produce rewritten text if any matches occur.
 pub fn rewrite_source(source: &str, rule: &CodemodRule) -> Option<String> {
+    rewrite_source_in("", source, rule)
+}
+
+/// The language a file is tokenized as, by its path: Rust for `.rs`, where a lifetime is not a
+/// character literal (#2052); otherwise the language-neutral reading.
+pub(crate) fn language_of(rel_path: &str) -> Option<crate::parameter_object::Language> {
+    rel_path
+        .ends_with(".rs")
+        .then_some(crate::parameter_object::Language::Rust)
+}
+
+/// [`rewrite_source`] for the file at `rel_path`, read as its language.
+pub fn rewrite_source_in(rel_path: &str, source: &str, rule: &CodemodRule) -> Option<String> {
     // Quick candidate rejection
     for lit in &rule.required_literals {
         if !source.contains(lit) {
@@ -244,7 +257,7 @@ pub fn rewrite_source(source: &str, rule: &CodemodRule) -> Option<String> {
         }
     }
 
-    let tokens = tokenize_source(source);
+    let tokens = super::source::tokenize_source_for_lang(source, language_of(rel_path));
     if tokens.is_empty() {
         return None;
     }
@@ -299,10 +312,7 @@ pub fn find_structural_matches_in_source(
         }
     }
 
-    let lang = rel_path
-        .ends_with(".rs")
-        .then_some(crate::parameter_object::Language::Rust);
-    let tokens = super::source::tokenize_source_for_lang(source, lang);
+    let tokens = super::source::tokenize_source_for_lang(source, language_of(rel_path));
     if tokens.is_empty() {
         return Vec::new();
     }

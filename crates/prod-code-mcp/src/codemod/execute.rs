@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::time::Instant;
 
-use super::matcher::{find_structural_matches_in_source, rewrite_source};
+use super::matcher::{find_structural_matches_in_source, rewrite_source_in};
 use super::scope::{collect_code_files, validate_scope_path};
 use super::types::{CodemodOutcome, CodemodRule, CompiledPattern, StructuralSearchResult};
 
@@ -54,7 +54,7 @@ pub fn run_codemod(
             continue;
         };
 
-        if let Some(new_text) = rewrite_source(&old_text, &rule) {
+        if let Some(new_text) = rewrite_source_in(&path.to_string_lossy(), &old_text, &rule) {
             let rel = path
                 .strip_prefix(&workspace_root)
                 .map(|p| p.to_string_lossy().into_owned())

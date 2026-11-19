@@ -26,16 +26,60 @@ pub(crate) fn inside_impl_of(text: &str, line: usize, owner: &str) -> bool {
         return false;
     }
     // The block directly around the line: a local of a method (`let cancel`) is inside the
-    // method, not a member of the `impl` around it.
-    lines[..line]
+    // method, not a member of the `impl` around it. Its header may span lines
+    // (`impl<T> Exec<T>` / `where T: Clone` / `{`): the lines at the opening line's indentation
+    // above it are read up to the header, and an item ending there (`}` or `;`) ends the search.
+    let code: Vec<(usize, &str)> = lines[..line]
         .iter()
-        .rev()
         .map(|row| (indent(row), row.trim_start()))
         .filter(|(_, trimmed)| {
             !trimmed.is_empty() && !trimmed.starts_with("//") && !trimmed.starts_with('#')
         })
-        .find(|(level, _)| *level < depth)
-        .is_some_and(|(_, header)| names_owner(header, owner))
+        .collect();
+    let Some(open) = code.iter().rposition(|(level, _)| *level < depth) else {
+        return false;
+    };
+    let level = code[open].0;
+    for (at, (row_level, row)) in code[..=open].iter().enumerate().rev() {
+        // A deeper line is a continuation of the header (`    T: Clone,`); a shallower one
+        // is outside the block.
+        if *row_level > level {
+            continue;
+        }
+        if *row_level < level {
+            return false;
+        }
+        if is_block_header(row) {
+            return names_owner(row, owner);
+        }
+        if at != open && (row.ends_with('}') || row.ends_with(';')) {
+            return false;
+        }
+    }
+    false
+}
+
+/// Whether a line starts a type's block: `impl`, `struct`, `enum`, `union` or `trait`.
+fn is_block_header(row: &str) -> bool {
+    let row = row
+        .trim_start_matches("pub(crate) ")
+        .trim_start_matches("pub(super) ")
+        .trim_start_matches("pub ")
+        .trim_start_matches("unsafe ");
+    row.starts_with("impl ")
+        || row.starts_with("impl<")
+        || ["struct ", "enum ", "union ", "trait "]
+            .iter()
+            .any(|keyword| row.starts_with(keyword))
+}
+
+/// Whether `text` has an `impl` block for `owner`, in any spelling: `impl Owner`,
+/// `impl<T> Owner<T>`, `impl Trait for Owner`.
+pub(crate) fn has_impl_of(text: &str, owner: &str) -> bool {
+    text.lines().any(|row| {
+        let row = row.trim_start();
+        (row.starts_with("impl ") || row.starts_with("impl<")) && names_owner(row, owner)
+    })
 }
 
 /// Whether a block header names `owner` as its type.
@@ -121,6 +165,13 @@ pub struct Exec {
 impl Other {
     fn cancel(&self) {}
 }
+
+impl<T> fmt::Display for Wrapped<T>
+where
+    T: Clone,
+{
+    fn fmt(&self) {}
+}
 ";
 
     /// #2045: the `mod cancel;` beside `impl Exec` is not inside it, nor is a local of its
@@ -135,5 +186,16 @@ impl Other {
         assert!(inside_impl_of(SOURCE, at("pub cancel"), "Exec"));
         assert!(!inside_impl_of(SOURCE, at("fn cancel"), "Exec"));
         assert!(inside_impl_of(SOURCE, at("fn cancel"), "Other"));
+    }
+
+    /// A header over several lines, with a `where` clause, still owns its items.
+    #[test]
+    fn a_multi_line_header_owns_its_items() {
+        let at = |needle: &str| SOURCE.lines().position(|l| l.contains(needle)).unwrap();
+        assert!(inside_impl_of(SOURCE, at("fn fmt"), "Wrapped"));
+        assert!(!inside_impl_of(SOURCE, at("fn fmt"), "Other"));
+        assert!(has_impl_of(SOURCE, "Wrapped"));
+        assert!(has_impl_of(SOURCE, "Exec"));
+        assert!(!has_impl_of(SOURCE, "Missing"));
     }
 }

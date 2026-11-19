@@ -49,9 +49,81 @@ pub(crate) fn compile_database_note(root: &Path) -> Option<String> {
     })
 }
 
+/// The tools whose lookup by name the note is for.
+const NAME_LOOKUPS: [&str; 2] = ["code_definition", "code_references"];
+
+/// What a failed lookup by name says: it found nothing, or ran out of time.
+fn is_failed_lookup(text: &str) -> bool {
+    text.contains("no symbol named")
+        || text.contains("did not finish within")
+        || text.contains("timed out")
+}
+
+/// `outcome` of `tool` in the checkout `root` names (asked only for a failure), with the note
+/// added when it is a failed C/C++ lookup by name: an error result gets it appended, and a
+/// "no symbol" error becomes such a result. Any other outcome is returned as it was.
+pub(crate) fn annotate(
+    tool: &str,
+    root: impl FnOnce() -> std::path::PathBuf,
+    outcome: anyhow::Result<crate::protocol::McpToolCallResult>,
+) -> anyhow::Result<crate::protocol::McpToolCallResult> {
+    use crate::protocol::{McpContentItem, McpToolCallResult};
+    if !NAME_LOOKUPS.contains(&tool) {
+        return outcome;
+    }
+    match outcome {
+        Ok(mut result) if result.is_error => {
+            let failed = result.content.iter().any(|item| match item {
+                McpContentItem::Text { text } => is_failed_lookup(text),
+            });
+            if failed && let Some(note) = compile_database_note(&root()) {
+                result.content.push(McpContentItem::Text { text: note });
+            }
+            Ok(result)
+        }
+        Err(error) if format!("{error:#}").contains("no symbol named") => {
+            match compile_database_note(&root()) {
+                Some(note) => Ok(McpToolCallResult::error(format!("{error:#}\n{note}"))),
+                None => Err(error),
+            }
+        }
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The note reaches a failed definition or references lookup, and nothing else.
+    #[test]
+    fn a_failed_lookup_by_name_gets_the_note() {
+        use crate::protocol::{McpContentItem, McpToolCallResult};
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join("CMakeLists.txt"), "project(x)\n").unwrap();
+        let text = |result: &McpToolCallResult| {
+            result
+                .content
+                .iter()
+                .map(|McpContentItem::Text { text }| text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let at = || root.to_path_buf();
+        let busy = McpToolCallResult::error("code_references did not finish within 20000 ms");
+        let noted = annotate("code_references", at, Ok(busy)).unwrap();
+        assert!(text(&noted).contains("compile_commands.json"));
+
+        let missing = anyhow::anyhow!("no symbol named `A::f` in the workspace index");
+        let noted = annotate("code_definition", at, Err(missing)).unwrap();
+        assert!(noted.is_error && text(&noted).contains("cmake -S ."));
+
+        let found = McpToolCallResult::text("📍 Definition: a.cpp:1:1");
+        assert!(!text(&annotate("code_definition", at, Ok(found)).unwrap()).contains("cmake"));
+        let other = McpToolCallResult::error("no symbol named `x`");
+        assert!(!text(&annotate("code_hover", at, Ok(other)).unwrap()).contains("cmake"));
+    }
 
     /// #2047: a CMake checkout without a database is named; one with a database, or with flags,
     /// or a Rust checkout, is not.

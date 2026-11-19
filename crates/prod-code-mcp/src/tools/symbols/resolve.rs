@@ -86,9 +86,15 @@ pub(crate) async fn resolve_symbol_ties(
                     .filter(|hit| !qualifier_matches(root, hit, qualifiers))
                     .cloned(),
             );
-            let (mut eligible, exact): (Vec<SymbolHit>, Vec<SymbolHit>) = exact
+            let (eligible, exact): (Vec<SymbolHit>, Vec<SymbolHit>) = exact
                 .into_iter()
                 .partition(|hit| qualifier_matches(root, hit, qualifiers));
+            // A module is never a member of a type: `Exec::cancel` is not the `mod cancel;` of
+            // a file that also has an `impl Exec` (#2045). A module is a qualified answer only
+            // inside a module the qualifiers name; the rest stay suggestions, and the fallbacks
+            // below still run.
+            let mut eligible =
+                super::module_members::modules_of_qualifiers(root, eligible, qualifiers, name);
             if eligible.is_empty() {
                 // A path copied from a `use` line names the item where it is re-exported (#1582).
                 eligible = exact
@@ -180,18 +186,6 @@ pub(crate) async fn resolve_symbol_ties(
         } else {
             exact
         }
-    };
-    // A module is never a member of a type: `Exec::cancel` is not the `mod cancel;` of a file
-    // that also has an `impl Exec`, which `code_definition` answered with that module's first
-    // line (#2045). A module is a qualified answer only inside a module the qualifiers name.
-    let exact = if qualifier.is_some() {
-        let kept = super::module_members::modules_of_qualifiers(root, exact, qualifiers, name);
-        if kept.is_empty() {
-            anyhow::bail!("{}", no_symbol_message(symbol, name, &[]));
-        }
-        kept
-    } else {
-        exact
     };
     // The overload the caller spelled out, when the declarations tell their labels apart. A
     // selector nothing declares leaves the candidates as they were.

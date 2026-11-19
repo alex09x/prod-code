@@ -31,6 +31,7 @@ pub mod sources;
 mod stdlib_hits;
 pub mod type_members;
 pub mod types;
+pub(crate) mod unanswered;
 pub mod unindexed;
 
 pub use matching::DEFAULT_AMBIGUOUS_CANDIDATE_LIMIT;

@@ -42,24 +42,29 @@ pub(crate) fn modules_of_qualifiers(
 /// gives an `impl` block names the owner of its items, and the closest-names list of a failed
 /// lookup offers members spelled that way (#2053). Anything else is returned as it was.
 pub(crate) fn impl_owner_spelled_as_type(symbol: &str) -> String {
-    let segments: Vec<&str> = symbol.split("::").collect();
-    let Some((name, owners)) = segments.split_last() else {
+    // The label starts at `impl ` (at the start or after a module path's `::`) and runs to the
+    // last `::`; a trait or type inside it may be a path too (`impl fmt::Display for Foo`).
+    let start = if symbol.starts_with("impl ") {
+        Some(0)
+    } else {
+        symbol.find("::impl ").map(|at| at + 2)
+    };
+    let Some(start) = start else {
         return symbol.to_string();
     };
-    let Some(label) = owners.last().map(|owner| owner.trim()) else {
+    let Some(last) = symbol.rfind("::").filter(|last| *last > start) else {
         return symbol.to_string();
     };
-    let Some(rest) = label.strip_prefix("impl ") else {
-        return symbol.to_string();
-    };
-    let owner = rest.rsplit(" for ").next().unwrap_or(rest).trim();
-    if owner.is_empty() || owner.contains(char::is_whitespace) {
+    let (module, label, name) = (
+        &symbol[..start],
+        &symbol[start + 5..last],
+        &symbol[last + 2..],
+    );
+    let owner = label.rsplit(" for ").next().unwrap_or(label).trim();
+    if owner.is_empty() || owner.contains(char::is_whitespace) || name.is_empty() {
         return symbol.to_string();
     }
-    let mut path: Vec<&str> = owners[..owners.len() - 1].to_vec();
-    path.push(owner);
-    path.push(name);
-    path.join("::")
+    format!("{module}{owner}::{name}")
 }
 
 #[cfg(test)]
@@ -77,6 +82,8 @@ mod tests {
                 "ui::impl Element for TextElement::paint",
                 "ui::TextElement::paint",
             ),
+            ("impl fmt::Display for Foo::fmt", "Foo::fmt"),
+            ("impl fmt::Display for ui::Foo::fmt", "ui::Foo::fmt"),
             ("TextElement::paint", "TextElement::paint"),
             ("paint", "paint"),
             ("implement::paint", "implement::paint"),

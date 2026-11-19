@@ -255,8 +255,6 @@ pub(crate) async fn symbol_search_across_projects(
             }
         }
     }
-    // The nested projects that could not be asked, with the reason.
-    let mut unanswered: Vec<String> = Vec::new();
     for (anchor, subpath, engine) in anchors {
         // No gateway runs a language server for shell scripts; they are read from source
         // (#1940), so a shell project is neither asked nor reported as left unasked.
@@ -281,7 +279,10 @@ pub(crate) async fn symbol_search_across_projects(
         {
             Ok(Ok(n)) => n,
             Ok(Err(error)) => {
-                unanswered.push(format!("{project}: no node took it ({error:#})"));
+                // Asked on the checkout's node all the same, which may not serve its language.
+                super::unanswered::note(format!(
+                    "{project}: no node serving {engine} took it, so the checkout's own node was asked ({error:#})"
+                ));
                 remote
             }
             Err(_) => {
@@ -289,7 +290,7 @@ pub(crate) async fn symbol_search_across_projects(
                     query,
                     "symbol search route_for_path reached budget; continuing to next project"
                 );
-                unanswered.push(format!("{project}: choosing its node ran out of time"));
+                super::unanswered::note(format!("{project}: choosing its node ran out of time"));
                 continue;
             }
         };
@@ -311,7 +312,7 @@ pub(crate) async fn symbol_search_across_projects(
                 if is_malformed_lsp_coordinate(&err) {
                     return Err(err);
                 }
-                unanswered.push(format!("{project}: its language server failed ({err:#})"));
+                super::unanswered::note(format!("{project}: its language server failed ({err:#})"));
                 Vec::new()
             }
             Err(_) => {
@@ -319,7 +320,7 @@ pub(crate) async fn symbol_search_across_projects(
                     query,
                     "nested workspace_symbol_search reached budget; continuing to next project"
                 );
-                unanswered.push(format!(
+                super::unanswered::note(format!(
                     "{project}: its language server did not answer within {}s",
                     step_budget.as_secs()
                 ));
@@ -367,14 +368,6 @@ pub(crate) async fn symbol_search_across_projects(
         && let Some(error) = primary_error
     {
         return Err(error);
-    }
-    // Nothing found where a project went unasked is not "no such symbol" (#2054): say which
-    // project, and why, so the caller can retry or read the source.
-    if hits.is_empty() && !unanswered.is_empty() {
-        anyhow::bail!(
-            "no answer for `{query}`: not every project was searched; {}. Retry once the node serving it is available, or read the declaration's file with code_source.",
-            unanswered.join("; ")
-        );
     }
     Ok(hits)
 }
