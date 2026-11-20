@@ -56,14 +56,23 @@ pub fn wait_for_exit(pid: i32) -> bool {
 /// belong to another process yet (#1545). The group is signalled after the leader exited too,
 /// because descendants that outlived it may hold its pipes (#1541).
 pub fn kill_exec_group(pid: u32) {
-    let _ = std::process::Command::new("kill")
-        .args(["-9", "--", &format!("-{pid}")])
-        .stderr(std::process::Stdio::null())
-        .status();
-    let _ = std::process::Command::new("kill")
-        .args(["-9", &pid.to_string()])
-        .stderr(std::process::Stdio::null())
-        .status();
+    // Signalled directly: a `kill` program spawned and waited for on the timeout path blocked
+    // the runtime thread, and a missing one left the command running.
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return;
+    };
+    if pid <= 1 {
+        return;
+    }
+    for target in [-pid, pid] {
+        // SAFETY: `kill` takes plain integers; a positive PID above 1 and its negated group.
+        if unsafe { libc::kill(target, libc::SIGKILL) } != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                tracing::warn!(target, %error, "could not kill the command");
+            }
+        }
+    }
 }
 
 pub fn resolve_run_dir(workspace: &Path, subdir: Option<&str>) -> PathBuf {

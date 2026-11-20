@@ -86,7 +86,13 @@ pub struct ServerCli {
 
     /// Below this share of free space (percent) on the storage filesystem, idle worktree copies
     /// are deleted oldest first, however young, until it is reached again (0 disables) (#386).
-    #[arg(long, env = "PROD_CODE_PRUNE_BELOW_FREE_PERCENT", default_value_t = 15)]
+    /// Above 100 the target cannot be reached and every idle worktree would go: refused.
+    #[arg(
+        long,
+        env = "PROD_CODE_PRUNE_BELOW_FREE_PERCENT",
+        default_value_t = 15,
+        value_parser = clap::value_parser!(u64).range(0..=100)
+    )]
     pub prune_below_free_percent: u64,
 
     /// Only serve these engines (comma-separated: rust, go, cpp, swift, python, typescript).

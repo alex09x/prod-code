@@ -10,9 +10,57 @@
 
 use crate::*;
 
+/// The text of `pending` up to a character a later chunk has yet to complete, removed from it.
+/// Bytes that are not UTF-8 at all are dropped, as before, and only they.
+fn take_complete_text(pending: &mut Vec<u8>) -> String {
+    let mut text = String::new();
+    let mut at = 0;
+    while at < pending.len() {
+        match std::str::from_utf8(&pending[at..]) {
+            Ok(rest) => {
+                text.push_str(rest);
+                at = pending.len();
+            }
+            Err(e) => {
+                let valid = at + e.valid_up_to();
+                text.push_str(std::str::from_utf8(&pending[at..valid]).unwrap_or_default());
+                match e.error_len() {
+                    Some(bad) => at = valid + bad,
+                    // An incomplete character at the end: kept for the next chunk.
+                    None => {
+                        at = valid;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    pending.drain(..at);
+    text
+}
+
+#[cfg(test)]
+#[test]
+fn a_character_split_across_chunks_is_kept() {
+    let line = "{\"name\":\"é\"}\n".as_bytes();
+    let split = line.iter().position(|b| *b >= 0x80).unwrap() + 1;
+    let mut pending = line[..split].to_vec();
+    let first = take_complete_text(&mut pending);
+    pending.extend_from_slice(&line[split..]);
+    let second = take_complete_text(&mut pending);
+    assert_eq!(format!("{first}{second}"), "{\"name\":\"é\"}\n");
+    assert!(pending.is_empty());
+    // Bytes that are not UTF-8 at all are dropped, and only they.
+    let mut bad = b"ok\xff\xfe\n".to_vec();
+    assert_eq!(take_complete_text(&mut bad), "ok\n");
+    assert!(bad.is_empty());
+}
+
 #[derive(Default)]
 pub struct JsonStreamAccumulator {
     pub stdout_line_buf: String,
+    /// The tail of the last chunk that ended inside a multi-byte character.
+    pending_bytes: Vec<u8>,
     pub diagnostics: Vec<prod_code_protocol::RemoteExecDiagnostic>,
     pub tests_passed: u64,
     pub tests_failed: u64,
@@ -32,10 +80,11 @@ impl JsonStreamAccumulator {
         language: RemoteExecLanguage,
         framed: &mut Framed<AnyStream, ProdCodeCodec>,
     ) -> Result<bool> {
-        let Ok(text) = std::str::from_utf8(bytes) else {
-            return Ok(true);
-        };
-        self.stdout_line_buf.push_str(text);
+        // A chunk may end inside a multi-byte character: its bytes wait for the next chunk
+        // instead of failing to decode and taking whole records with them.
+        self.pending_bytes.extend_from_slice(bytes);
+        let text = take_complete_text(&mut self.pending_bytes);
+        self.stdout_line_buf.push_str(&text);
         while let Some(pos) = self.stdout_line_buf.find('\n') {
             if pos > MAX_JSON_LINE_BUFFER_BYTES {
                 tracing::warn!(

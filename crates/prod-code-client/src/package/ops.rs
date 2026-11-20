@@ -160,7 +160,12 @@ where
         &checksums,
         &expected_asset,
     ));
-    Ok(())
+    // The exit status says it too: a script checking it could not tell a mismatch from a match.
+    match checksums.get(&expected_asset) {
+        Some(expected) if local_hash.eq_ignore_ascii_case(expected) => Ok(()),
+        Some(_) => bail!("checksum mismatch: the binary is not the published {expected_asset}"),
+        None => bail!("the release manifest has no checksum for {expected_asset}"),
+    }
 }
 
 /// Implements `prod-code package verify`.
@@ -205,7 +210,18 @@ fn install_dir_for(system: bool, home: Option<PathBuf>) -> PathBuf {
 
 /// Downloads `asset_url` with curl into `install_dir`, marks it executable, verifies its
 /// code signature on macOS and moves it to `install_dir/prod-code`. Returns the installed path.
+#[cfg(test)]
 fn download_and_install(asset_url: &str, install_dir: &Path) -> Result<PathBuf> {
+    download_and_install_checked(asset_url, install_dir, None)
+}
+
+/// [`download_and_install`], refusing a download whose SHA-256 is not `expected_sha256` when
+/// one is given, before it replaces anything.
+fn download_and_install_checked(
+    asset_url: &str,
+    install_dir: &Path,
+    expected_sha256: Option<&str>,
+) -> Result<PathBuf> {
     std::fs::create_dir_all(install_dir)?;
     let target_bin = install_dir.join("prod-code");
     let temp_file = install_dir.join(format!(".prod-code-pkg-tmp-{}", std::process::id()));
@@ -232,7 +248,24 @@ fn download_and_install(asset_url: &str, install_dir: &Path) -> Result<PathBuf> 
         std::fs::set_permissions(&temp_file, std::fs::Permissions::from_mode(0o755))?;
     }
 
-    crate::update::verify_downloaded_binary(&temp_file)?;
+    if let Some(expected) = expected_sha256 {
+        let got = compute_sha256(&temp_file);
+        if !got
+            .as_ref()
+            .is_ok_and(|got| got.eq_ignore_ascii_case(expected))
+        {
+            let _ = std::fs::remove_file(&temp_file);
+            bail!(
+                "the download does not match the release checksum {expected} (got {}); nothing was installed",
+                got.unwrap_or_else(|e| e.to_string())
+            );
+        }
+    }
+
+    if let Err(e) = crate::update::verify_downloaded_binary(&temp_file) {
+        let _ = std::fs::remove_file(&temp_file);
+        return Err(e);
+    }
 
     std::fs::rename(&temp_file, &target_bin)
         .with_context(|| format!("failed to move binary into {}", target_bin.display()))?;
@@ -253,6 +286,7 @@ fn install_flow(
     release: &serde_json::Value,
     (force, pinned): (bool, bool),
     (install_dir, asset_base): (&Path, &str),
+    checksums: Option<&HashMap<String, String>>,
 ) -> Result<()> {
     let tag = release
         .get("tag_name")
@@ -269,7 +303,17 @@ fn install_flow(
     emit(format!("Installing prod-code {tag} (target: {target})..."));
     let asset_url = format!("{asset_base}/{tag}/prod-code-{target}");
     emit(format!("Downloading release asset from {asset_url}..."));
-    let target_bin = download_and_install(&asset_url, install_dir)?;
+    let expected = match checksums {
+        Some(sums) => Some(
+            sums.get(&format!("prod-code-{target}"))
+                .map(String::as_str)
+                .with_context(|| {
+                    format!("the {tag} manifest has no checksum for prod-code-{target}")
+                })?,
+        ),
+        None => None,
+    };
+    let target_bin = download_and_install_checked(&asset_url, install_dir, expected)?;
 
     emit(format!(
         "\n✓ Package installed successfully to {}!",
@@ -285,6 +329,15 @@ pub async fn run_package_install(force: bool, version: Option<String>, system: b
     let target = current_target()?;
     println!("Checking release packages...");
     let release_val = fetch_release_info(version.as_deref()).await?;
+    // The download is checked against the release's own SHA256SUMS before it replaces the
+    // binary; on Linux nothing else verified it.
+    let tag = release_val
+        .get("tag_name")
+        .and_then(|t| t.as_str())
+        .context("missing tag_name in release")?;
+    let checksums = fetch_official_checksums(Some(tag))
+        .await
+        .with_context(|| format!("could not fetch the {tag} checksums to verify the download"))?;
     install_flow(
         &mut |line| println!("{line}"),
         env!("CARGO_PKG_VERSION"),
@@ -295,6 +348,7 @@ pub async fn run_package_install(force: bool, version: Option<String>, system: b
             &install_dir_for(system, dirs_next_home()),
             &release_download_base(),
         ),
+        Some(&checksums),
     )
 }
 

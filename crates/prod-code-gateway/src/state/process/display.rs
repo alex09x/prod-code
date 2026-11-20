@@ -118,10 +118,12 @@ fn display_arg(arg: &str, after_secret_flag: bool) -> String {
     if lower.starts_with("bearer ") || lower.starts_with("basic ") {
         return REDACTED.to_string();
     }
-    // `KEY=value`, `--token=value`, `Authorization: value`.
-    for separator in ['=', ':'] {
-        if let Some((name, _)) = arg.split_once(separator)
-            && !name.contains("//")
+    // `KEY=value`, `--token=value`, `Authorization: value`. The name ends at the first `=` or
+    // `:`: split at an `=` first, `Authorization: Basic dXNlcjpwYXNz=` kept the credential in
+    // the "name".
+    if let Some(at) = arg.find(['=', ':']) {
+        let (name, separator) = (&arg[..at], &arg[at..at + 1]);
+        if !name.contains("//")
             && (names_a_secret(name) || name.eq_ignore_ascii_case("authorization"))
         {
             return format!("{name}{separator}{REDACTED}");
@@ -169,6 +171,16 @@ mod tests {
         assert_eq!(
             shown(&["git", "clone", "https://example.invalid/r.git"]),
             "git clone https://example.invalid/r.git"
+        );
+    }
+
+    /// A padded value (`…=`) after `Authorization:` no longer moves the name to the padding and
+    /// keeps the credential.
+    #[test]
+    fn a_padded_authorization_value_is_replaced_whole() {
+        assert_eq!(
+            shown(&["curl", "-H", "Authorization: Basic U0VOVElORUw="]),
+            "curl -H Authorization:<redacted>"
         );
     }
 

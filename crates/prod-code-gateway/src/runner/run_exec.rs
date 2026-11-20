@@ -121,9 +121,19 @@ pub async fn run_exec_with_ram(
     let snapshot_started = Instant::now();
     let before = Arc::new(if req.pull_changes {
         let root = workspace.clone();
-        tokio::task::spawn_blocking(move || snapshot_tree(&root))
-            .await
-            .unwrap_or_default()
+        // An empty "before" would make every existing file look created by the command, and a
+        // rollback would remove them: without the snapshot the command does not run.
+        match tokio::task::spawn_blocking(move || snapshot_tree(&root)).await {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                framed
+                    .send(WireMessage::ExecExit(fail(format!(
+                        "could not record the workspace before the command: {error}"
+                    ))))
+                    .await?;
+                return Ok(());
+            }
+        }
     } else {
         TreeSnapshot::default()
     });

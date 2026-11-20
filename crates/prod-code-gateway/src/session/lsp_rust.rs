@@ -187,10 +187,24 @@ pub async fn handle_rust_lsp(
                     .and_then(|u| u.as_str())
                     .unwrap_or("");
                 let file_path = uri_or_path(uri);
-                let first = params
+                // The server advertises full-document sync: a change is the whole text, and the
+                // last one wins. A ranged change is a fragment, not the document; taking its text
+                // as the file replaced the whole file with it.
+                let changes = params
                     .get("contentChanges")
                     .and_then(|c| c.as_array())
-                    .and_then(|arr| arr.first())
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                let ranged = changes.iter().any(|c| c.get("range").is_some());
+                if ranged {
+                    tracing::warn!(
+                        file = %file_path.display(),
+                        "didChange with a ranged change under full sync; ignored"
+                    );
+                }
+                let first = (!ranged)
+                    .then(|| changes.last())
+                    .flatten()
                     .and_then(|c| c.get("text"))
                     .and_then(|t| t.as_str());
                 if let Some(text) = first {
