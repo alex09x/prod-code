@@ -12,7 +12,9 @@ import assert from 'assert';
 import { homedir } from 'os';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
-import { query, compact, appendDiagnostics, formatDiagnostics, resolveToCwd } from './cli.mjs';
+import {
+  query, compact, appendDiagnostics, diagnosticsPatch, formatDiagnostics, resolveToCwd,
+} from './cli.mjs';
 
 const report = JSON.stringify({ file: 'a b.go', errors: 1, warnings: 1, items: [
   { line: 2, col: 3, severity: 'error', message: 'undefined: name' },
@@ -102,7 +104,30 @@ const spellings = [
   ['@@x.rs', '/w/@x.rs'],
   ['~/x.rs', join(homedir(), 'x.rs')],
   ['./src/../y.rs', '/w/y.rs'],
+  // Pi replaces Unicode spaces before decoding, so an encoded NBSP stays a real NBSP.
+  ['file:///w/src/health%C2%A0check.rs', '/w/src/health check.rs'],
 ];
+
+// The argv the CLI finally receives, through the production hook and query.
+async function argvChecks() {
+  const clean = JSON.stringify({ file: 'x', errors: 0, warnings: 0, items: [] });
+  for (const [input, file] of spellings) {
+    const calls = [];
+    const event = { toolName: 'edit', isError: false, content: [], input: { path: input } };
+    await diagnosticsPatch(event, '/w', async args => { calls.push(args); return clean; });
+    assert.deepStrictEqual(calls, [['diagnostics', '--json', '--', file]], input);
+  }
+  // A definition file decoded from a URI is a resolved name: passed on verbatim.
+  for (const command of ['outline', 'diagnostics']) {
+    const calls = [];
+    await query(command, { symbol }, async args => {
+      calls.push(args);
+      return args[1] === '--no-body' ? '📍 Definition: file:///w/a%C2%A0b.rs:1:1\n' : clean;
+    });
+    const prefix = command === 'diagnostics' ? ['diagnostics', '--json', '--'] : [command, '--'];
+    assert.deepStrictEqual(calls[1], [...prefix, '/w/a b.rs'], command);
+  }
+}
 
 async function pathChecks() {
   for (const [input, file] of spellings) {
@@ -133,6 +158,8 @@ async function main() {
   console.log('PASS diagnostics formatting and tool-result append');
   const piComparison = await pathChecks();
   console.log('PASS diagnostics target follows Pi path resolution');
+  await argvChecks();
+  console.log('PASS resolved file names reach the CLI verbatim');
   console.log(piComparison);
 }
 

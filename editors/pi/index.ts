@@ -12,7 +12,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Type } from 'typebox';
-import { appendDiagnostics, compact, query } from './cli.mjs';
+import { compact, diagnosticsPatch, query } from './cli.mjs';
 
 const exec = promisify(execFile);
 
@@ -93,10 +93,7 @@ export default function prodCode(pi: ExtensionAPI) {
   }
 
   pi.on('tool_result', async (event, ctx) => {
-    const patch = await appendDiagnostics(event, ctx.cwd, async (file: string) => {
-      const report = await query('diagnostics', { file }, cli(ctx.cwd, ctx.signal));
-      return compact(report);
-    });
+    const patch = await diagnosticsPatch(event, ctx.cwd, cli(ctx.cwd, ctx.signal));
     if (patch) return { ...patch, structuredContent: event.structuredContent };
   });
 }

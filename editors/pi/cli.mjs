@@ -50,26 +50,33 @@ function locationFile(output) {
 export async function query(command, { symbol, file, line, col }, run) {
   if (!commands.has(command)) throw new Error('Unsupported prod-code query.');
   const fileScoped = fileCommands.has(command);
+  // `path` is a resolved file name and is passed on verbatim from here on:
+  // normalizing it again would turn a real NBSP in a file name into a space.
+  let path;
   if (symbol !== undefined) {
     if (typeof symbol !== 'string' || !symbol.trim() || [file, line, col].some(x => x !== undefined)) {
       throw new Error('Pass a nonempty symbol alone, or a file target.');
     }
     if (command === 'symbols') return run(['symbols', '--', symbol]);
     if (!fileScoped) return run([command, `--symbol=${symbol}`]);
-    file = locationFile(await run(['def', '--no-body', `--symbol=${symbol}`]));
+    path = locationFile(await run(['def', '--no-body', `--symbol=${symbol}`]));
+  } else {
+    if (typeof file !== 'string' || !normalizeFile(file).trim()) {
+      throw new Error('Pass symbol or file.');
+    }
+    if ((!fileScoped || line !== undefined || col !== undefined) && (!validPosition(line) || !validPosition(col))) {
+      throw new Error('Pass both line and col as positive 1-based integers.');
+    }
+    path = normalizeFile(file);
   }
-  if (typeof file !== 'string' || !normalizeFile(file).trim()) {
-    throw new Error('Pass symbol or file.');
-  }
-  if ((!fileScoped || line !== undefined || col !== undefined) && (!validPosition(line) || !validPosition(col))) {
-    throw new Error('Pass both line and col as positive 1-based integers.');
-  }
-  const path = normalizeFile(file);
-  if (command === 'diagnostics') {
-    return formatDiagnostics(await run(['diagnostics', '--json', '--', path]));
-  }
+  if (command === 'diagnostics') return diagnose(path, run);
   if (fileScoped) return run([command, '--', path]);
   return run([command, '--', path, String(line), String(col)]);
+}
+
+// Diagnostics for an already resolved file name, passed to the CLI verbatim.
+export async function diagnose(path, run) {
+  return formatDiagnostics(await run(['diagnostics', '--json', '--', path]));
 }
 
 export function compact(text) {
@@ -102,7 +109,7 @@ export function formatDiagnostics(output) {
 }
 
 // Return a partial tool_result patch; never replace edit details or its status.
-export async function appendDiagnostics(event, cwd, diagnose) {
+export async function appendDiagnostics(event, cwd, check) {
   if (event.isError || (event.toolName !== 'edit' && event.toolName !== 'write')) return;
   if (typeof event.input.path !== 'string') return;
   // Diagnose the file Pi wrote, not the raw spelling: a non-breaking space or a
@@ -112,6 +119,12 @@ export async function appendDiagnostics(event, cwd, diagnose) {
   // Only source files have analyzer diagnostics; anything else keeps its result untouched.
   if (!source.test(file)) return;
   let text = 'diagnostics unavailable';
-  try { text = await diagnose(file); } catch { /* Preserve the successful edit. */ }
+  try { text = await check(file); } catch { /* Preserve the successful edit. */ }
   return { content: [...event.content, { type: 'text', text }] };
+}
+
+// The tool_result hook: diagnostics of the file Pi wrote, its resolved name
+// passed to the CLI verbatim.
+export function diagnosticsPatch(event, cwd, run) {
+  return appendDiagnostics(event, cwd, async file => compact(await diagnose(file, run)));
 }
