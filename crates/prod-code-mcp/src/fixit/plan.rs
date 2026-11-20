@@ -57,9 +57,20 @@ pub fn plan_in(
                 why = Some(format!("{} is not a file of this workspace", e.file));
                 break;
             };
-            let text = texts
-                .entry(path.clone())
-                .or_insert_with(|| std::fs::read_to_string(&path).unwrap_or_default());
+            // A file that cannot be read is not an empty one: an insertion at offset 0 would
+            // have replaced the whole file with it.
+            if !texts.contains_key(&path) {
+                match std::fs::read_to_string(&path) {
+                    Ok(read) => {
+                        texts.insert(path.clone(), read);
+                    }
+                    Err(err) => {
+                        why = Some(format!("{} cannot be read: {err}", e.file));
+                        break;
+                    }
+                }
+            }
+            let text = &texts[&path];
             let line_now = text.lines().nth(e.line.saturating_sub(1) as usize);
             if e.end > text.len()
                 || e.start > e.end

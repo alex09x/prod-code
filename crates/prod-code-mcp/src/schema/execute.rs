@@ -163,11 +163,17 @@ pub async fn rename(
         }
         for (path, edits, replaces_file) in parts {
             if replaces_file {
+                // A whole-file edit without its text would empty the file.
                 let text = edits
                     .first()
                     .and_then(|e| e.get("newText"))
                     .and_then(|t| t.as_str())
-                    .unwrap_or_default()
+                    .with_context(|| {
+                        format!(
+                            "the analyzer's whole-file edit of {} has no `newText`",
+                            display(root, &path)
+                        )
+                    })?
                     .to_string();
                 // Which occurrences the new text covered can only be seen by looking at it:
                 // the ones whose spelling is gone are done, and one still in place belongs to

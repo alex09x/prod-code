@@ -48,7 +48,9 @@ pub(crate) fn is_python_shadowed(content: &str, at: usize, name: &str) -> bool {
                 }
                 let mut nested_fn_indent: Option<usize> = None;
                 let mut local_body = String::new();
-                for body_line in &lines[body_start..lines.len() - 1] {
+                // A header that runs to the end of the file leaves no body: the range was
+                // reversed and panicked.
+                for body_line in lines.get(body_start..lines.len() - 1).unwrap_or_default() {
                     if body_line.trim().is_empty() {
                         continue;
                     }

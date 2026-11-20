@@ -42,3 +42,13 @@ pub use pull_up::pull_up_impl;
 pub use push_down::push_down_impl;
 pub use types::{ClassDecl, HierarchyRefactorResult, MemberDecl, MemberKind};
 pub use workspace::{find_class_in_workspace, find_subclasses_in_workspace};
+
+/// A member named twice would be cut twice from the same span, the second time at offsets the
+/// first cut moved.
+fn reject_repeated_members(members: &[String]) -> anyhow::Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    if let Some(repeated) = members.iter().find(|name| !seen.insert(name.as_str())) {
+        anyhow::bail!("member '{repeated}' is listed twice; nothing was written");
+    }
+    Ok(())
+}

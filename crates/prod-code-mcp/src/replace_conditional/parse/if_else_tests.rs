@@ -104,3 +104,11 @@ fn coverage_b2_python_crlf_offsets_preserve_the_following_statement() {
     assert_eq!(result.branches[0].body, "    a()");
     assert_eq!(result.branches[1].body, "    b()");
 }
+
+/// An inline suite's body sat on the header line: `f()` became part of the tag and `g()` was
+/// dropped.
+#[test]
+fn an_inline_python_suite_is_refused() {
+    let text = "if kind == 'a': f()\nelse: g()\n";
+    assert!(parse_if_else_block(text, 0).is_none());
+}

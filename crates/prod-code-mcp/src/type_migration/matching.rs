@@ -214,7 +214,8 @@ pub(crate) fn find_enclosing_fn(text: &str, at: usize, lang: Language) -> Option
             let fn_idx = prefix.rfind("fn ")?;
             let header = &text[fn_idx..at];
             let open_p = fn_idx + 3 + header[3..].find('(')?;
-            let close_p = matching(text, open_p)?;
+            // A position inside the parameter list has its `)` after it: `close_p..at` panicked.
+            let close_p = matching(text, open_p).filter(|&close| close < at)?;
             let name = text[fn_idx + 3..open_p].trim().to_string();
             let body_open = text[close_p..at].find('{')? + close_p;
             let arrow = text[close_p..body_open].find("->")? + close_p;
@@ -235,7 +236,8 @@ pub(crate) fn find_enclosing_fn(text: &str, at: usize, lang: Language) -> Option
             let fn_idx = prefix.rfind("func ")?;
             let header = &text[fn_idx..at];
             let open_p = fn_idx + 5 + header[5..].find('(')?;
-            let close_p = matching(text, open_p)?;
+            // A position inside the parameter list has its `)` after it: `close_p..at` panicked.
+            let close_p = matching(text, open_p).filter(|&close| close < at)?;
             let name = text[fn_idx + 5..open_p].trim().to_string();
             let body_open = text[close_p..at].find('{')? + close_p;
             let arrow = text[close_p..body_open].find("->")? + close_p;
@@ -256,13 +258,17 @@ pub(crate) fn find_enclosing_fn(text: &str, at: usize, lang: Language) -> Option
             let fn_idx = prefix.rfind("def ")?;
             let header = &text[fn_idx..at];
             let open_p = fn_idx + 4 + header[4..].find('(')?;
-            let close_p = matching(text, open_p)?;
+            // A position inside the parameter list has its `)` after it: `close_p..at` panicked.
+            let close_p = matching(text, open_p).filter(|&close| close < at)?;
             let name = text[fn_idx + 4..open_p].trim().to_string();
             let colon = text[close_p..at].find(':')? + close_p;
             let between = &text[close_p..colon];
             let arrow = between.find("->")? + close_p;
             let start = arrow + 2;
             let start = start + text[start..].len() - text[start..].trim_start().len();
+            if start > colon {
+                return None;
+            }
             let end = colon - (text[start..colon].len() - text[start..colon].trim_end().len());
             let return_type = text[start..end].trim().to_string();
             Some(EnclosingFn {
@@ -279,7 +285,8 @@ pub(crate) fn find_enclosing_fn(text: &str, at: usize, lang: Language) -> Option
                 .or_else(|| prefix.rfind("let "))?;
             let header = &text[fn_idx..at];
             let open_p = fn_idx + header.find('(')?;
-            let close_p = matching(text, open_p)?;
+            // A position inside the parameter list has its `)` after it: `close_p..at` panicked.
+            let close_p = matching(text, open_p).filter(|&close| close < at)?;
             let name_part = if prefix[fn_idx..].starts_with("function ") {
                 &text[fn_idx + 9..open_p]
             } else {
@@ -306,12 +313,20 @@ pub(crate) fn find_enclosing_fn(text: &str, at: usize, lang: Language) -> Option
             let fn_idx = prefix.rfind("func ")?;
             let header = &text[fn_idx..at];
             let open_p = fn_idx + 5 + header[5..].find('(')?;
-            let close_p = matching(text, open_p)?;
+            // A position inside the parameter list has its `)` after it: `close_p..at` panicked.
+            let close_p = matching(text, open_p).filter(|&close| close < at)?;
             let body_open = text[close_p..at].find('{')? + close_p;
             let between = &text[close_p + 1..body_open];
             let name = text[fn_idx + 5..open_p].trim().to_string();
-            let start = close_p + 1 + (between.len() - between.trim_start().len());
-            let end = body_open - (between.len() - between.trim_end().len());
+            // `func f() {` has only a space between: trimming it from both ends crossed over.
+            let (start, end) = if between.trim().is_empty() {
+                (close_p + 1, close_p + 1)
+            } else {
+                (
+                    close_p + 1 + (between.len() - between.trim_start().len()),
+                    body_open - (between.len() - between.trim_end().len()),
+                )
+            };
             let return_type = text[start..end].trim().to_string();
             Some(EnclosingFn {
                 name,

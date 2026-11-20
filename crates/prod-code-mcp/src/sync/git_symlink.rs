@@ -46,16 +46,15 @@ pub(crate) fn extend_listed_via_tracked_dir_symlinks(
     }
 }
 
-/// Returns Git-tracked symlinks that belong to the workspace sync filter.
+/// Returns Git-tracked symlinks that belong to the workspace sync filter, or `None` when the
+/// index cannot be read: an empty manifest tells the gateway to remove every link it placed.
 pub(crate) fn tracked_symlink_manifest(
     root: &Path,
-) -> Vec<prod_code_protocol::messages::sync::SyncSymlink> {
+) -> Option<Vec<prod_code_protocol::messages::sync::SyncSymlink>> {
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let Ok(output) = super::git::git_output(&canonical_root, ["ls-files", "-s", "-z"]) else {
-        return Vec::new();
-    };
+    let output = super::git::git_output(&canonical_root, ["ls-files", "-s", "-z"]).ok()?;
     let include = super::include::SyncInclude::load(&canonical_root);
-    output
+    let links = output
         .split(|byte| *byte == 0)
         .filter_map(|record| {
             if !record.starts_with(b"120000 ") {
@@ -76,7 +75,8 @@ pub(crate) fn tracked_symlink_manifest(
                 target,
             })
         })
-        .collect()
+        .collect();
+    Some(links)
 }
 
 pub(crate) fn is_alias_path(
@@ -238,7 +238,13 @@ mod tests {
                 .success()
         );
 
-        let links = tracked_symlink_manifest(root.path());
+        let not_git = tempfile::tempdir().unwrap();
+        assert!(
+            tracked_symlink_manifest(not_git.path()).is_none(),
+            "an unreadable index is no manifest, not an empty one that removes every link"
+        );
+
+        let links = tracked_symlink_manifest(root.path()).unwrap();
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].relative_path, "swift/Sources/App/_bindings");
         assert_eq!(links[0].target, "../../../target/bindings");

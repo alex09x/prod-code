@@ -30,6 +30,43 @@ fn whole_file_and_ranged_edits() {
     );
 }
 
+/// A whole-file edit without `newText` emptied the file, and overlapping edits over a
+/// non-ASCII character panicked in `replace_range`.
+#[test]
+fn malformed_or_overlapping_edits_are_refused() {
+    let text = "fn é() {}\n";
+    let range = |sc: u64, ec: u64| serde_json::json!({ "start": { "line": 0, "character": sc }, "end": { "line": 0, "character": ec } });
+    let whole_without_text = serde_json::json!([{ "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 1, "character": 0 } } }]);
+    let err = apply_text_edits(text, whole_without_text.as_array().unwrap()).unwrap_err();
+    assert!(err.to_string().contains("newText"), "{err}");
+    let no_end = serde_json::json!([{ "range": { "start": { "line": 0, "character": 3 } }, "newText": "x" }]);
+    assert!(apply_text_edits(text, no_end.as_array().unwrap()).is_err());
+    let overlapping = serde_json::json!([
+        { "range": range(3, 5), "newText": "a" },
+        { "range": range(4, 6), "newText": "b" }
+    ]);
+    let err = apply_text_edits(text, overlapping.as_array().unwrap()).unwrap_err();
+    assert!(err.to_string().contains("overlap"), "{err}");
+    // An insertion where a replacement starts or ends does not overlap it.
+    let touching = serde_json::json!([
+        { "range": range(3, 3), "newText": "<" },
+        { "range": range(3, 4), "newText": "e" },
+        { "range": range(4, 4), "newText": ">" }
+    ]);
+    assert_eq!(
+        apply_text_edits(text, touching.as_array().unwrap()).unwrap(),
+        "fn <e>() {}\n"
+    );
+    let two_insertions = serde_json::json!([
+        { "range": range(0, 0), "newText": "a" },
+        { "range": range(0, 0), "newText": "b" }
+    ]);
+    assert_eq!(
+        apply_text_edits(text, two_insertions.as_array().unwrap()).unwrap(),
+        "abfn é() {}\n"
+    );
+}
+
 #[test]
 fn apply_workspace_edit_writes_moves_and_records() {
     let temp = tempfile::tempdir().unwrap();

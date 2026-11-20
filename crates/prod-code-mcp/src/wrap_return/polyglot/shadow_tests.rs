@@ -349,3 +349,10 @@ fn test_multiline_conditional_arrow_parameter_shadows_imported_binding() {
         Language::TypeScript
     ));
 }
+
+/// A header still open at the position left no body, and the reversed range panicked.
+#[test]
+fn a_header_open_at_the_position_does_not_panic() {
+    let content = "def f(a,\n      b=g(";
+    assert!(!super::is_python_shadowed(content, content.len(), "x"));
+}

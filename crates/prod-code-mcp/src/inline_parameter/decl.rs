@@ -101,16 +101,19 @@ pub fn find_python_body_close(text: &str, def_offset: usize, colon_pos: usize) -
     let def_indent = def_line.len() - def_line.trim_start().len();
     let rest = &text[colon_pos + 1..];
     let mut current_offset = colon_pos + 1;
-    for line in rest.lines() {
+    // Each chunk with its own terminator: `lines()` drops both bytes of a CRLF, and counting one
+    // put the offset inside the text, or inside a character, and a CRLF file panicked.
+    for chunk in rest.split_inclusive('\n') {
+        let line = chunk.trim_end_matches(['\n', '\r']);
         if line.trim().is_empty() || line.trim_start().starts_with('#') {
-            current_offset += line.len() + 1;
+            current_offset += chunk.len();
             continue;
         }
         let line_indent = line.len() - line.trim_start().len();
         if line_indent <= def_indent {
             return current_offset;
         }
-        current_offset += line.len() + 1;
+        current_offset += chunk.len();
     }
     text.len()
 }
@@ -129,32 +132,33 @@ pub fn python_insertion_offset_and_indent(
     let mut docstring_quote = None;
     let mut in_docstring = false;
 
-    for line in rest.lines() {
+    for chunk in rest.split_inclusive('\n') {
+        let line = chunk.trim_end_matches(['\n', '\r']);
         let trimmed = line.trim();
         if !in_docstring {
             if trimmed.is_empty() || trimmed.starts_with('#') {
-                current_offset += line.len() + 1;
+                current_offset += chunk.len();
                 continue;
             }
             if let Some(after) = trimmed.strip_prefix("\"\"\"") {
                 if after.contains("\"\"\"") {
-                    current_offset += line.len() + 1;
+                    current_offset += chunk.len();
                     let indent = line[..line.len() - line.trim_start().len()].to_string();
                     return (current_offset.min(text.len()), indent);
                 }
                 in_docstring = true;
                 docstring_quote = Some("\"\"\"");
-                current_offset += line.len() + 1;
+                current_offset += chunk.len();
                 continue;
             } else if let Some(after) = trimmed.strip_prefix("'''") {
                 if after.contains("'''") {
-                    current_offset += line.len() + 1;
+                    current_offset += chunk.len();
                     let indent = line[..line.len() - line.trim_start().len()].to_string();
                     return (current_offset.min(text.len()), indent);
                 }
                 in_docstring = true;
                 docstring_quote = Some("'''");
-                current_offset += line.len() + 1;
+                current_offset += chunk.len();
                 continue;
             } else {
                 let indent = line[..line.len() - line.trim_start().len()].to_string();
@@ -162,11 +166,11 @@ pub fn python_insertion_offset_and_indent(
             }
         } else if let Some(q) = docstring_quote {
             if trimmed.contains(q) {
-                current_offset += line.len() + 1;
+                current_offset += chunk.len();
                 let indent = line[..line.len() - line.trim_start().len()].to_string();
                 return (current_offset.min(text.len()), indent);
             }
-            current_offset += line.len() + 1;
+            current_offset += chunk.len();
         }
     }
     (current_offset.min(text.len()), default_indent)

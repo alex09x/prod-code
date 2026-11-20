@@ -166,10 +166,19 @@ pub(crate) async fn convert_sites(
         }
         let mut conversions = Vec::new();
         for (path, mut list) in spans {
-            list.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
+            list.sort_by_key(|(start, end, _)| std::cmp::Reverse((*start, *end)));
+            // Two diagnostics on one expression, or one inside another, give the same or nested
+            // spans: converting both sliced into the first replacement. The one left out is still
+            // an error, and the next round converts it.
+            list.dedup_by_key(|(start, end, _)| (*start, *end));
             let text = texts.get_mut(&path).expect("read above");
             let file_lang = Language::of(&path).unwrap_or(Language::Rust);
+            let mut floor = usize::MAX;
             for (start, end, site) in list {
+                if end > floor {
+                    continue;
+                }
+                floor = start;
                 let expr = text[start..end].to_string();
                 let call = language_conversion(&expr, now, file_lang);
                 text.replace_range(start..end, &call);

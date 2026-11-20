@@ -52,7 +52,15 @@ pub fn propose_expressions_in_scope(
         .with_context(|| format!("Failed to read file {}", abs_path.display()))?;
 
     let lines: Vec<&str> = content.lines().collect();
-    let current_line_idx = (target_line.saturating_sub(1)) as usize;
+    // The scan reads the asked line itself: line 0, a line past the end, or any line of an empty
+    // file named nothing (and the empty file panicked).
+    anyhow::ensure!(
+        (1..=lines.len()).contains(&(target_line as usize)),
+        "line {target_line} is outside {} ({} lines; lines count from 1)",
+        abs_path.display(),
+        lines.len()
+    );
+    let current_line_idx = (target_line - 1) as usize;
 
     // Collect in-scope variables: function parameters and prior `let` bindings
     let in_scope_vars = extract_in_scope_variables(&lines, current_line_idx);

@@ -166,9 +166,13 @@ fn generic_shadows(
             }
             b',' if depth == 1 => parameter = true,
             _ if parameter && depth == 1 => {
-                if at > 0
-                    && (source.as_bytes()[at - 1].is_ascii_alphanumeric()
-                        || source.as_bytes()[at - 1] == b'_')
+                // A byte inside a non-ASCII identifier (`each☃`) is no word start, and slicing
+                // there panicked.
+                if !source.is_char_boundary(at)
+                    || source[..at]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
                 {
                     continue;
                 }
@@ -371,4 +375,14 @@ pub fn to_method_swift(
         renamed_uses,
         rewritten_calls,
     ))
+}
+
+#[cfg(test)]
+mod generic_tests {
+    /// A generic name with a non-ASCII letter (`each☃`): the scan sliced inside it.
+    #[test]
+    fn a_non_ascii_generic_name_does_not_panic() {
+        let source = "func g<each☃, T>(x: T) {\n  func m() {}\n}\n";
+        let _ = super::shadows(source, source.find("m()").unwrap(), "T");
+    }
 }

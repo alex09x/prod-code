@@ -56,6 +56,12 @@ fn parse_python_if_elif(text: &str, if_idx: usize, base_indent: &str) -> Option<
                 || trimmed.starts_with("elif ")
                 || trimmed.starts_with("else:"))
         {
+            // An inline suite (`if x == 'A': f()`, `else: g()`) has its body on the header line,
+            // where it was read as part of the tag or dropped.
+            let header = trimmed.split('#').next().unwrap_or(trimmed).trim_end();
+            if !header.ends_with(':') {
+                return None;
+            }
             // Flush previous branch
             if !current_tag.is_empty() {
                 branches.push(ConditionalBranch {

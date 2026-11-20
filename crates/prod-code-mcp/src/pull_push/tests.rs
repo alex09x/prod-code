@@ -293,3 +293,43 @@ fn push_down_refuses_before_touching_the_analyzer() {
         assert_eq!(got, want);
     }
 }
+
+/// `force` pushed members down to no subclass at all: they were only deleted. A member named
+/// twice was cut twice from one span.
+#[tokio::test]
+async fn members_go_nowhere_or_twice_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("base.py");
+    let text = "class Base:\n    def run(self):\n        return 1\n";
+    std::fs::write(&path, text).unwrap();
+    let remote = "127.0.0.1:1".parse().unwrap();
+    let error = push_down_impl(
+        remote,
+        dir.path(),
+        &path,
+        "Base",
+        None,
+        &["run".to_string()],
+        true,
+        true,
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("no subclass"), "{error}");
+    let error = push_down_impl(
+        remote,
+        dir.path(),
+        &path,
+        "Base",
+        None,
+        &["run".to_string(), "run".to_string()],
+        true,
+        true,
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("listed twice"), "{error}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+}

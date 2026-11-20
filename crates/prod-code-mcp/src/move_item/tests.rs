@@ -99,6 +99,13 @@ mod tests {
         let (text, notes) = drop_import("use a::b::Other;\n", "Name");
         assert_eq!(text, "use a::b::Other;\n");
         assert!(notes.is_empty());
+
+        // A glob and an anonymous trait import name nothing, and stay: counted by named leaves
+        // alone, the whole statement went.
+        let (text, _) = drop_import("use m::{Name, *, Trait as _};\n", "Name");
+        assert_eq!(text, "use m::{*, Trait as _};\n");
+        let (text, _) = drop_import("use m::{Name, Other, *};\n", "Name");
+        assert_eq!(text, "use m::{Other, *};\n");
     }
 
     #[test]

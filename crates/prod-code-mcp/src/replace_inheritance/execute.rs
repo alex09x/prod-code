@@ -121,7 +121,12 @@ pub async fn replace_inheritance_impl(
                     .map(|m| m.name.clone())
                     .collect()
             } else {
-                Vec::new()
+                // Without the base nothing is forwarded, and removing the inheritance would
+                // silently drop every inherited method.
+                anyhow::bail!(
+                    "base class '{base_name}' was not found, so its methods cannot be discovered; \
+                     name the methods to forward; nothing was written"
+                );
             }
         }
     };

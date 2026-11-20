@@ -32,6 +32,7 @@ pub async fn push_down_impl(
     if members_to_push.is_empty() {
         bail!("No members specified to push down");
     }
+    super::reject_repeated_members(members_to_push)?;
 
     let super_file_text = std::fs::read_to_string(file)
         .with_context(|| format!("cannot read file {}", file.display()))?;
@@ -88,6 +89,13 @@ pub async fn push_down_impl(
             candidate_subclasses
         }
     };
+
+    // `force` overrides collisions, not the absence of a destination: with no subclass the
+    // members would only be deleted.
+    anyhow::ensure!(
+        !target_subclasses.is_empty(),
+        "no subclass of '{class_name}' to push down to; nothing was written"
+    );
 
     let target_class_names: Vec<String> = target_subclasses
         .iter()

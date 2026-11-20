@@ -258,7 +258,8 @@ async fn push_sync_round(
     let root_str = root.to_string_lossy().to_string();
     let mut symlinks = subpath
         .is_none()
-        .then(|| super::git_symlink::tracked_symlink_manifest(root));
+        .then(|| super::git_symlink::tracked_symlink_manifest(root))
+        .flatten();
     let requires_symlink_support = symlinks.as_ref().is_some_and(|links| !links.is_empty());
     if let Some(links) = &symlinks {
         plan.files

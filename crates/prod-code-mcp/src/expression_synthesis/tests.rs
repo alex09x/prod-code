@@ -156,6 +156,22 @@ fn coverage_scope_extraction_and_rendering() {
     );
 }
 
+/// An empty file panicked at line 1; line 0 and a line past the end named no line at all.
+#[test]
+fn a_line_outside_the_file_is_refused() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("empty.rs"), "").unwrap();
+    std::fs::write(dir.path().join("one.rs"), "fn f(a: u8) {}\n").unwrap();
+    for (file, line) in [("empty.rs", 1), ("one.rs", 0), ("one.rs", 2)] {
+        let err = propose_expressions_in_scope(dir.path(), file, line, "u8").unwrap_err();
+        assert!(
+            err.to_string().contains("is outside"),
+            "{file}:{line}: {err}"
+        );
+    }
+    assert!(propose_expressions_in_scope(dir.path(), "one.rs", 1, "u8").is_ok());
+}
+
 #[test]
 fn test_expression_synthesis() {
     let dir = tempdir().unwrap();

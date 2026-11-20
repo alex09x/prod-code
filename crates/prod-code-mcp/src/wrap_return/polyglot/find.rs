@@ -101,7 +101,11 @@ pub fn find_polyglot_decl(
         }
 
         // Multi-line import or export statement context
-        let search_start = name_idx.saturating_sub(500);
+        // 500 bytes back can be inside a character; step back to its start.
+        let mut search_start = name_idx.saturating_sub(500);
+        while !text.is_char_boundary(search_start) {
+            search_start -= 1;
+        }
         let before_sub = &text[search_start..name_idx];
         if let Some(imp_pos) = before_sub
             .rfind("import ")

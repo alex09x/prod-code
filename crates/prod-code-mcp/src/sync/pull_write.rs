@@ -109,7 +109,8 @@ fn permission_bits(
     let base = existing?.permissions().mode() & 0o777;
     Some(match policy {
         LocalMode::Preserve => base,
-        LocalMode::FollowNode if node_executable => 0o755,
+        // Only the execute bits: a private 0600 file must not become readable as 0755.
+        LocalMode::FollowNode if node_executable => base | 0o111,
         LocalMode::FollowNode => base & !0o111,
     })
 }

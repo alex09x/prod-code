@@ -303,3 +303,42 @@ fn a_written_back_file_restored_to_head_is_resent() {
     assert!(prepare_workspace_sync(root, None).unwrap().files.is_empty());
     clear_sync_cache(root);
 }
+
+/// `git status --porcelain` without `-z` quotes a name with a space or a non-ASCII letter, and
+/// those files were never sent; a name containing ` -> ` was read as a rename and deleted the
+/// "old" path, which is another file.
+#[test]
+fn dirty_files_with_unusual_names_are_read_by_their_real_names() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    if !git(&["init", "-q"]) {
+        return;
+    }
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    for name in ["src/a b.rs", "src/é.rs", "src/x -> y.rs", "src/y.rs"] {
+        std::fs::write(root.join(name), "fn f() {}\n").unwrap();
+    }
+    let deltas = crate::sync::git::collect_git_dirty_files(root, false).unwrap();
+    let mut sent: Vec<_> = deltas
+        .iter()
+        .filter(|d| d.content.is_some())
+        .map(|d| d.relative_path.as_str())
+        .collect();
+    sent.sort();
+    assert_eq!(
+        sent,
+        ["src/a b.rs", "src/x -> y.rs", "src/y.rs", "src/é.rs"]
+    );
+    assert!(
+        deltas.iter().all(|d| d.content.is_some()),
+        "nothing is deleted: {:?}",
+        deltas.iter().map(|d| &d.relative_path).collect::<Vec<_>>()
+    );
+}

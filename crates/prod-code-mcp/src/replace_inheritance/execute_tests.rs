@@ -120,3 +120,29 @@ async fn coverage_b2_inheritance_refusals_leave_source_unchanged() {
         format!("class 'Absent' not found in {}", path.display())
     );
 }
+
+/// Without the base class nothing is forwarded, and removing the inheritance dropped every
+/// inherited method.
+#[tokio::test]
+async fn an_unresolved_base_without_named_methods_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("child.py");
+    let text = "class Child(Elsewhere):\n    def own(self):\n        return 1\n";
+    std::fs::write(&path, text).unwrap();
+    let error = replace_inheritance_impl(
+        "127.0.0.1:1".parse().unwrap(),
+        dir.path(),
+        &path,
+        "Child",
+        None,
+        None,
+        None,
+        true,
+        false,
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("was not found"), "{error}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+}

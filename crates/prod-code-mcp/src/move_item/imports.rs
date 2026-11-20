@@ -53,7 +53,9 @@ pub fn drop_import(text: &str, name: &str) -> (String, Vec<String>) {
         };
         let stmt = out[start..end].to_string();
         let leaves = leaf_names(&stmt);
-        let replacement = if leaves.len() <= 1 {
+        // A group that also holds a glob or a `Trait as _` keeps them: counting only the named
+        // leaves dropped the whole statement with them.
+        let replacement = if leaves.len() + unnamed_entries(&stmt).len() <= 1 {
             notes.push(format!("dropped `{}`", stmt.trim()));
             String::new()
         } else {
@@ -195,12 +197,30 @@ pub(crate) fn remove_from_group(stmt: &str, name: &str) -> String {
     };
     let (_, tail) = rest.rsplit_once('}').unwrap_or((rest, ""));
     let entries = use_tree_entries(stmt);
-    let kept: Vec<String> = entries
+    let mut kept: Vec<String> = entries
         .into_iter()
         .filter(|(_, leaf)| leaf != name)
         .map(|(rel, _)| rel)
         .collect();
+    // Entries that bring in no name (`*`, `Trait as _`, `self`) are kept too: rebuilt from the
+    // named leaves alone, the group lost them.
+    kept.extend(unnamed_entries(stmt));
     format!("{head}{{{}}}{tail}", kept.join(", "))
+}
+
+/// The top-level entries of a `use` group that name nothing: a glob, an anonymous trait import,
+/// `self`.
+fn unnamed_entries(stmt: &str) -> Vec<String> {
+    let Some((_, rest)) = stmt.split_once('{') else {
+        return Vec::new();
+    };
+    let group = rest.rsplit_once('}').map_or(rest, |(group, _)| group);
+    split_top_level_commas(group)
+        .into_iter()
+        .map(str::trim)
+        .filter(|seg| *seg == "*" || seg.ends_with("::*") || seg.ends_with(" as _"))
+        .map(str::to_string)
+        .collect()
 }
 
 /// `text` with `use_line` added, after the imports it already has.

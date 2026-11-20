@@ -123,9 +123,25 @@ fn is_one_string_literal(a: &str) -> bool {
     false
 }
 
+/// The byte length of the identifier `text` starts with, measured in characters: counting
+/// bytes cut `é` after its first byte and slicing there panicked.
+fn ident_len(text: &str) -> usize {
+    text.char_indices()
+        .find(|(_, c)| !is_ident(*c))
+        .map_or(text.len(), |(at, _)| at)
+}
+
+/// `at` moved back to the start of the character it falls in.
+fn floor_char(text: &str, mut at: usize) -> usize {
+    while !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
+}
+
 pub fn keyword_arg(arg: &str) -> Option<(&str, &str)> {
     let trimmed = arg.trim();
-    let name_len = trimmed.bytes().take_while(|b| is_ident(*b as char)).count();
+    let name_len = ident_len(trimmed);
     if name_len == 0 || trimmed.as_bytes()[0].is_ascii_digit() {
         return None;
     }
@@ -140,7 +156,7 @@ pub fn keyword_arg(arg: &str) -> Option<(&str, &str)> {
 
 pub fn swift_label(arg: &str) -> Option<(&str, &str)> {
     let trimmed = arg.trim();
-    let name_len = trimmed.bytes().take_while(|b| is_ident(*b as char)).count();
+    let name_len = ident_len(trimmed);
     if name_len == 0 || trimmed.as_bytes()[0].is_ascii_digit() {
         return None;
     }
@@ -184,7 +200,7 @@ pub fn is_import_or_export_context(content: &str, at: usize, lang: Language) -> 
             {
                 return true;
             }
-            let search_start = at.saturating_sub(500);
+            let search_start = floor_char(content, at.saturating_sub(500));
             let before = &content[search_start..at];
             if let Some(imp_pos) = before.rfind("import ").or_else(|| before.rfind("export ")) {
                 let after_keyword = before[imp_pos + 6..].trim_start();
@@ -195,7 +211,7 @@ pub fn is_import_or_export_context(content: &str, at: usize, lang: Language) -> 
                 if after_keyword.starts_with('{') {
                     let between = &before[imp_pos..];
                     if !between.contains('}') {
-                        let search_end = content.len().min(at + 500);
+                        let search_end = floor_char(content, content.len().min(at + 500));
                         let after = &content[at..search_end];
                         if after.contains('}') {
                             return true;
@@ -209,12 +225,12 @@ pub fn is_import_or_export_context(content: &str, at: usize, lang: Language) -> 
             if line.starts_with("import ") {
                 return true;
             }
-            let search_start = at.saturating_sub(500);
+            let search_start = floor_char(content, at.saturating_sub(500));
             let before = &content[search_start..at];
             if let Some(imp_pos) = before.rfind("import (") {
                 let between = &before[imp_pos..];
                 if !between.contains(')') {
-                    let search_end = content.len().min(at + 500);
+                    let search_end = floor_char(content, content.len().min(at + 500));
                     let after = &content[at..search_end];
                     if after.contains(')') {
                         return true;
@@ -322,4 +338,35 @@ pub fn is_in_string(content: &str, at: usize, lang: Language) -> bool {
         }
     }
     quote.is_some() || line_comment || block_comment
+}
+
+#[cfg(test)]
+mod utf8_tests {
+    use super::*;
+
+    /// A non-ASCII label is measured in characters: counted in bytes, `é` was cut after its
+    /// first byte and slicing there panicked. A window 500 bytes away from a use no longer
+    /// lands inside a character either.
+    #[test]
+    fn labels_and_windows_respect_characters() {
+        assert_eq!(keyword_arg("é=1"), Some(("é", "1")));
+        assert_eq!(swift_label("név: 2"), Some(("név", "2")));
+        let content = format!("{}f(x)\n", "é".repeat(400));
+        let at = content.find("f(").unwrap();
+        let _ = is_import_or_export_context(&content, at, Language::TypeScript);
+        let _ = is_import_or_export_context(&content, at, Language::Go);
+    }
+
+    /// A CRLF Python body is measured with its whole line ends.
+    #[test]
+    fn a_crlf_python_body_is_measured_whole() {
+        let text = "def f(a, b):\r\n    return a + b\r\n\r\ndef g():\r\n    pass\r\n";
+        let colon = text.find(':').unwrap();
+        let close = crate::inline_parameter::decl::find_python_body_close(text, 0, colon);
+        assert_eq!(&text[close..close + 5], "def g");
+        let (at, indent) =
+            crate::inline_parameter::decl::python_insertion_offset_and_indent(text, colon, 0);
+        assert!(text.is_char_boundary(at));
+        assert_eq!(indent, "    ");
+    }
 }

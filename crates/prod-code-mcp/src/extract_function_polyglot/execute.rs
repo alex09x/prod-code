@@ -65,6 +65,12 @@ pub async fn extract_function_polyglot(
 
     let (scope_start, scope_end, _enclosing_fn, enclosing_ret, is_method, method_indent) =
         find_enclosing_scope(&text, lang, start, end);
+    // A selection that starts inside a function and runs past its end (a dedented Python
+    // statement) put the scope's end before the selection's, and slicing panicked.
+    anyhow::ensure!(
+        scope_start <= start && end <= scope_end,
+        "the selection runs past the end of its function; select within one function"
+    );
     let scope_before = &text[scope_start..start];
     let scope_after = &text[end..scope_end];
 

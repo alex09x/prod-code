@@ -92,3 +92,16 @@ fn coverage_w2_matching_vars_rejects_comments_wrong_types_and_partial_names() {
         assert_eq!(contains_ident(text, "seed"), expected);
     }
 }
+
+/// `func f() {` has only a space before its body, and a position inside a parameter list has
+/// the list's `)` after it: both sliced a reversed range.
+#[test]
+fn enclosing_functions_without_a_result_or_around_the_position_do_not_panic() {
+    let text = "func f() {\n    marker\n}";
+    let found = find_enclosing_fn(text, text.find("marker").unwrap(), Language::Go).unwrap();
+    assert_eq!(found.return_type, "");
+    let text = "func f(a int, marker int) int {\n}";
+    assert!(find_enclosing_fn(text, text.find("marker").unwrap(), Language::Go).is_none());
+    let text = "fn f(a: u8, marker: u8) -> u8 {\n}";
+    assert!(find_enclosing_fn(text, text.find("marker").unwrap(), Language::Rust).is_none());
+}

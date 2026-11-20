@@ -72,3 +72,14 @@ fn unicode_identifiers_in_an_arm_do_not_panic() {
         vec![("0", "f(é, 0)"), ("_", "0")]
     );
 }
+
+/// Only the last line of a pattern was kept (`A\n| B` lost `A`), and an `=>` inside a string
+/// pattern split the arm.
+#[test]
+fn a_multiline_pattern_is_kept_whole_and_a_string_arrow_is_refused() {
+    let text = "match kind {\n    Kind::A\n    | Kind::B => one(),\n    _ => two(),\n}";
+    let result = parse_rust_match(text, 0).unwrap();
+    assert_eq!(result.branches[0].tag, "Kind::A | Kind::B");
+    let text = "match s {\n    \"=>\" => one(),\n    _ => two(),\n}";
+    assert!(parse_rust_match(text, 0).is_none());
+}
