@@ -202,12 +202,13 @@ pub fn match_at(
     matching_delims: &[Option<usize>],
     rule: &CodemodRule,
     source: &str,
+    language: Option<crate::parameter_object::Language>,
 ) -> Option<CodemodMatch> {
     let (match_start_byte, match_end_byte, _, bindings) = match_pattern_tokens(
         tokens,
         start_idx,
         matching_delims,
-        &rule.pattern_tokens,
+        rule.tokens_for(language),
         source,
     )?;
 
@@ -257,7 +258,8 @@ pub fn rewrite_source_in(rel_path: &str, source: &str, rule: &CodemodRule) -> Op
         }
     }
 
-    let tokens = super::source::tokenize_source_for_lang(source, language_of(rel_path));
+    let language = language_of(rel_path);
+    let tokens = super::source::tokenize_source_for_lang(source, language);
     if tokens.is_empty() {
         return None;
     }
@@ -267,7 +269,7 @@ pub fn rewrite_source_in(rel_path: &str, source: &str, rule: &CodemodRule) -> Op
     let mut i = 0;
 
     while i < tokens.len() {
-        if let Some(m) = match_at(&tokens, i, &matching_delims, rule, source) {
+        if let Some(m) = match_at(&tokens, i, &matching_delims, rule, source, language) {
             // Advance tokens past the end of the match
             while i < tokens.len() && tokens[i].end_byte <= m.end_byte {
                 i += 1;
@@ -312,7 +314,8 @@ pub fn find_structural_matches_in_source(
         }
     }
 
-    let tokens = super::source::tokenize_source_for_lang(source, language_of(rel_path));
+    let language = language_of(rel_path);
+    let tokens = super::source::tokenize_source_for_lang(source, language);
     if tokens.is_empty() {
         return Vec::new();
     }
@@ -326,7 +329,7 @@ pub fn find_structural_matches_in_source(
             &tokens,
             i,
             &matching_delims,
-            &pattern.pattern_tokens,
+            pattern.tokens_for(language),
             source,
         ) {
             let (line, col) = byte_to_line_col(source, start_b);

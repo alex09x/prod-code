@@ -68,22 +68,64 @@ fn cut_block(before: &str, after: &str) -> Option<(usize, usize)> {
     (prefix + suffix == a.len()).then_some((prefix, b.len() - suffix))
 }
 
-/// Whether the non-blank lines of `block`, trimmed, appear consecutively in `text`.
-fn contains_block(text: &str, block: &[&str]) -> bool {
+/// The 1-based line ranges `[first, last]` of `text` where the non-blank lines of `block`,
+/// trimmed, appear consecutively.
+fn block_places(text: &str, block: &[&str]) -> Vec<(u32, u32)> {
     let wanted: Vec<&str> = block
         .iter()
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
         .collect();
     if wanted.is_empty() {
-        return false;
+        return Vec::new();
     }
-    let lines: Vec<&str> = text
+    let lines: Vec<(usize, &str)> = text
         .lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty())
+        .enumerate()
+        .filter(|(_, l)| !l.is_empty())
         .collect();
-    lines.windows(wanted.len()).any(|w| w == wanted.as_slice())
+    if lines.len() < wanted.len() {
+        return Vec::new();
+    }
+    (0..=lines.len() - wanted.len())
+        .filter(|&at| {
+            lines[at..at + wanted.len()]
+                .iter()
+                .zip(&wanted)
+                .all(|((_, l), w)| l == w)
+        })
+        .map(|at| {
+            (
+                lines[at].0 as u32 + 1,
+                lines[at + wanted.len() - 1].0 as u32 + 1,
+            )
+        })
+        .collect()
+}
+
+/// Where in the other files of the batch the move put `block`: the places it has in the
+/// proposed text and did not have on disk, so a copy that was already there carries nothing.
+fn landings(
+    file: &str,
+    block: &[&str],
+    sources: &HashMap<String, String>,
+    baselines: &HashMap<String, (DiagnosticsReport, String)>,
+) -> HashMap<String, Vec<(u32, u32)>> {
+    let mut placed = HashMap::new();
+    for (other, text) in sources {
+        if other == file {
+            continue;
+        }
+        let after = block_places(text, block);
+        let before = baselines
+            .get(other)
+            .map_or(0, |(_, before)| block_places(before, block).len());
+        if after.len() > before {
+            placed.insert(other.clone(), after);
+        }
+    }
+    placed
 }
 
 fn recount(report: &mut DiagnosticsReport) {
@@ -116,6 +158,8 @@ pub fn set_aside_carried(
     // Errors the move left in place, per cut file and line after the cut; errors it carried.
     let mut kept: HashMap<(String, u32), Vec<Key>> = HashMap::new();
     let mut carried: HashMap<Key, usize> = HashMap::new();
+    // Per file, the lines a carried block landed on: a carried error is set aside only there.
+    let mut landed_on: HashMap<String, Vec<(u32, u32)>> = HashMap::new();
     for (file, (before, before_text)) in baselines {
         if file.ends_with(".rs") {
             continue;
@@ -128,11 +172,12 @@ pub fn set_aside_carried(
         };
         let lines: Vec<&str> = before_text.lines().collect();
         let block = &lines[start..end];
-        let landed = sources
-            .iter()
-            .any(|(other, text)| other != file && contains_block(text, block));
-        if !landed {
+        let placed = landings(file, block, sources, baselines);
+        if placed.is_empty() {
             continue;
+        }
+        for (other, places) in placed {
+            landed_on.entry(other).or_default().extend(places);
         }
         for d in before
             .items
@@ -184,8 +229,17 @@ pub fn set_aside_carried(
                 report.preexisting.push(d);
                 continue;
             }
-            // A cut file only loses lines; what it still reports elsewhere is not carried.
-            match (!cut_here).then(|| carried.get_mut(&k)).flatten() {
+            // A cut file only loses lines; what it still reports elsewhere is not carried, nor
+            // is an error outside the lines the block landed on.
+            let on_block = landed_on.get(&report.file).is_some_and(|places| {
+                places
+                    .iter()
+                    .any(|(first, last)| (*first..=*last).contains(&d.line))
+            });
+            match (!cut_here && on_block)
+                .then(|| carried.get_mut(&k))
+                .flatten()
+            {
                 Some(n) if *n > 0 => {
                     *n -= 1;
                     moved = true;

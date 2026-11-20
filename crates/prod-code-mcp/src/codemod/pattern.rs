@@ -14,6 +14,12 @@ use super::types::{PatternToken, ReplacementToken, TokenKind};
 
 /// Tokenize a pattern string with support for metavariables (`$var`).
 pub fn tokenize_pattern(pattern: &str) -> Result<Vec<PatternToken>> {
+    tokenize_pattern_for(pattern, false)
+}
+
+/// [`tokenize_pattern`], reading `'a` as a Rust lifetime when `rust`, as the Rust source it is
+/// matched against is read (#2052).
+pub fn tokenize_pattern_for(pattern: &str, rust: bool) -> Result<Vec<PatternToken>> {
     let mut tokens = Vec::new();
     let bytes = pattern.as_bytes();
     let mut i = 0;
@@ -52,6 +58,17 @@ pub fn tokenize_pattern(pattern: &str) -> Result<Vec<PatternToken>> {
         if matches!(b, b')' | b']' | b'}') {
             tokens.push(PatternToken::Literal(TokenKind::CloseDelim(b as char)));
             i += 1;
+            continue;
+        }
+
+        if rust
+            && b == b'\''
+            && let Some(end) = super::source::rust_lifetime_end(pattern, i)
+        {
+            tokens.push(PatternToken::Literal(TokenKind::Ident(
+                pattern[i..end].to_string(),
+            )));
+            i = end;
             continue;
         }
 

@@ -50,7 +50,14 @@ pub(crate) fn inside_impl_of(text: &str, line: usize, owner: &str) -> bool {
             return false;
         }
         if is_block_header(row) {
-            return names_owner(row, owner);
+            // The header may continue on the lines below it (`impl Trait for` / `    Exec {`).
+            let header: Vec<&str> = code[at..].iter().map(|(_, row)| *row).collect();
+            return names_owner(&header.join(" "), owner);
+        }
+        if at == open && row.ends_with('{') && !row.starts_with('{') && !row.starts_with("where") {
+            // The line opens a block of its own (`mod nested {`, `fn run() {`): the line is in
+            // that block, not in a type's above it.
+            return false;
         }
         if at != open && (row.ends_with('}') || row.ends_with(';')) {
             return false;
@@ -59,13 +66,17 @@ pub(crate) fn inside_impl_of(text: &str, line: usize, owner: &str) -> bool {
     false
 }
 
-/// Whether a line starts a type's block: `impl`, `struct`, `enum`, `union` or `trait`.
-fn is_block_header(row: &str) -> bool {
-    let row = row
-        .trim_start_matches("pub(crate) ")
+/// `row` without the visibility and `unsafe` before its keyword.
+fn without_modifiers(row: &str) -> &str {
+    row.trim_start_matches("pub(crate) ")
         .trim_start_matches("pub(super) ")
         .trim_start_matches("pub ")
-        .trim_start_matches("unsafe ");
+        .trim_start_matches("unsafe ")
+}
+
+/// Whether a line starts a type's block: `impl`, `struct`, `enum`, `union` or `trait`.
+fn is_block_header(row: &str) -> bool {
+    let row = without_modifiers(row);
     row.starts_with("impl ")
         || row.starts_with("impl<")
         || ["struct ", "enum ", "union ", "trait "]
@@ -74,25 +85,39 @@ fn is_block_header(row: &str) -> bool {
 }
 
 /// Whether `text` has an `impl` block for `owner`, in any spelling: `impl Owner`,
-/// `impl<T> Owner<T>`, `impl Trait for Owner`.
+/// `impl<T> Owner<T>`, `impl Trait for Owner`, `unsafe impl`, a header over several lines.
 pub(crate) fn has_impl_of(text: &str, owner: &str) -> bool {
-    text.lines().any(|row| {
-        let row = row.trim_start();
-        (row.starts_with("impl ") || row.starts_with("impl<")) && names_owner(row, owner)
+    let rows: Vec<&str> = text.lines().map(str::trim_start).collect();
+    rows.iter().enumerate().any(|(at, row)| {
+        let row = without_modifiers(row);
+        if !(row.starts_with("impl ") || row.starts_with("impl<")) {
+            return false;
+        }
+        // Up to the line that opens the block, a few lines at most.
+        let end = rows[at..]
+            .iter()
+            .take(8)
+            .position(|row| row.contains('{') || row.ends_with(';'))
+            .map_or(rows.len(), |i| at + i + 1);
+        names_owner(&rows[at..end.min(rows.len())].join(" "), owner)
     })
 }
 
 /// Whether a block header names `owner` as its type.
 fn names_owner(header: &str, owner: &str) -> bool {
-    let header = header
-        .trim_start_matches("pub(crate) ")
-        .trim_start_matches("pub(super) ")
-        .trim_start_matches("pub ")
-        .trim_start_matches("unsafe ");
+    let header = without_modifiers(header);
     let typed = if let Some(rest) = header.strip_prefix("impl") {
         if !rest.starts_with([' ', '<']) {
             return false;
         }
+        // Generic parameters of an `impl<T>` come first; a `for` in their bounds
+        // (`impl<T: for<'a> Fn(&'a str)>`) is not the trait's.
+        let rest = rest.trim_start();
+        let rest = if rest.starts_with('<') {
+            skip_generics(rest)
+        } else {
+            rest
+        };
         // The type of `impl Trait for Type`, or of `impl Type`.
         let rest = rest.split('{').next().unwrap_or(rest);
         let rest = rest.split(" where ").next().unwrap_or(rest);
@@ -105,13 +130,7 @@ fn names_owner(header: &str, owner: &str) -> bool {
     } else {
         return false;
     };
-    // Generic parameters of an `impl<T>` come before the type; skip them.
     let typed = typed.trim();
-    let typed = if typed.starts_with('<') {
-        skip_generics(typed)
-    } else {
-        typed
-    };
     // `Owner<T>` and `crate::Owner` name `Owner` too.
     let path: String = typed
         .trim_start()
@@ -121,12 +140,16 @@ fn names_owner(header: &str, owner: &str) -> bool {
     path.rsplit("::").next() == Some(owner)
 }
 
-/// `text` after a leading balanced `<…>`.
+/// `text` after a leading balanced `<…>`; the `>` of a `->` in a bound closes nothing.
 fn skip_generics(text: &str) -> &str {
     let mut depth = 0usize;
+    let mut previous = ' ';
     for (index, c) in text.char_indices() {
+        let arrow = previous == '-';
+        previous = c;
         match c {
             '<' => depth += 1,
+            '>' if arrow => {}
             '>' => {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
@@ -197,5 +220,38 @@ where
         assert!(has_impl_of(SOURCE, "Wrapped"));
         assert!(has_impl_of(SOURCE, "Exec"));
         assert!(!has_impl_of(SOURCE, "Missing"));
+    }
+
+    /// A block that opens on the line above (`mod nested {`) owns its items, not the closed
+    /// `impl Exec {}` before it; `unsafe impl`, a header split after `for`, a `->` and a `for`
+    /// in the generic bounds all still name their type.
+    #[test]
+    fn the_nearest_block_owns_a_line_whatever_its_header_spells() {
+        let source = "impl Exec {}
+mod nested {
+    fn cancel() {}
+}
+unsafe impl Send for Queue {}
+impl<T: Fn() -> bool> Filter<T> {
+    fn keep(&self) {}
+}
+impl<T: for<'a> Fn(&'a str)> Parser<T> {
+    fn parse(&self) {}
+}
+impl fmt::Debug for
+    Split
+{
+    fn fmt(&self) {}
+}
+";
+        let at = |needle: &str| source.lines().position(|l| l.contains(needle)).unwrap();
+        assert!(!inside_impl_of(source, at("fn cancel"), "Exec"));
+        assert!(has_impl_of(source, "Queue"));
+        assert!(has_impl_of(source, "Filter"));
+        assert!(inside_impl_of(source, at("fn keep"), "Filter"));
+        assert!(!inside_impl_of(source, at("fn keep"), "bool"));
+        assert!(inside_impl_of(source, at("fn parse"), "Parser"));
+        assert!(has_impl_of(source, "Split"));
+        assert!(inside_impl_of(source, at("fn fmt"), "Split"));
     }
 }

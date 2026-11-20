@@ -79,6 +79,36 @@ fn a_rewrite_after_a_lifetime_applies() {
     assert!(rewritten.contains("sha256(b).to_vec()"), "{rewritten}");
 }
 
+/// A pattern is read as the Rust it is matched against: `&'a str` in a pattern finds it in a
+/// Rust file, in a search and in a rewrite; elsewhere `'a str'` stays a string.
+#[test]
+fn a_pattern_with_a_lifetime_matches_rust() {
+    let source = "fn f<'a>(x: &'a str, y: &'b str) {}\n";
+    assert_eq!(count(source, "&'a str"), 1);
+    let rule = super::types::CodemodRule::parse("&'a str ==>> &'s str").expect("valid rule");
+    let rewritten =
+        super::matcher::rewrite_source_in("src/lib.rs", source, &rule).expect("should match");
+    assert!(rewritten.contains("x: &'s str, y: &'b str"), "{rewritten}");
+    let pattern = CompiledPattern::parse("log('a str')").expect("valid pattern");
+    assert_eq!(
+        find_structural_matches_in_source("app.js", "log('a str');\n", &pattern).len(),
+        1
+    );
+}
+
+/// A raw lifetime, a non-ASCII one, and a raw string holding quotes and `#` hide no code.
+#[test]
+fn raw_lifetimes_and_raw_strings_hide_no_calls() {
+    let source = "fn f<'r#type>() { target(); }
+fn g<'α>(x: &'α str) { target(); }
+const T: &str = r#\"
+'text target() '
+\"#;
+fn h() { let c = 'α'; target(); }
+";
+    assert_eq!(count(source, "target()"), 3);
+}
+
 #[test]
 fn a_plain_call_still_matches() {
     assert_eq!(

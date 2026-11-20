@@ -106,6 +106,45 @@ fn errors_a_move_leaves_or_carries_are_not_the_moves() {
     assert_eq!(reports[1].preexisting.len(), 2);
 }
 
+/// A carried error is set aside only on the lines the block landed on: the same error on an
+/// identical line elsewhere in the batch, reported first, is new and stays; a block that was
+/// already on disk elsewhere makes a deletion no move.
+#[test]
+fn a_carried_error_is_set_aside_only_where_the_block_landed() {
+    let other = "enum Elsewhere {\n    static let page = SettingsPage.general\n}\n";
+    let sources = texts(&[
+        ("Runner.swift", AFTER_SOURCE),
+        ("DesktopKeys.swift", AFTER_TARGET),
+        ("Other.swift", other),
+    ]);
+    let mut reports = vec![
+        report(
+            "Other.swift",
+            vec![error(2, 23, "cannot find 'SettingsPage' in scope")],
+        ),
+        report(
+            "DesktopKeys.swift",
+            vec![error(3, 23, "cannot find 'SettingsPage' in scope")],
+        ),
+    ];
+    set_aside_carried(&mut reports, &sources, &runner_baseline());
+    assert_eq!(reports[0].errors, 1, "{:?}", reports[0].preexisting);
+    assert_eq!(reports[1].errors, 0, "{:?}", reports[1].items);
+
+    // The block was in DesktopKeys.swift before the cut: removing it from Runner moves nothing.
+    let mut baselines = runner_baseline();
+    baselines.insert(
+        "DesktopKeys.swift".into(),
+        (report("DesktopKeys.swift", Vec::new()), AFTER_TARGET.into()),
+    );
+    let mut reports = vec![report(
+        "Runner.swift",
+        vec![error(2, 17, "cannot find type 'Driver' in scope")],
+    )];
+    set_aside_carried(&mut reports, &sources, &baselines);
+    assert_eq!(reports[0].errors, 1, "{:?}", reports[0].preexisting);
+}
+
 /// An error moved into another scope of the same file is not a carried line: the per-file
 /// comparison refuses it, and nothing here overrides that.
 #[test]

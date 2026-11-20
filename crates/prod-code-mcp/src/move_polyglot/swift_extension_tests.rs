@@ -124,3 +124,35 @@ fn without_an_extension_of_its_type_a_new_one_is_appended() {
         "extension SettingsPage {\n    func render() -> String { \"\" }\n}\n"
     );
 }
+
+/// A brace-free declaration before a type does not hide it; what an extension gives its members
+/// (access, isolation, a `#if`, a bound generic argument) or a type another file cannot name
+/// refuses the move, and such an extension in the target is not joined.
+#[test]
+fn what_an_extension_or_type_header_carries_is_kept() {
+    let source = "let version = 1\nstruct Page {\n    let a: Int\n    struct Inner {\n        func f() {}\n    }\n    func g() {}\n}\npublic extension Page {\n    func h() {}\n}\n@MainActor extension Page {\n    func i() {}\n}\n#if DEBUG\nextension Page {\n    func j() {}\n}\n#endif\nextension Page {\n    func k() {}\n}\nextension Array<Int> {\n    func l() {}\n}\nprivate struct Hidden {\n    func m() {}\n}\n";
+    assert_eq!(destination(source, "func f").unwrap(), "Page.Inner");
+    assert_eq!(destination(source, "func g").unwrap(), "Page");
+    assert_eq!(destination(source, "func k").unwrap(), "Page");
+    for needle in ["func h", "func i", "func j"] {
+        let error = destination(source, needle).unwrap_err();
+        assert!(error.contains("access modifier"), "{needle}: {error}");
+    }
+    assert!(
+        destination(source, "func l")
+            .unwrap_err()
+            .contains("bound generic")
+    );
+    assert!(
+        destination(source, "func m")
+            .unwrap_err()
+            .contains("`Hidden`")
+    );
+
+    let target = "public extension Page {\n}\n";
+    let out = insert_member(target, "Page", "    func g() {}\n");
+    assert_eq!(
+        out,
+        "public extension Page {\n}\n\nextension Page {\n    func g() {}\n}\n"
+    );
+}

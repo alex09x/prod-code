@@ -30,8 +30,23 @@ const MEMBER_KEYWORDS: [&str; 7] = ["func", "var", "let", "init", "subscript", "
 struct Opener {
     keyword: Option<&'static str>,
     name: String,
+    /// A `where` clause, or a bound generic argument (`extension Array<Int>`).
     constrained: bool,
+    /// An access modifier, an attribute (`@MainActor`) or a compilation condition (`#if`) on
+    /// the header: what its members get from it, a plain extension would not give them.
+    decorated: bool,
+    /// Declared `private` or `fileprivate`: another file cannot name it.
+    file_private: bool,
 }
+
+const ACCESS_MODIFIERS: [&str; 6] = [
+    "public",
+    "private",
+    "fileprivate",
+    "internal",
+    "package",
+    "open",
+];
 
 fn code_mask(source: &str) -> Vec<bool> {
     lexical_code_mask(source, Language::Swift)
@@ -63,9 +78,13 @@ fn words(text: &str) -> Vec<&str> {
 
 fn opener(header: &str) -> Opener {
     let tokens = words(header);
+    // Where the declaration this header opens starts: a brace-free declaration before it
+    // (`let version = 1`, `case a`) ends at its member keyword.
+    let mut start = 0;
     for (i, token) in tokens.iter().enumerate() {
         if MEMBER_KEYWORDS.contains(token) {
-            break;
+            start = i + 1;
+            continue;
         }
         let Some(&keyword) = TYPE_KEYWORDS.iter().find(|k| *k == token) else {
             continue;
@@ -77,19 +96,36 @@ fn opener(header: &str) -> Opener {
         {
             break;
         }
-        let name = tokens
-            .get(i + 1)
-            .map_or("", |n| n.split(['<', ':', '{']).next().unwrap_or(""));
+        let spelled = tokens.get(i + 1).copied().unwrap_or("");
+        let name = spelled.split(['<', ':', '{']).next().unwrap_or("");
+        let before = &tokens[start..i];
+        // A `#if` still open over the header; one an `#endif` closed is another block's.
+        let conditional = before
+            .iter()
+            .rev()
+            .find(|t| t.starts_with('#'))
+            .is_some_and(|t| *t != "#endif");
+        let decorated = conditional
+            || before.iter().any(|t| {
+                ACCESS_MODIFIERS.contains(&t.split('(').next().unwrap_or(t)) || t.starts_with('@')
+            });
         return Opener {
             keyword: Some(keyword),
             name: name.to_string(),
-            constrained: tokens.contains(&"where"),
+            constrained: tokens.contains(&"where")
+                || (keyword == "extension" && spelled.contains('<')),
+            decorated,
+            file_private: before
+                .iter()
+                .any(|t| matches!(*t, "private" | "fileprivate")),
         };
     }
     Opener {
         keyword: None,
         name: String::new(),
         constrained: false,
+        decorated: false,
+        file_private: false,
     }
 }
 
@@ -199,8 +235,19 @@ pub(super) fn member_destination(source: &str, line: u32, item: &str) -> Result<
             }
             Some("extension") if opener.constrained => {
                 return Err(
-                    "it is in an extension with a `where` clause, whose constraints an extension of the plain type would drop".into(),
+                    "it is in an extension with a `where` clause or a bound generic argument, whose constraints an extension of the plain type would drop".into(),
                 );
+            }
+            Some("extension") if opener.decorated => {
+                return Err(
+                    "it is in an extension with an access modifier, an attribute or a `#if`, which a plain extension would not give it; spell them on the member first".into(),
+                );
+            }
+            Some(keyword) if keyword != "extension" && opener.file_private => {
+                return Err(format!(
+                    "its type `{}` is `private` or `fileprivate`, so an extension in another file could not name it",
+                    opener.name
+                ));
             }
             Some(keyword) => {
                 if opener.name.is_empty() {
@@ -329,6 +376,7 @@ pub(super) fn insert_member(target: &str, path: &str, item: &str) -> String {
                     if opener.keyword == Some("extension")
                         && opener.name == path
                         && !opener.constrained
+                        && !opener.decorated
                     {
                         open = Some(i);
                     }

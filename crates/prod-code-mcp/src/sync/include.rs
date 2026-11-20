@@ -17,7 +17,9 @@
 
 use crate::config::{is_baseline_ignored, load_config};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 struct IncludePrefix {
@@ -33,9 +35,20 @@ pub struct SyncInclude {
     /// The checkout these rules were loaded for, where a data directory is looked into for
     /// source code (#2048); `None` for rules compiled without one.
     root: Option<PathBuf>,
+    /// Per data directory, whether it holds source code: a scan asks for every file of the
+    /// directory, and reading it again for each made a large one quadratic.
+    package_dirs: Arc<Mutex<HashMap<PathBuf, bool>>>,
 }
 
 impl SyncInclude {
+    /// Whether directory `rel_dir` holds source code, read once per directory with `probe`.
+    pub(crate) fn package_dir(&self, rel_dir: &Path, probe: impl FnOnce() -> bool) -> bool {
+        let Ok(mut known) = self.package_dirs.lock() else {
+            return probe();
+        };
+        *known.entry(rel_dir.to_path_buf()).or_insert_with(probe)
+    }
+
     /// Load `[sync] include` from global and workspace `prod-code.toml` for `root`.
     pub fn load(root: &Path) -> Self {
         let config = load_config(root);
@@ -75,7 +88,7 @@ impl SyncInclude {
         Self {
             matcher: Some(matcher),
             prefixes,
-            root: None,
+            ..Self::default()
         }
     }
 

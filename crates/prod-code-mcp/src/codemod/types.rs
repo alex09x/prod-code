@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use super::pattern::{parse_replacement, tokenize_pattern};
+use super::pattern::{parse_replacement, tokenize_pattern, tokenize_pattern_for};
+use crate::parameter_object::Language;
 
 /// Supported file extensions for polyglot structural codemods.
 pub const CODE_EXTENSIONS: &[&str] = &[
@@ -77,11 +78,32 @@ pub enum ReplacementToken {
 pub struct CompiledPattern {
     pub raw: String,
     pub pattern_tokens: Vec<PatternToken>,
+    /// The pattern read as Rust, where `'a` is a lifetime: a Rust file is read that way, and
+    /// `&'a str` read as a string never matched it.
+    pub rust_tokens: Vec<PatternToken>,
     /// Non-metavariable literal identifiers that MUST exist in a candidate file.
     pub required_literals: Vec<String>,
 }
 
+/// The pattern tokens for a file read as `language`.
+fn tokens_for<'t>(
+    neutral: &'t [PatternToken],
+    rust: &'t [PatternToken],
+    language: Option<Language>,
+) -> &'t [PatternToken] {
+    if matches!(language, Some(Language::Rust)) {
+        rust
+    } else {
+        neutral
+    }
+}
+
 impl CompiledPattern {
+    /// The tokens to match a file read as `language` with.
+    pub fn tokens_for(&self, language: Option<Language>) -> &[PatternToken] {
+        tokens_for(&self.pattern_tokens, &self.rust_tokens, language)
+    }
+
     /// Parse and compile a structural pattern string (e.g. `$a.unwrap()`).
     pub fn parse(pattern: &str) -> Result<Self> {
         let pattern_raw = pattern.trim();
@@ -104,6 +126,7 @@ impl CompiledPattern {
         Ok(Self {
             raw: pattern.to_string(),
             pattern_tokens,
+            rust_tokens: tokenize_pattern_for(pattern_raw, true)?,
             required_literals,
         })
     }
@@ -114,12 +137,19 @@ impl CompiledPattern {
 pub struct CodemodRule {
     pub raw: String,
     pub pattern_tokens: Vec<PatternToken>,
+    /// [`CompiledPattern::rust_tokens`] of the pattern.
+    pub rust_tokens: Vec<PatternToken>,
     pub replacement_tokens: Vec<ReplacementToken>,
     /// Non-metavariable literal identifiers that MUST exist in a candidate file.
     pub required_literals: Vec<String>,
 }
 
 impl CodemodRule {
+    /// The tokens to match a file read as `language` with.
+    pub fn tokens_for(&self, language: Option<Language>) -> &[PatternToken] {
+        tokens_for(&self.pattern_tokens, &self.rust_tokens, language)
+    }
+
     /// Parse a `pattern ==>> replacement` rule string.
     pub fn parse(rule: &str) -> Result<Self> {
         let parts: Vec<&str> = rule.split("==>>").collect();
@@ -138,6 +168,7 @@ impl CodemodRule {
         Ok(Self {
             raw: rule.to_string(),
             pattern_tokens: pattern.pattern_tokens,
+            rust_tokens: pattern.rust_tokens,
             replacement_tokens,
             required_literals: pattern.required_literals,
         })

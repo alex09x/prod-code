@@ -173,7 +173,7 @@ fn is_data_dir(dir: &str) -> bool {
 /// Whether a file of a data directory (`docs/data/backends/alias.yaml`) sits beside source code
 /// in its own directory (`embed.go`, which embeds `*.yaml`): that directory is a package, and
 /// its files are the package's inputs (#2048). Output directories stay out.
-fn is_beside_code(root: &Path, rel_path: &str) -> bool {
+fn is_beside_code(root: &Path, include: &SyncInclude, rel_path: &str) -> bool {
     let path = Path::new(rel_path);
     let dirs: Vec<String> = path
         .parent()
@@ -195,14 +195,23 @@ fn is_beside_code(root: &Path, rel_path: &str) -> bool {
     let Some(parent) = path.parent() else {
         return false;
     };
-    std::fs::read_dir(root.join(parent)).is_ok_and(|entries| {
-        entries.flatten().any(|entry| {
-            let sibling = entry.path();
-            sibling.extension().is_some_and(|ext| ext != "json")
-                && entry.file_type().is_ok_and(|kind| kind.is_file())
-                && is_code_source_or_manifest_file(&sibling)
+    // Read once per directory: a scan asks for each of its files.
+    include.package_dir(parent, || {
+        std::fs::read_dir(root.join(parent)).is_ok_and(|entries| {
+            entries.flatten().any(|entry| {
+                is_package_source(&entry.path()) && entry.file_type().is_ok_and(|k| k.is_file())
+            })
         })
     })
+}
+
+/// A file that makes its directory a package: source code, not a manifest or a settings file
+/// (`settings.toml`, `deps.lock` and `*.json` sit beside plain data too).
+fn is_package_source(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| !matches!(ext, "json" | "toml" | "lock" | "sum" | "work"))
+        && is_code_source_or_manifest_file(path)
 }
 
 /// [`is_synced_git_path`], plus explicit `[sync] include` paths from `prod-code.toml` (#1836),
@@ -212,7 +221,7 @@ pub fn is_synced_git_path_with(rel_path: &str, include: &SyncInclude) -> bool {
         || include.is_included(rel_path)
         || include
             .root()
-            .is_some_and(|root| is_beside_code(root, rel_path))
+            .is_some_and(|root| is_beside_code(root, include, rel_path))
 }
 
 #[cfg(test)]
