@@ -59,12 +59,18 @@ fn runtime_paths_2_platform_exclusions_have_precise_reasons() {
     for message in [
         "no packages found",
         "build constraints exclude all go files",
-        "cannot find package",
-        "no such package",
     ] {
         assert_eq!(
             platform_exclusion_reason(Path::new("a.go"), &anyhow::anyhow!(message)),
             Some(format!("excluded by platform build constraints: {message}"))
+        );
+    }
+    // A dependency that cannot be found is an error of the file, not a platform exclusion:
+    // read as one, it became a zero-error report.
+    for message in ["cannot find package", "no such package"] {
+        assert_eq!(
+            platform_exclusion_reason(Path::new("a.go"), &anyhow::anyhow!(message)),
+            None
         );
     }
     assert_eq!(

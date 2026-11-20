@@ -259,8 +259,12 @@ pub async fn plan(
         )
         .await
         .with_context(|| format!("the rename of `{old}` to `{new}` was refused"))?;
+        // No edit is a refused rename: skipping it renamed the accessors without the field (or
+        // the other way round) and called the plan a success.
         if edit.is_null() {
-            continue;
+            anyhow::bail!(
+                "the analyzer produced no rename of `{old}` to `{new}`; nothing was renamed"
+            );
         }
         let (planned, _) = crate::refactor::planned_texts(root, &edit)?;
         for (p, text) in planned {

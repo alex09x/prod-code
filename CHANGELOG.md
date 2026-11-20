@@ -3,6 +3,14 @@
 ## [Unreleased]
 
 ### Fixed
+- **MCP Defects Found by a Full-File Review** (`crates/prod-code-mcp`):
+  - **`code_validate_edits` on Go**: a "cannot find package" error in a file without an OS suffix was read as a platform exclusion and reported with zero errors, so a broken dependency passed validation. A file gopls has no package for (one a `//go:build` line excludes) still counts as excluded.
+  - **`code_validate_edits` on Swift**: when the shadow compiler accepted the edits, it cleared cross-target errors from every report in the batch, including other languages and unchanged files. It now clears them only from the edited Swift files.
+  - **Unified diffs**: a `diff -U0` insertion (`@@ -2,0 +3 @@`) went in one line too early. It now goes after the line it names, and a position past the end of the file or before an earlier hunk does not fit.
+  - **`code_exec` write-back**: the check that a formatter only changed layout read `1// note` as one number, so moving code into a comment passed as layout.
+  - **Strict node pins**: a pinned name that resolves to several addresses kept the ones `--remote` does not list, which left them open to placement and failover. A `prod-code.toml` that exists but cannot be read now fails instead of meaning "no pin".
+  - **Accessor rename**: when the analyzer produced no rename for an accessor or a field, the rest was renamed anyway and reported as success. It is now refused.
+  - **Caller type migration**: a CRLF Python file no longer panics while its function body is measured. Grouped Go parameters (`func f(a, b *T)`) are left alone, because the other name's uses were never checked.
 - **Gateway and Client Defects Found by a Full-File Review** (`crates/prod-code-gateway`, `crates/prod-code-client`):
   - **`code_exec` with pulled changes**: when the pre-command snapshot failed, the command ran against an empty "before", so a rollback would have removed every existing file as created by the command. The command is now refused instead.
   - **Structured test output**: a stdout chunk that ended inside a multi-byte character was dropped with every record in it. The incomplete character now waits for the next chunk, and only bytes that are not UTF-8 at all are dropped.

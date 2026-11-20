@@ -57,6 +57,16 @@ pub(crate) fn scan_go(
             continue;
         }
 
+        // `func f(a, b *T)`: `a` shares the type, and only `b`'s uses would be checked before
+        // the shared type changed under both. A name alone before the comma means a group.
+        let before_name = before_type[..before_type.len() - var_name.len()].trim_end();
+        if let Some(head) = before_name.strip_suffix(',') {
+            let previous = head.rsplit([',', '(']).next().unwrap_or("").trim();
+            if !previous.is_empty() && previous.chars().all(is_ident) {
+                continue;
+            }
+        }
+
         // Scope: enclosing func
         let func_pos = match text[..start_idx].rfind("func ") {
             Some(f) => f,

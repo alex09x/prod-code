@@ -45,10 +45,17 @@ pub fn platform_exclusion_reason(file: &Path, err: &anyhow::Error) -> Option<Str
         if file_str.ends_with("_freebsd.go") || file_str.ends_with("_openbsd.go") {
             return Some("BSD build tags excluded on current host".to_string());
         }
-        return Some(format!(
-            "excluded by platform build constraints: {}",
-            err_str.lines().next().unwrap_or(&err_str)
-        ));
+        // Without an OS suffix, a file gopls has no package for (a `//go:build` line excludes
+        // it) still counts; a package that cannot be found is a dependency error to report,
+        // not a file the platform left out.
+        let missing_dependency =
+            lower_err.contains("cannot find package") || lower_err.contains("no such package");
+        if !missing_dependency {
+            return Some(format!(
+                "excluded by platform build constraints: {}",
+                err_str.lines().next().unwrap_or(&err_str)
+            ));
+        }
     }
     None
 }
@@ -146,7 +153,18 @@ pub async fn reconcile_swift_cross_target_diagnostics(
         tracing::info!(
             "Swift cross-target overlay verified cleanly by shadow compiler; suppressing stale sourcekit-lsp diagnostics"
         );
-        for report in reports.iter_mut() {
+        // Only the Swift files the compiler just built: another language's report in the batch
+        // says nothing about what the Swift compiler accepted.
+        let edited: HashSet<String> = edits
+            .iter()
+            .map(|(p, _)| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+        for report in reports.iter_mut().filter(|r| {
+            r.file.ends_with(".swift")
+                && edited
+                    .iter()
+                    .any(|e| e.ends_with(&r.file) || r.file.ends_with(e.as_str()))
+        }) {
             report.items.retain(|item| {
                 item.severity != "error" || !is_swift_cross_target_candidate(&item.message)
             });

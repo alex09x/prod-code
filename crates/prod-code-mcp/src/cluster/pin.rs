@@ -233,14 +233,17 @@ pub fn resolve_policy_with(
     if unique.is_empty() {
         bail!("the pinned endpoint {name} ({source}) resolved to nothing");
     }
-    if let Some(listed) = req.listed
-        && !unique.iter().any(|addr| listed.contains(addr))
-    {
-        bail!(
-            "--remote {} does not include {name}, the endpoint this workspace is pinned to \
-             ({source}); name it in --remote or change the pin",
-            req.remote.trim()
-        );
+    if let Some(listed) = req.listed {
+        // Only the addresses --remote also names: an unlisted address of the same name stayed
+        // eligible for placement and failover.
+        unique.retain(|addr| listed.contains(addr));
+        if unique.is_empty() {
+            bail!(
+                "--remote {} does not include {name}, the endpoint this workspace is pinned to \
+                 ({source}); name it in --remote or change the pin",
+                req.remote.trim()
+            );
+        }
     }
     Ok(NodePolicy {
         mode: PinMode::Strict,
@@ -263,8 +266,15 @@ fn is_off(spec: &str) -> bool {
 /// node cannot be told, and running elsewhere is what the pin exists to prevent.
 pub fn workspace_pin(root: &std::path::Path) -> Result<Option<String>> {
     let path = root.join("prod-code.toml");
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return Ok(None);
+    // Only a missing file means no pin: one that cannot be read may pin a node, and running
+    // elsewhere is what the pin exists to prevent.
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => bail!(
+            "cannot read {} to learn its node pin: {err}",
+            path.display()
+        ),
     };
     let table = match toml::from_str::<toml::Value>(&text) {
         Ok(table) => table,

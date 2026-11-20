@@ -19,16 +19,19 @@ pub(crate) fn find_python_body_close(text: &str, colon_pos: usize) -> usize {
 
     let rest = &text[colon_pos + 1..];
     let mut current_offset = colon_pos + 1;
-    for line in rest.lines() {
+    // Each chunk with its own terminator: `lines()` drops both bytes of a CRLF, and adding one
+    // per line put the end inside the text, or inside a character, and slicing there panicked.
+    for chunk in rest.split_inclusive('\n') {
+        let line = chunk.trim_end_matches(['\n', '\r']);
         if line.trim().is_empty() || line.trim_start().starts_with('#') {
-            current_offset += line.len() + 1;
+            current_offset += chunk.len();
             continue;
         }
         let line_indent = line.len() - line.trim_start().len();
         if line_indent <= def_indent {
             return current_offset;
         }
-        current_offset += line.len() + 1;
+        current_offset += chunk.len();
     }
     text.len()
 }
@@ -43,7 +46,10 @@ pub(crate) fn verify_all_usages_safe(
     lang: Language,
     mask: &[bool],
 ) -> bool {
-    let scope_text = &text[scope_start..scope_end];
+    // A scope that cannot be sliced is one whose uses cannot be checked: not safe.
+    let Some(scope_text) = text.get(scope_start..scope_end) else {
+        return false;
+    };
     let var_bytes = var_name.as_bytes();
 
     let mut i = 0usize;

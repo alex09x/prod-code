@@ -55,6 +55,25 @@ fn blank_lines_after_the_diff_are_not_the_last_hunks() {
     );
 }
 
+/// A `-U0` insertion names the line it goes after: `@@ -2,0 +3 @@` goes between lines 2 and 3,
+/// not one line earlier; at line 0 it goes first, and past the end of the file it does not fit.
+#[test]
+fn a_zero_context_insertion_goes_after_the_line_it_names() {
+    let text = "a\nb\nc\n";
+    let files = parse("--- a/f\n+++ b/f\n@@ -2,0 +3 @@\n+new\n").unwrap();
+    assert_eq!(
+        apply_hunks(text, &files[0].hunks, "f").unwrap(),
+        "a\nb\nnew\nc\n"
+    );
+    let files = parse("--- a/f\n+++ b/f\n@@ -0,0 +1 @@\n+top\n").unwrap();
+    assert_eq!(
+        apply_hunks(text, &files[0].hunks, "f").unwrap(),
+        "top\na\nb\nc\n"
+    );
+    let files = parse("--- a/f\n+++ b/f\n@@ -9,0 +10 @@\n+far\n").unwrap();
+    assert!(apply_hunks(text, &files[0].hunks, "f").is_err());
+}
+
 #[test]
 fn several_hunks_follow_each_other_and_the_last_newline_is_kept_or_dropped() {
     let text = "1\n2\n3\n4\n5\n6\n";
