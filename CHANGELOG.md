@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **A Pi Extension** in `editors/pi`: it registers `code_definition`, `code_references`, `code_callers`, `code_hover`, `code_outline`, `code_symbols` and `code_diagnostics` as native Pi tools over the `prod-code` CLI (no shell, 20 s timeout, output capped at 100 lines / 8192 characters). After a successful `edit` or `write` on a Go, Rust, TypeScript, JavaScript, Python, Swift or C/C++ file, it appends that file's analyzer diagnostics to the tool result; when the check fails, the result says "diagnostics unavailable" and the edit still succeeds. A bundled skill steers identifier lookups away from grep.
+
 ### Fixed
 - **MCP Refactoring and Sync Defects Found by a Full-File Review** (`crates/prod-code-mcp`): each fix has a regression test that fails without it.
   - **Applying analyzer edits**: a whole-file edit with no `newText` emptied the file, and a missing coordinate was read as 0. Both are now refused. Overlapping edits are refused too, because over a non-ASCII character they panicked. An insertion at the start of a replacement now lands before it rather than inside it, and several insertions at one point keep their listed order. Schema renames refuse a whole-file edit without its text.
