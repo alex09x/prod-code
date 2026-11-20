@@ -118,14 +118,16 @@ fn display_arg(arg: &str, after_secret_flag: bool) -> String {
     if lower.starts_with("bearer ") || lower.starts_with("basic ") {
         return REDACTED.to_string();
     }
-    // `KEY=value`, `--token=value`, `Authorization: value`. The name ends at the first `=` or
-    // `:`: split at an `=` first, `Authorization: Basic dXNlcjpwYXNz=` kept the credential in
-    // the "name".
-    if let Some(at) = arg.find(['=', ':']) {
-        let (name, separator) = (&arg[..at], &arg[at..at + 1]);
-        if !name.contains("//")
-            && (names_a_secret(name) || name.eq_ignore_ascii_case("authorization"))
-        {
+    // `KEY=value`, `--token=value`, `Authorization: value`, `--header=Authorization: value`.
+    // Separators are tried in the order they appear, and the first one whose name is a secret
+    // wins: trying every `=` before any `:` made `Authorization: Basic dXNlcjpwYXNz=` split at
+    // the padding and keep the credential in the "name".
+    for (at, separator) in arg.match_indices(['=', ':']) {
+        let name = &arg[..at];
+        if name.contains("//") {
+            break;
+        }
+        if names_a_secret(name) || name.eq_ignore_ascii_case("authorization") {
             return format!("{name}{separator}{REDACTED}");
         }
     }
@@ -181,6 +183,11 @@ mod tests {
         assert_eq!(
             shown(&["curl", "-H", "Authorization: Basic U0VOVElORUw="]),
             "curl -H Authorization:<redacted>"
+        );
+        // A header given as one `--header=…` argument is still found past its `=`.
+        assert_eq!(
+            shown(&["curl", "--header=Authorization: Basic U0VOVElORUw="]),
+            "curl --header=Authorization:<redacted>"
         );
     }
 
