@@ -37,8 +37,9 @@ pub fn parse_if_else_block(text: &str, search_offset: usize) -> Option<Condition
 }
 
 /// One Python line without its trailing comment: a `#` inside a string (`log(":#")`) does not
-/// start one.
-fn python_code(line: &str) -> &str {
+/// start one. `None` when the line cannot be read this way: an f-string (whose `{…}` may hold
+/// quotes of its own, Python 3.12) or a string still open at the end of the line.
+fn python_code(line: &str) -> Option<&str> {
     let mut quote: Option<char> = None;
     let mut escaped = false;
     for (at, ch) in line.char_indices() {
@@ -47,12 +48,21 @@ fn python_code(line: &str) -> &str {
             Some(_) if ch == '\\' => escaped = true,
             Some(open) if ch == open => quote = None,
             Some(_) => {}
-            None if ch == '"' || ch == '\'' => quote = Some(ch),
-            None if ch == '#' => return &line[..at],
+            None if ch == '"' || ch == '\'' => {
+                let mut prefix = line[..at]
+                    .chars()
+                    .rev()
+                    .take_while(|c| c.is_ascii_alphabetic());
+                if prefix.any(|c| c.eq_ignore_ascii_case(&'f')) {
+                    return None;
+                }
+                quote = Some(ch);
+            }
+            None if ch == '#' => return Some(&line[..at]),
             None => {}
         }
     }
-    line
+    quote.is_none().then_some(line)
 }
 
 fn parse_python_if_elif(text: &str, if_idx: usize, base_indent: &str) -> Option<ConditionalBlock> {
@@ -78,7 +88,13 @@ fn parse_python_if_elif(text: &str, if_idx: usize, base_indent: &str) -> Option<
             // An inline suite (`if x == 'A': f()`, `else: g()`) has its body on the header line,
             // where it was read as part of the tag or dropped.
             // The header without its comment, so the tag is read up to the colon.
-            let trimmed = python_code(trimmed).trim_end();
+            // After `else:` only a comment may follow, whatever the scan makes of the rest.
+            if let Some(after) = trimmed.strip_prefix("else:")
+                && !(after.trim().is_empty() || after.trim_start().starts_with('#'))
+            {
+                return None;
+            }
+            let trimmed = python_code(trimmed)?.trim_end();
             if !trimmed.ends_with(':') {
                 return None;
             }

@@ -45,9 +45,11 @@ pub fn drop_import(text: &str, name: &str) -> (String, Vec<String>) {
     let mut out = text.to_string();
     let mut notes = Vec::new();
     for _ in 0..64 {
+        // A statement with a block comment is left alone: the leaf scans read line comments
+        // only, and one they miss would go with the statement.
         let Some((start, end)) = use_statements(&out).into_iter().find(|(s, e)| {
             let stmt = &out[*s..*e];
-            leaf_names(stmt).iter().any(|leaf| leaf == name)
+            !stmt.contains("/*") && leaf_names(stmt).iter().any(|leaf| leaf == name)
         }) else {
             break;
         };
@@ -73,6 +75,15 @@ pub fn drop_import(text: &str, name: &str) -> (String, Vec<String>) {
             }
         }
         out.replace_range(start..tail_end, &replacement);
+    }
+    for (start, end) in use_statements(&out) {
+        let stmt = &out[start..end];
+        if stmt.contains("/*") && leaf_names(stmt).iter().any(|leaf| leaf == name) {
+            notes.push(format!(
+                "left `{}` as it is: it has a block comment; take `{name}` out by hand",
+                stmt.trim()
+            ));
+        }
     }
     (out, notes)
 }
@@ -157,11 +168,7 @@ pub(crate) fn use_tree_entries(stmt: &str) -> Vec<(String, String)> {
     let Some(at) = stmt.find("use ") else {
         return Vec::new();
     };
-    let clean: String = stmt[at + 4..]
-        .lines()
-        .map(|line| line.split("//").next().unwrap_or(line))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let clean = without_line_comments(&stmt[at + 4..]);
     let body = clean.trim().trim_end_matches(';').trim();
     let mut out = Vec::new();
     if let Some(open) = body.find('{')
@@ -180,6 +187,13 @@ pub(crate) fn use_tree_entries(stmt: &str) -> Vec<(String, String)> {
         }
     }
     out
+}
+
+fn without_line_comments(text: &str) -> String {
+    text.lines()
+        .map(|line| line.split("//").next().unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The names a `use` statement actually brings into scope.
@@ -212,6 +226,8 @@ pub(crate) fn remove_from_group(stmt: &str, name: &str) -> String {
 /// depth: `sub::{*, Trait as _}` gives `sub::*` and `sub::Trait as _`, paths from the first brace
 /// as the named entries are.
 fn unnamed_entries(stmt: &str) -> Vec<String> {
+    // Without line comments, as the named entries are read: `* // note` is still a glob.
+    let stmt = without_line_comments(stmt);
     let Some((_, rest)) = stmt.split_once('{') else {
         return Vec::new();
     };

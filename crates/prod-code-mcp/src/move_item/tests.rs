@@ -109,6 +109,14 @@ mod tests {
         // In a nested group too: only the outer list was looked at.
         let (text, _) = drop_import("use m::{Name, sub::{*, Trait as _}};\n", "Name");
         assert_eq!(text, "use m::{sub::*, sub::Trait as _};\n");
+        // A line comment after a glob does not hide it.
+        let (text, _) = drop_import("pub use m::{Name, sub::{* // keep\n}};\n", "Name");
+        assert_eq!(text, "pub use m::{sub::*};\n");
+        // A block comment is beyond the scan: the statement stays, with a note.
+        let source = "use m::{Name, sub::{* /* keep */}};\n";
+        let (text, notes) = drop_import(source, "Name");
+        assert_eq!(text, source);
+        assert!(notes[0].contains("block comment"), "{notes:?}");
     }
 
     #[test]

@@ -114,6 +114,14 @@ fn an_inline_python_suite_is_refused() {
     // A `#` inside a string is not a comment that the colon could end before.
     let text = "if kind == 'a':\n    f()\nelse: log(\":#\")\n";
     assert!(parse_if_else_block(text, 0).is_none());
+    // An f-string may nest quotes (Python 3.12), which the quote scan cannot follow.
+    for header in [
+        "else: log(f\"{\"a:#\"}\")",
+        "elif kind == f\"{\"a:#\"}\": g()",
+    ] {
+        let text = format!("if kind == 'a':\n    f()\n{header}\n");
+        assert!(parse_if_else_block(&text, 0).is_none(), "{header}");
+    }
     // A real trailing comment after the colon is fine.
     let text = "if kind == 'a':  # first\n    f()\nelse:  # rest\n    g()\n";
     let tags: Vec<_> = parse_if_else_block(text, 0)
