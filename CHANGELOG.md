@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Review Fixes for the v0.3.62 Changes** (`crates/prod-code-mcp`): a review of the release diff found these, each now with a regression test that fails on v0.3.62.
+  - Sync read a data directory again for every file in it while deciding whether it holds source code, so a large dataset directory cost a quadratic scan; it is now read once per directory per scan. A `settings.toml`, a `*.lock` or a `go.sum` beside data no longer makes the directory a package, only source code does (#2048).
+  - A Rust declaration in a block that opens on its own line (`mod nested {` after `impl Exec {}`) is no longer taken for a member of the `impl` above it. `unsafe impl`, an `impl` header broken after `for`, a `->` in a generic bound (`impl<T: Fn() -> bool>`) and a `for<'a>` in a bound now name their type (#2045).
+  - A structural pattern is read as Rust when it is matched against a Rust file, so `&'a str` finds `&'a str`. A raw lifetime (`'r#type`), a non-ASCII one (`'α`) and a raw string holding quotes or `#` no longer hide the code after them (#2052).
+  - An error a Swift move carries along is set aside only on the lines where the moved block landed, so the same error on an identical line elsewhere in the batch stays blocking. A block that was already in the target before the cut no longer makes a deletion count as a move (#2038).
+  - Moving a Swift member into an extension: a brace-free declaration before the type (`let version = 1`, a stored property above a nested type) no longer hides the type. A member of a `public`, `@MainActor` or `#if` extension, or of `extension Array<Int>`, is refused rather than moved into a plain extension that would change its access, isolation, compilation or constraint. Such an extension in the target is not joined. A member of a `private` or `fileprivate` type is refused too, because another file cannot name the type (#2040).
+  - The missing compile-database note names `meson setup build` for a Meson checkout, and a directory called `compile_commands.json` no longer counts as one (#2047).
+
 ## v0.3.62 — 2026-11-19
 
 ### Added

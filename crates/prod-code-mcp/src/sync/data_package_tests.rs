@@ -92,3 +92,28 @@ fn the_files_of_a_data_directory_holding_code_are_synced() {
     assert!(left.contains(&"data/dump.yaml"), "{left:?}");
     assert!(!left.contains(&"docs/data/backends/alias.yaml"), "{left:?}");
 }
+
+/// A settings file or a lock beside data is not a package; a directory is read once for all its
+/// files, not once per file.
+#[test]
+fn a_data_directory_is_a_package_only_by_source_and_is_read_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    write(&root, "data/settings.toml", "x = 1\n");
+    write(&root, "data/deps.lock", "x\n");
+    write(&root, "data/dump.yaml", "rows: []\n");
+    write(&root, "assets/data/embed.go", "package data\n");
+    write(&root, "assets/data/a.yaml", "a: 1\n");
+    write(&root, "assets/data/b.yaml", "b: 1\n");
+
+    let include = SyncInclude::load(&root);
+    assert!(!is_synced_git_path_with("data/dump.yaml", &include));
+    assert!(is_synced_git_path_with("assets/data/a.yaml", &include));
+    // The directory's answer is kept: without the source on disk, the next file still gets it.
+    std::fs::remove_file(root.join("assets/data/embed.go")).unwrap();
+    assert!(is_synced_git_path_with("assets/data/b.yaml", &include));
+    assert!(!is_synced_git_path_with(
+        "assets/data/b.yaml",
+        &SyncInclude::load(&root)
+    ));
+}

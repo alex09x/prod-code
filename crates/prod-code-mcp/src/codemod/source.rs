@@ -11,6 +11,39 @@
 use super::types::{SourceToken, TokenKind};
 use crate::parameter_object::Language;
 
+/// The end of the Rust lifetime or label starting with the `'` at byte `at` of `text`: `'a`,
+/// `'_`, `'outer`, `'α`, `'r#type`. `None` for a character literal (`'a'`, `'\n'`).
+pub(crate) fn rust_lifetime_end(text: &str, at: usize) -> Option<usize> {
+    let rest = text.get(at + 1..)?;
+    let name = rest.strip_prefix("r#").unwrap_or(rest);
+    let prefix = rest.len() - name.len();
+    let mut chars = name.char_indices();
+    let (_, first) = chars.next()?;
+    if !(first == '_' || unicode_ident::is_xid_start(first)) {
+        return None;
+    }
+    let len = chars
+        .find(|(_, c)| !unicode_ident::is_xid_continue(*c))
+        .map_or(name.len(), |(i, _)| i);
+    let end = at + 1 + prefix + len;
+    (text.as_bytes().get(end) != Some(&b'\'')).then_some(end)
+}
+
+/// The end of the Rust raw string literal starting at byte `at` of `text`, if one does.
+fn rust_raw_string_end(text: &str, at: usize) -> Option<usize> {
+    let rest = &text[at..];
+    let after_prefix = ["br", "cr", "r"]
+        .iter()
+        .find_map(|prefix| rest.strip_prefix(prefix))?;
+    let hashes = after_prefix.len() - after_prefix.trim_start_matches('#').len();
+    let body = after_prefix[hashes..].strip_prefix('"')?;
+    let close = format!("\"{}", "#".repeat(hashes));
+    let end = body
+        .find(&close)
+        .map_or(text.len(), |i| text.len() - body.len() + i + close.len());
+    Some(end)
+}
+
 /// Tokenize source code into structural tokens with byte spans, ignoring comments and whitespace.
 pub fn tokenize_source(source: &str) -> Vec<SourceToken> {
     tokenize_source_for_lang(source, None)
@@ -30,6 +63,18 @@ pub fn tokenize_source_for_lang(source: &str, lang: Option<Language>) -> Vec<Sou
         // Whitespace
         if b.is_ascii_whitespace() {
             i += 1;
+            continue;
+        }
+
+        // A Rust raw string (`r#"…"#`, `br"…"`, `cr#"…"#`) is one literal: its `#` is not a
+        // comment, and a quote inside it opens nothing.
+        if is_rust && let Some(end) = rust_raw_string_end(source, i) {
+            tokens.push(SourceToken {
+                kind: TokenKind::StringLit(source[i..end].to_string()),
+                start_byte: i,
+                end_byte: end,
+            });
+            i = end;
             continue;
         }
 
@@ -88,20 +133,17 @@ pub fn tokenize_source_for_lang(source: &str, lang: Option<Language>) -> Vec<Sou
         // A Rust lifetime or label (`'_`, `'a`, `'outer:`) is not a character literal: read as
         // one, `SessionOp<'_>` swallowed the code up to the next quote, and every call after it
         // was missed (#2052). `'a'` is still the character.
-        if is_rust && b == b'\'' {
-            let mut end = i + 1;
-            while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
-                end += 1;
-            }
-            if end > i + 1 && bytes.get(end) != Some(&b'\'') {
-                tokens.push(SourceToken {
-                    kind: TokenKind::Ident(source[i..end].to_string()),
-                    start_byte: i,
-                    end_byte: end,
-                });
-                i = end;
-                continue;
-            }
+        if is_rust
+            && b == b'\''
+            && let Some(end) = rust_lifetime_end(source, i)
+        {
+            tokens.push(SourceToken {
+                kind: TokenKind::Ident(source[i..end].to_string()),
+                start_byte: i,
+                end_byte: end,
+            });
+            i = end;
+            continue;
         }
 
         // String literals (", ', `)

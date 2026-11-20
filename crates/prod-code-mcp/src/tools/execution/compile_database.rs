@@ -26,7 +26,7 @@ pub(crate) fn lacks_compile_database(root: &Path) -> bool {
     if !cpp || root.join("compile_flags.txt").is_file() {
         return false;
     }
-    if root.join("compile_commands.json").exists() {
+    if root.join("compile_commands.json").is_file() {
         return false;
     }
     let Ok(entries) = std::fs::read_dir(root) else {
@@ -40,12 +40,21 @@ pub(crate) fn lacks_compile_database(root: &Path) -> bool {
 /// The note added to a C/C++ name lookup that found nothing or ran out of time.
 pub(crate) fn compile_database_note(root: &Path) -> Option<String> {
     lacks_compile_database(root).then(|| {
-        "This C/C++ checkout has no compile_commands.json (nor compile_flags.txt), so clangd \
-         indexes no translation unit and cannot find a symbol by name. Generate one on a build \
-         node by configuring only, e.g. `cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON`, \
-         and link `build/compile_commands.json` to the checkout root; meanwhile find the \
-         declaration with code_grep and ask code_definition by path, line and character."
-            .to_string()
+        // Meson writes the database on its own; CMake has to be asked for it.
+        let configure =
+            if !root.join("CMakeLists.txt").is_file() && root.join("meson.build").is_file() {
+                "`meson setup build`"
+            } else {
+                "`cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON`"
+            };
+        format!(
+            "This C/C++ checkout has no compile_commands.json at its root or in a directory \
+             just under it (nor compile_flags.txt), so clangd likely indexes no translation unit \
+             and cannot find a symbol by name. Generate one on a build node by configuring only, \
+             e.g. {configure}, and link `build/compile_commands.json` to the checkout root; \
+             meanwhile find the declaration with code_grep and ask code_definition by path, line \
+             and character."
+        )
     })
 }
 
