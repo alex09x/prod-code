@@ -93,7 +93,7 @@ export default function prodCode(pi: ExtensionAPI) {
   }
 
   pi.on('tool_result', async (event, ctx) => {
-    const patch = await appendDiagnostics(event, async (file: string) => {
+    const patch = await appendDiagnostics(event, ctx.cwd, async (file: string) => {
       const report = await query('diagnostics', { file }, cli(ctx.cwd, ctx.signal));
       return compact(report);
     });

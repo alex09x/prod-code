@@ -10,15 +10,27 @@
 
 import { fileURLToPath } from 'url';
 import { homedir } from 'os';
-import { join } from 'path';
+import { isAbsolute, join, resolve } from 'path';
 
 const fileCommands = new Set(['outline', 'symbols', 'diagnostics']);
 const commands = new Set(['def', 'refs', 'callers', 'hover', ...fileCommands]);
 const validPosition = n => Number.isSafeInteger(n) && n >= 1;
+const unicodeSpaces = /[  -   　]/g;
 
-function normalizeFile(file) {
-  const path = file.replace(/^@/, '');
-  return path.startsWith('~/') ? join(homedir(), path.slice(2)) : path;
+// The same spelling rules as Pi's own read/edit/write paths (normalizePath with
+// normalizeUnicodeSpaces and stripAtPrefix), so a tool names the file Pi touched.
+export function normalizeFile(file) {
+  let path = file.replace(unicodeSpaces, ' ');
+  if (path.startsWith('@')) path = path.slice(1);
+  if (path === '~') return homedir();
+  if (path.startsWith('~/')) return join(homedir(), path.slice(2));
+  return /^file:\/\//.test(path) ? fileURLToPath(path) : path;
+}
+
+// Pi's resolveToCwd: the absolute file an edit or write on `file` wrote.
+export function resolveToCwd(file, cwd) {
+  const path = normalizeFile(file);
+  return isAbsolute(path) ? resolve(path) : resolve(cwd, path);
 }
 
 function locationFile(output) {
@@ -90,11 +102,15 @@ export function formatDiagnostics(output) {
 }
 
 // Return a partial tool_result patch; never replace edit details or its status.
-export async function appendDiagnostics(event, diagnose) {
+export async function appendDiagnostics(event, cwd, diagnose) {
   if (event.isError || (event.toolName !== 'edit' && event.toolName !== 'write')) return;
-  const file = event.input.path;
+  if (typeof event.input.path !== 'string') return;
+  // Diagnose the file Pi wrote, not the raw spelling: a non-breaking space or a
+  // file:// URL in the input names a different path until it is resolved.
+  let file;
+  try { file = resolveToCwd(event.input.path, cwd); } catch { return; }
   // Only source files have analyzer diagnostics; anything else keeps its result untouched.
-  if (typeof file !== 'string' || !source.test(file)) return;
+  if (!source.test(file)) return;
   let text = 'diagnostics unavailable';
   try { text = await diagnose(file); } catch { /* Preserve the successful edit. */ }
   return { content: [...event.content, { type: 'text', text }] };

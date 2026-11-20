@@ -9,7 +9,10 @@
  */
 
 import assert from 'assert';
-import { query, compact, appendDiagnostics, formatDiagnostics } from './cli.mjs';
+import { homedir } from 'os';
+import { join } from 'path';
+import { pathToFileURL } from 'url';
+import { query, compact, appendDiagnostics, formatDiagnostics, resolveToCwd } from './cli.mjs';
 
 const report = JSON.stringify({ file: 'a b.go', errors: 1, warnings: 1, items: [
   { line: 2, col: 3, severity: 'error', message: 'undefined: name' },
@@ -71,23 +74,56 @@ async function diagnosticsChecks() {
     const event = { ...base, toolName };
     for (const ext of ['go', 'rs', 'ts', 'tsx', 'js', 'py', 'swift', 'c', 'cc', 'cpp', 'h']) {
       const path = `scratch.${ext}`;
-      const patch = await appendDiagnostics({ ...event, input: { path } }, async file => {
-        assert.strictEqual(file, path);
+      const patch = await appendDiagnostics({ ...event, input: { path } }, '/w', async file => {
+        assert.strictEqual(file, `/w/${path}`);
         return formatted;
       });
       assert.deepStrictEqual(patch, { content: [original, { type: 'text', text: formatted }] });
     }
-    assert.strictEqual(await appendDiagnostics({ ...event, isError: true }, assert.fail), undefined);
-    const failed = await appendDiagnostics(event, async () => { throw new Error('private backend details'); });
+    assert.strictEqual(await appendDiagnostics({ ...event, isError: true }, '/w', assert.fail), undefined);
+    const failed = await appendDiagnostics(event, '/w', async () => { throw new Error('private backend details'); });
     const unavailable = { content: [original, { type: 'text', text: 'diagnostics unavailable' }] };
     assert.deepStrictEqual(failed, unavailable);
     let called = false;
-    const skipped = await appendDiagnostics({ ...event, input: { path: 'notes.md' } }, () => { called = true; });
+    const skipped = await appendDiagnostics({ ...event, input: { path: 'notes.md' } }, '/w', () => { called = true; });
     assert.strictEqual(skipped, undefined);
     assert.strictEqual(called, false);
     assert.deepStrictEqual(event.content, [original]);
   }
-  assert.strictEqual(await appendDiagnostics({ ...base, toolName: 'read' }, assert.fail), undefined);
+  assert.strictEqual(await appendDiagnostics({ ...base, toolName: 'read' }, '/w', assert.fail), undefined);
+}
+
+// Spellings that Pi's edit and write resolve to a different file than the raw input names.
+const spellings = [
+  ['src/health check.rs', '/w/src/health check.rs'],
+  ['src/a b.rs', '/w/src/a b.rs'],
+  [pathToFileURL('/tmp/health check.rs').href, '/tmp/health check.rs'],
+  ['@src/x.rs', '/w/src/x.rs'],
+  ['@@x.rs', '/w/@x.rs'],
+  ['~/x.rs', join(homedir(), 'x.rs')],
+  ['./src/../y.rs', '/w/y.rs'],
+];
+
+async function pathChecks() {
+  for (const [input, file] of spellings) {
+    assert.strictEqual(resolveToCwd(input, '/w'), file);
+    const event = { toolName: 'write', isError: false, content: [], input: { path: input } };
+    const seen = [];
+    await appendDiagnostics(event, '/w', async f => { seen.push(f); return 'ok'; });
+    assert.deepStrictEqual(seen, [file], input);
+  }
+  // A file:// URL naming a .md file is not a source file once decoded.
+  const md = { toolName: 'edit', isError: false, content: [], input: { path: 'file:///tmp/a.md' } };
+  assert.strictEqual(await appendDiagnostics(md, '/w', assert.fail), undefined);
+  // With PI_CODING_AGENT_DIR set, compare against the resolver Pi's edit and write use.
+  const pi = process.env.PI_CODING_AGENT_DIR;
+  if (!pi) return 'SKIP Pi resolver comparison (PI_CODING_AGENT_DIR unset)';
+  const utils = pathToFileURL(join(pi, 'dist/core/tools/path-utils.js')).href;
+  const { resolveToCwd: piResolve } = await import(utils);
+  for (const [input] of spellings) {
+    assert.strictEqual(resolveToCwd(input, '/w'), piResolve(input, '/w'), input);
+  }
+  return `PASS paths match Pi's resolveToCwd (${spellings.length} spellings)`;
 }
 
 async function main() {
@@ -95,6 +131,9 @@ async function main() {
   console.log('PASS CLI arguments and target validation');
   await diagnosticsChecks();
   console.log('PASS diagnostics formatting and tool-result append');
+  const piComparison = await pathChecks();
+  console.log('PASS diagnostics target follows Pi path resolution');
+  console.log(piComparison);
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; });
