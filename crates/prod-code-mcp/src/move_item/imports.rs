@@ -208,19 +208,44 @@ pub(crate) fn remove_from_group(stmt: &str, name: &str) -> String {
     format!("{head}{{{}}}{tail}", kept.join(", "))
 }
 
-/// The top-level entries of a `use` group that name nothing: a glob, an anonymous trait import,
-/// `self`.
+/// The entries of a `use` group that name nothing, a glob or an anonymous trait import, at any
+/// depth: `sub::{*, Trait as _}` gives `sub::*` and `sub::Trait as _`, paths from the first brace
+/// as the named entries are.
 fn unnamed_entries(stmt: &str) -> Vec<String> {
     let Some((_, rest)) = stmt.split_once('{') else {
         return Vec::new();
     };
     let group = rest.rsplit_once('}').map_or(rest, |(group, _)| group);
-    split_top_level_commas(group)
-        .into_iter()
-        .map(str::trim)
-        .filter(|seg| *seg == "*" || seg.ends_with("::*") || seg.ends_with(" as _"))
-        .map(str::to_string)
-        .collect()
+    let mut out = Vec::new();
+    collect_unnamed("", group, &mut out);
+    out
+}
+
+fn collect_unnamed(prefix: &str, group: &str, out: &mut Vec<String>) {
+    let join = |seg: &str| {
+        if prefix.is_empty() {
+            seg.to_string()
+        } else {
+            format!("{prefix}::{seg}")
+        }
+    };
+    for raw in split_top_level_commas(group) {
+        let seg = raw.trim();
+        if let Some(open) = seg.find('{')
+            && let Some(close) = seg.rfind('}')
+            && close > open
+        {
+            let sub = seg[..open].trim().trim_end_matches("::").trim();
+            let nested = if sub.is_empty() {
+                prefix.to_string()
+            } else {
+                join(sub)
+            };
+            collect_unnamed(&nested, &seg[open + 1..close], out);
+        } else if seg == "*" || seg.ends_with("::*") || seg.ends_with(" as _") {
+            out.push(join(seg));
+        }
+    }
 }
 
 /// `text` with `use_line` added, after the imports it already has.

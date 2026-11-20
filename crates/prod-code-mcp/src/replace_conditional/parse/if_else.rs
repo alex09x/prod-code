@@ -36,6 +36,25 @@ pub fn parse_if_else_block(text: &str, search_offset: usize) -> Option<Condition
     }
 }
 
+/// One Python line without its trailing comment: a `#` inside a string (`log(":#")`) does not
+/// start one.
+fn python_code(line: &str) -> &str {
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (at, ch) in line.char_indices() {
+        match quote {
+            Some(_) if escaped => escaped = false,
+            Some(_) if ch == '\\' => escaped = true,
+            Some(open) if ch == open => quote = None,
+            Some(_) => {}
+            None if ch == '"' || ch == '\'' => quote = Some(ch),
+            None if ch == '#' => return &line[..at],
+            None => {}
+        }
+    }
+    line
+}
+
 fn parse_python_if_elif(text: &str, if_idx: usize, base_indent: &str) -> Option<ConditionalBlock> {
     let mut branches = Vec::new();
     let mut discriminator = String::new();
@@ -58,8 +77,9 @@ fn parse_python_if_elif(text: &str, if_idx: usize, base_indent: &str) -> Option<
         {
             // An inline suite (`if x == 'A': f()`, `else: g()`) has its body on the header line,
             // where it was read as part of the tag or dropped.
-            let header = trimmed.split('#').next().unwrap_or(trimmed).trim_end();
-            if !header.ends_with(':') {
+            // The header without its comment, so the tag is read up to the colon.
+            let trimmed = python_code(trimmed).trim_end();
+            if !trimmed.ends_with(':') {
                 return None;
             }
             // Flush previous branch

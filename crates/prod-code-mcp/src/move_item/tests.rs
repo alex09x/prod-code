@@ -106,6 +106,9 @@ mod tests {
         assert_eq!(text, "use m::{*, Trait as _};\n");
         let (text, _) = drop_import("use m::{Name, Other, *};\n", "Name");
         assert_eq!(text, "use m::{Other, *};\n");
+        // In a nested group too: only the outer list was looked at.
+        let (text, _) = drop_import("use m::{Name, sub::{*, Trait as _}};\n", "Name");
+        assert_eq!(text, "use m::{sub::*, sub::Trait as _};\n");
     }
 
     #[test]

@@ -111,4 +111,16 @@ fn coverage_b2_python_crlf_offsets_preserve_the_following_statement() {
 fn an_inline_python_suite_is_refused() {
     let text = "if kind == 'a': f()\nelse: g()\n";
     assert!(parse_if_else_block(text, 0).is_none());
+    // A `#` inside a string is not a comment that the colon could end before.
+    let text = "if kind == 'a':\n    f()\nelse: log(\":#\")\n";
+    assert!(parse_if_else_block(text, 0).is_none());
+    // A real trailing comment after the colon is fine.
+    let text = "if kind == 'a':  # first\n    f()\nelse:  # rest\n    g()\n";
+    let tags: Vec<_> = parse_if_else_block(text, 0)
+        .unwrap()
+        .branches
+        .into_iter()
+        .map(|b| b.tag)
+        .collect();
+    assert_eq!(tags, ["'a'", "default"]);
 }

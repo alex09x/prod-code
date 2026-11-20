@@ -35,16 +35,15 @@ pub fn parse_rust_match(text: &str, search_offset: usize) -> Option<ConditionalB
     let mut branches = Vec::new();
     let mut pos = 0;
 
+    // The arm's `=>` is looked for in code only: one inside a string, a raw string
+    // (`r#""=>"#`) or a comment is not the separator.
+    let code = crate::parameter_object::rust_code(inner);
     while pos < inner.len() {
         let rest = &inner[pos..];
-        let Some(arrow_idx) = rest.find("=>") else {
+        let Some(arrow_idx) = code[pos..].windows(2).position(|pair| pair == b"=>") else {
             break;
         };
         let pattern_part = rest[..arrow_idx].trim();
-        // An odd quote count puts the `=>` inside a string pattern (`"=>" => …`).
-        if pattern_part.matches('"').count() % 2 == 1 {
-            return None;
-        }
         // Every line of the pattern, not just the last: `A\n| B =>` lost `A`. Comment lines
         // before the arm are not part of it.
         let pattern = pattern_part
