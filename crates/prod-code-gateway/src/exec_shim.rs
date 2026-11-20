@@ -214,13 +214,35 @@ pub fn command(program: &str) -> (std::process::Command, Option<ReportFile>) {
     }
 }
 
-/// The shim's report file in the system temporary directory, removed when dropped.
+/// The directory the reports go to: one only this user can enter, made once per gateway, so
+/// another user of the node cannot plant or swap a report at its predictable name in the shared
+/// temporary directory. The shared directory itself if that cannot be made.
+fn report_dir() -> &'static std::path::Path {
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        let dir =
+            std::env::temp_dir().join(format!("prod-code-exec-{}-{nanos}", std::process::id()));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        // `create`, not `create_all`: an existing directory of that name is not ours.
+        match builder.create(&dir) {
+            Ok(()) => dir,
+            Err(_) => std::env::temp_dir(),
+        }
+    })
+}
+
+/// The shim's report file in this gateway's private report directory, removed when dropped.
 pub struct ReportFile(PathBuf);
 
 impl ReportFile {
     fn new() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
+        let path = report_dir().join(format!(
             "prod-code-exec-{}-{}.report",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)

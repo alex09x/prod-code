@@ -25,6 +25,11 @@ use super::prometheus_format::format_prometheus_metrics;
 #[cfg(test)]
 mod tests;
 
+/// How long one scrape, request read and response write together, may take.
+const SCRAPE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+/// How many scrapes may be open at once.
+const MAX_OPEN_SCRAPES: usize = 32;
+
 /// Starts the Prometheus HTTP metrics server on `listen_addr`.
 /// Runs indefinitely until the async task or runtime is cancelled.
 pub async fn run_prometheus_server(
@@ -50,6 +55,7 @@ pub(crate) async fn serve_prometheus(
         "Prometheus scrape server listening"
     );
 
+    let scrapes = Arc::new(tokio::sync::Semaphore::new(MAX_OPEN_SCRAPES));
     loop {
         let (stream, peer) = match listener.accept().await {
             Ok(pair) => pair,
@@ -62,9 +68,25 @@ pub(crate) async fn serve_prometheus(
 
         let metrics_ref = Arc::clone(&metrics);
         let node_ref = node.clone();
+        // A scraper that stops sending or reading no longer keeps its task and socket: the
+        // whole exchange has a deadline, and a bounded number of them run at once.
+        let Ok(permit) = Arc::clone(&scrapes).try_acquire_owned() else {
+            tracing::debug!(peer = %peer, "too many open Prometheus scrapes; dropping one");
+            continue;
+        };
         tokio::spawn(async move {
-            if let Err(e) = handle_http_client(stream, &metrics_ref, &node_ref).await {
-                tracing::trace!(peer = %peer, error = %e, "http prometheus scrape connection ended");
+            let _permit = permit;
+            match tokio::time::timeout(
+                SCRAPE_DEADLINE,
+                handle_http_client(stream, &metrics_ref, &node_ref),
+            )
+            .await
+            {
+                Ok(Err(e)) => {
+                    tracing::trace!(peer = %peer, error = %e, "http prometheus scrape connection ended")
+                }
+                Err(_) => tracing::debug!(peer = %peer, "Prometheus scrape timed out"),
+                Ok(Ok(())) => {}
             }
         });
     }

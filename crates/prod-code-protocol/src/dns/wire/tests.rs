@@ -12,6 +12,12 @@ use super::*;
 use std::net::{Ipv4Addr, UdpSocket};
 
 fn exchange(reply: Vec<u8>) -> std::io::Result<Vec<DnsAnswer>> {
+    exchange_all(vec![reply], Duration::from_secs(2))
+}
+
+/// Answers the query with each of `replies` in turn, the query's ID written into each one that
+/// is long enough to carry an ID unless it starts with `0xde 0xad` (a spoofed reply).
+fn exchange_all(replies: Vec<Vec<u8>>, timeout: Duration) -> std::io::Result<Vec<DnsAnswer>> {
     let server = UdpSocket::bind("127.0.0.1:0").unwrap();
     server
         .set_read_timeout(Some(Duration::from_secs(2)))
@@ -20,17 +26,53 @@ fn exchange(reply: Vec<u8>) -> std::io::Result<Vec<DnsAnswer>> {
     let worker = std::thread::spawn(move || {
         let mut buf = [0; 1024];
         let (n, peer) = server.recv_from(&mut buf).unwrap();
-        assert_eq!(parse_dns_query(&buf[..n]).unwrap(), (0x4242, question()));
-        server.send_to(&reply, peer).unwrap();
+        let (id, asked) = parse_dns_query(&buf[..n]).unwrap();
+        assert_eq!(asked, question());
+        for mut reply in replies {
+            if reply.len() >= 2 && reply[..2] != [0xde, 0xad] {
+                reply[..2].copy_from_slice(&id.to_be_bytes());
+            }
+            server.send_to(&reply, peer).unwrap();
+        }
     });
-    let result = query_dns(
-        addr,
-        "example.test",
-        DnsQueryType::ANY,
-        Duration::from_secs(2),
-    );
+    let result = query_dns(addr, "example.test", DnsQueryType::ANY, timeout);
     worker.join().unwrap();
     result
+}
+
+/// A reply with another ID, or a query rather than a response, is not the answer: the real
+/// reply after it is, and with nothing else the query times out.
+#[test]
+fn only_the_reply_to_this_query_is_read() {
+    let answer = DnsAnswer {
+        name: "example.test".into(),
+        ttl: 9,
+        data: DnsRecordData::A(Ipv4Addr::new(10, 0, 0, 9)),
+    };
+    let mut spoofed = format_dns_response(0, &question(), &[answer.clone()], false, 0);
+    spoofed[..2].copy_from_slice(&[0xde, 0xad]);
+    let mut not_a_response = format_dns_response(0, &question(), &[answer.clone()], false, 0);
+    not_a_response[2] &= 0x7f;
+    let real = DnsAnswer {
+        name: "example.test".into(),
+        ttl: 9,
+        data: DnsRecordData::A(Ipv4Addr::new(127, 0, 0, 1)),
+    };
+    let reply = format_dns_response(0, &question(), &[real.clone()], false, 0);
+    let got = exchange_all(
+        vec![spoofed.clone(), not_a_response, reply],
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    assert_eq!(got, vec![real]);
+    let err = exchange_all(vec![spoofed], Duration::from_millis(300)).unwrap_err();
+    assert!(
+        matches!(
+            err.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ),
+        "{err:?}"
+    );
 }
 
 fn question() -> DnsQuestion {
@@ -147,9 +189,15 @@ fn udp_round_trip_all_record_types() {
 
 #[test]
 fn udp_truncated_and_unsupported_answers() {
-    let err = exchange(vec![0; 11]).unwrap_err();
-    assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
-    assert_eq!(err.to_string(), "DNS reply too short");
+    // A datagram too short to be a reply is not one: the query waits on and times out.
+    let err = exchange_all(vec![vec![0; 11]], Duration::from_millis(300)).unwrap_err();
+    assert!(
+        matches!(
+            err.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ),
+        "{err:?}"
+    );
     let mut base = format_dns_response(0x4242, &question(), &[], false, 0);
     base[7] = 1;
     for tail in [

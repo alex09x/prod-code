@@ -324,6 +324,17 @@ fn parse_cargo_and_go_test_json_events_correctly() {
     assert!(parse_go_test_json_event("PASS").is_none());
     assert!(parse_go_test_json_event("FAIL").is_none());
     assert!(parse_go_test_json_event("ok  \tpkg/auth\t0.021s").is_none());
+
+    // `=== RUNNING cleanup` is output, not the start of a test named `NING cleanup`.
+    assert!(parse_go_test_json_event("=== RUNNING cleanup").is_none());
+    // `#[ignore = "why"]` prints `ignored, why`: still a skip, with its reason.
+    match parse_cargo_json_event("test tests::slow ... ignored, needs a GPU") {
+        Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Skipped { name, reason })) => {
+            assert_eq!(name, "tests::slow");
+            assert_eq!(reason.as_deref(), Some("needs a GPU"));
+        }
+        other => panic!("expected TestEvent::Skipped, got {other:?}"),
+    }
 }
 
 #[test]

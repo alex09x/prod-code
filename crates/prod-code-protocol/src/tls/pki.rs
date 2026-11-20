@@ -127,9 +127,14 @@ pub fn write_cert_and_key(
     std::fs::create_dir_all(out_dir)?;
 
     let cert_path = out_dir.join(format!("{prefix}.crt"));
-    std::fs::write(&cert_path, cert_pem)?;
-
     let key_path = out_dir.join(format!("{prefix}.key"));
+    // Each write stages under its own name: two writers of one prefix no longer share, and
+    // unlink, one staging file.
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let staging = |name: &str| {
+        let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        out_dir.join(format!("{name}.tmp.{}.{n}", std::process::id()))
+    };
 
     #[cfg(unix)]
     {
@@ -137,8 +142,7 @@ pub fn write_cert_and_key(
         use std::os::unix::fs::PermissionsExt;
 
         // Safe replacement: write secret bytes to a private temporary file exclusively with mode 0600
-        let tmp_key_path = out_dir.join(format!("{prefix}.key.tmp.{}", std::process::id()));
-        let _ = std::fs::remove_file(&tmp_key_path);
+        let tmp_key_path = staging(&format!("{prefix}.key"));
 
         let mut opts = OpenOptions::new();
         opts.write(true).create_new(true).mode(0o600);
@@ -163,12 +167,8 @@ pub fn write_cert_and_key(
         // Double check permissions before atomic replacement
         check_key_permissions(&tmp_key_path)?;
 
-        // If key_path exists, remove it first so the new 0600 inode replaces it cleanly
-        if key_path.exists() {
-            let _ = std::fs::remove_file(&key_path);
-        }
-
-        // Atomic rename of the 0600 temporary file over key_path
+        // Atomic rename of the 0600 temporary file over key_path: the old key stays readable
+        // until the new one replaces it.
         std::fs::rename(&tmp_key_path, &key_path)?;
 
         // Verify final destination key permissions
@@ -178,6 +178,12 @@ pub fn write_cert_and_key(
     {
         std::fs::write(&key_path, key_pem)?;
     }
+
+    // The certificate goes last, through its own staged rename: a key that could not be
+    // written no longer leaves a new certificate beside the old key.
+    let tmp_cert_path = staging(&format!("{prefix}.crt"));
+    std::fs::write(&tmp_cert_path, cert_pem)?;
+    std::fs::rename(&tmp_cert_path, &cert_path)?;
 
     Ok((cert_path, key_path))
 }
@@ -317,6 +323,19 @@ pub fn compute_cert_pin(cert_pem_bytes: &[u8]) -> Result<String> {
     Ok(cert_sha256_fingerprint(cert))
 }
 
+/// `value` as one POSIX shell word: unchanged when it is plain, single-quoted otherwise.
+fn shell_quote(value: &str) -> String {
+    let plain = !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '_' | ':' | '='));
+    if plain {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', r"'\''"))
+    }
+}
+
 /// Initialize a full cluster PKI hierarchy (CA + node cert/key + pin calculation).
 pub fn init_cluster_pki(
     out_dir: &Path,
@@ -325,7 +344,6 @@ pub fn init_cluster_pki(
 ) -> Result<PkiInitReport> {
     let s_name = server_name.unwrap_or(DEFAULT_TLS_SERVER_NAME).to_string();
     let (ca_cert_pem, ca_key_pem) = generate_ca("prod-code Cluster Root CA")?;
-    let (ca_cert_path, ca_key_path) = write_cert_and_key(out_dir, "ca", &ca_cert_pem, &ca_key_pem)?;
 
     let san_names = vec![s_name.clone(), "localhost".to_string()];
     let mut san_ips = vec!["127.0.0.1".parse::<std::net::IpAddr>().unwrap()];
@@ -335,17 +353,22 @@ pub fn init_cluster_pki(
         }
     }
 
+    // The whole hierarchy is made before any of it is written: a node certificate that cannot
+    // be issued no longer leaves a new CA on disk that the existing node certificate fails.
     let (node_cert_pem, node_key_pem) =
         generate_node_cert(&ca_cert_pem, &ca_key_pem, &san_names, &san_ips)?;
+    let cert_pin = compute_cert_pin(node_cert_pem.as_bytes())?;
+    let (ca_cert_path, ca_key_path) = write_cert_and_key(out_dir, "ca", &ca_cert_pem, &ca_key_pem)?;
     let (node_cert_path, node_key_path) =
         write_cert_and_key(out_dir, "node", &node_cert_pem, &node_key_pem)?;
-    let cert_pin = compute_cert_pin(node_cert_pem.as_bytes())?;
 
+    let quoted = |path: &Path| shell_quote(&path.display().to_string());
     let env_example = format!(
-        "export {TLS_MODE_ENV}=strict\nexport {TLS_CA_ENV}={}\nexport {TLS_CERT_ENV}={}\nexport {TLS_KEY_ENV}={}\nexport {TLS_PIN_ENV}={cert_pin}\nexport {TLS_SERVER_NAME_ENV}={s_name}",
-        ca_cert_path.display(),
-        node_cert_path.display(),
-        node_key_path.display()
+        "export {TLS_MODE_ENV}=strict\nexport {TLS_CA_ENV}={}\nexport {TLS_CERT_ENV}={}\nexport {TLS_KEY_ENV}={}\nexport {TLS_PIN_ENV}={cert_pin}\nexport {TLS_SERVER_NAME_ENV}={}",
+        quoted(&ca_cert_path),
+        quoted(&node_cert_path),
+        quoted(&node_key_path),
+        shell_quote(&s_name),
     );
 
     Ok(PkiInitReport {

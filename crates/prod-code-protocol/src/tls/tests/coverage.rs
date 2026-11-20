@@ -162,3 +162,33 @@ fn empty_client_roots_are_rejected_for_both_auth_modes() {
         );
     }
 }
+
+/// Required client authentication without client CA roots would accept every client: the
+/// server refuses to build instead.
+#[test]
+fn required_client_auth_without_roots_is_refused() {
+    let (cert, key) = crate::tls::test_helpers::generate_test_self_signed("example.test");
+    let mut config = ServerTlsConfig::new(vec![cert], key);
+    config.require_client_auth = true;
+    let error = config.build().unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+}
+
+/// `pki init` writes nothing when the node certificate cannot be issued, and quotes the
+/// paths it prints for the shell.
+#[test]
+fn pki_init_writes_nothing_on_a_bad_name_and_quotes_its_exports() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("pki");
+    assert!(crate::tls::pki::init_cluster_pki(&out, Some("bad name é"), &[]).is_err());
+    assert!(!out.join("ca.crt").exists());
+    let spaced = dir.path().join("with space");
+    let report = crate::tls::pki::init_cluster_pki(&spaced, Some("example.test"), &[]).unwrap();
+    assert!(
+        report
+            .env_example
+            .contains(&format!("'{}'", report.ca_cert_path.display())),
+        "{}",
+        report.env_example
+    );
+}

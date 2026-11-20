@@ -183,6 +183,13 @@ impl ServerTlsConfig {
                     })?
             };
             builder.with_client_cert_verifier(verifier)
+        } else if self.require_client_auth {
+            // Required client authentication with no CA to check it against would accept
+            // every client; refuse to start instead.
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "client authentication is required but no client CA roots are configured",
+            ));
         } else {
             builder.with_no_client_auth()
         };

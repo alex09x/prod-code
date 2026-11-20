@@ -24,7 +24,7 @@
 //! model, or `ORT_DYLIB_PATH`. Microsoft's release builds need glibc 2.28, so the gateway builds
 //! and runs anywhere. Both are optional: without either the search is lexical only and says so.
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use std::path::{Path, PathBuf};
 
 /// ONNX Runtime's library file on this platform.
@@ -235,13 +235,24 @@ impl OnnxEmbedder {
                 .run(ort::inputs!["input_ids" => ids_t, "attention_mask" => mask_t])
                 .map_err(|e| anyhow!("running the model: {e}"))?
         };
-        let hidden = outputs["last_hidden_state"]
+        // A model exported without the per-token output, or with another shape, is an error to
+        // report, not an index to panic on.
+        let hidden = outputs
+            .get("last_hidden_state")
+            .ok_or_else(|| anyhow!("the model has no `last_hidden_state` output"))?
             .try_extract_array::<f32>()
             .map_err(|e| anyhow!("reading the model's output: {e}"))?;
         let hidden = hidden
             .into_dimensionality::<ndarray::Ix3>()
             .context("the model's output is not [batch, tokens, dim]")?;
-        let dim = hidden.shape()[2];
+        let shape = hidden.shape();
+        if shape[0] != batch || shape[1] < width || shape[2] == 0 {
+            bail!(
+                "the model's output is {:?}, not [{batch}, {width}, dim > 0]",
+                shape
+            );
+        }
+        let dim = shape[2];
         let mut out = Vec::with_capacity(batch);
         for (row, encoding) in encodings.iter().enumerate() {
             let mut v = vec![0f32; dim];

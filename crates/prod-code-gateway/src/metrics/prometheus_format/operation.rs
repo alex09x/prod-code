@@ -46,6 +46,15 @@ struct CompAgg {
     duration_ms: u64,
 }
 
+/// `,error_class="…"` for a failure's class, nothing for a success.
+fn error_class_label(class: &str) -> String {
+    if class.is_empty() {
+        String::new()
+    } else {
+        format!(",error_class=\"{}\"", escape_label_value(class))
+    }
+}
+
 pub fn format_operation_metrics(out: &mut String, metrics: &Metrics, node: &str) {
     let mut agg_map: BTreeMap<OpKey, OpAgg> = BTreeMap::new();
     let mut comp_map: BTreeMap<CompKey, CompAgg> = BTreeMap::new();
@@ -147,31 +156,42 @@ pub fn format_operation_metrics(out: &mut String, metrics: &Metrics, node: &str)
             out,
             "# HELP prod_code_operation_duration_seconds_total Total duration of completed operations in seconds.\n# TYPE prod_code_operation_duration_seconds_total counter"
         );
+        // One sample per label set: a series keyed finer than its labels (by status and error
+        // class) printed twice, and Prometheus rejects a scrape with a duplicate sample.
         for (k, agg) in &agg_map {
             let cat = escape_label_value(&k.category);
             let meth = escape_label_value(&k.method);
             let eng = escape_label_value(&k.engine);
             let secs = agg.duration_ms as f64 / 1000.0;
+            let class = error_class_label(&k.error_class);
             let _ = writeln!(
                 out,
-                "prod_code_operation_duration_seconds_total{{node=\"{node}\",category=\"{cat}\",method=\"{meth}\",engine=\"{eng}\",status=\"{}\"}} {:.6}",
+                "prod_code_operation_duration_seconds_total{{node=\"{node}\",category=\"{cat}\",method=\"{meth}\",engine=\"{eng}\",status=\"{}\"{class}}} {:.6}",
                 k.status, secs
             );
+        }
+
+        let mut volume: BTreeMap<(&str, &str, &str), (u64, u64)> = BTreeMap::new();
+        for (k, agg) in &agg_map {
+            let entry = volume
+                .entry((&k.category, &k.method, &k.engine))
+                .or_default();
+            entry.0 += agg.items;
+            entry.1 += agg.bytes;
         }
 
         let _ = writeln!(
             out,
             "# HELP prod_code_operation_items_total Total items processed or returned by operations.\n# TYPE prod_code_operation_items_total counter"
         );
-        for (k, agg) in &agg_map {
-            if agg.items > 0 {
-                let cat = escape_label_value(&k.category);
-                let meth = escape_label_value(&k.method);
-                let eng = escape_label_value(&k.engine);
+        for ((cat, meth, eng), (items, _)) in &volume {
+            if *items > 0 {
+                let cat = escape_label_value(cat);
+                let meth = escape_label_value(meth);
+                let eng = escape_label_value(eng);
                 let _ = writeln!(
                     out,
-                    "prod_code_operation_items_total{{node=\"{node}\",category=\"{cat}\",method=\"{meth}\",engine=\"{eng}\"}} {}",
-                    agg.items
+                    "prod_code_operation_items_total{{node=\"{node}\",category=\"{cat}\",method=\"{meth}\",engine=\"{eng}\"}} {items}"
                 );
             }
         }
@@ -180,15 +200,14 @@ pub fn format_operation_metrics(out: &mut String, metrics: &Metrics, node: &str)
             out,
             "# HELP prod_code_operation_bytes_total Total bytes transferred or produced by operations.\n# TYPE prod_code_operation_bytes_total counter"
         );
-        for (k, agg) in &agg_map {
-            if agg.bytes > 0 {
-                let cat = escape_label_value(&k.category);
-                let meth = escape_label_value(&k.method);
-                let eng = escape_label_value(&k.engine);
+        for ((cat, meth, eng), (_, bytes)) in &volume {
+            if *bytes > 0 {
+                let cat = escape_label_value(cat);
+                let meth = escape_label_value(meth);
+                let eng = escape_label_value(eng);
                 let _ = writeln!(
                     out,
-                    "prod_code_operation_bytes_total{{node=\"{node}\",category=\"{cat}\",method=\"{meth}\",engine=\"{eng}\"}} {}",
-                    agg.bytes
+                    "prod_code_operation_bytes_total{{node=\"{node}\",category=\"{cat}\",method=\"{meth}\",engine=\"{eng}\"}} {bytes}"
                 );
             }
         }
@@ -202,9 +221,10 @@ pub fn format_operation_metrics(out: &mut String, metrics: &Metrics, node: &str)
         for (k, agg) in &comp_map {
             let eng = escape_label_value(&k.engine);
             let comp = escape_label_value(&k.compiler);
+            let class = error_class_label(&k.error_class);
             let _ = writeln!(
                 out,
-                "prod_code_compilations_total{{node=\"{node}\",engine=\"{eng}\",compiler=\"{comp}\",status=\"{}\"}} {}",
+                "prod_code_compilations_total{{node=\"{node}\",engine=\"{eng}\",compiler=\"{comp}\",status=\"{}\"{class}}} {}",
                 k.status, agg.count
             );
         }
@@ -217,9 +237,10 @@ pub fn format_operation_metrics(out: &mut String, metrics: &Metrics, node: &str)
             let eng = escape_label_value(&k.engine);
             let comp = escape_label_value(&k.compiler);
             let secs = agg.duration_ms as f64 / 1000.0;
+            let class = error_class_label(&k.error_class);
             let _ = writeln!(
                 out,
-                "prod_code_compilation_duration_seconds_total{{node=\"{node}\",engine=\"{eng}\",compiler=\"{comp}\",status=\"{}\"}} {:.3}",
+                "prod_code_compilation_duration_seconds_total{{node=\"{node}\",engine=\"{eng}\",compiler=\"{comp}\",status=\"{}\"{class}}} {:.3}",
                 k.status, secs
             );
         }
