@@ -149,6 +149,23 @@ fn what_an_extension_or_type_header_carries_is_kept() {
             .contains("`Hidden`")
     );
 
+    // A parameter label spelled like a type keyword does not make a function a type; a `#if`
+    // above a brace-free declaration still wraps the extension after it; a `#if` inside a type
+    // wraps its members.
+    let more = "struct Page {\n    func send(actor target: Int) {\n        func local() {}\n    }\n    func parse(struct name: String) {\n        func inner() {}\n    }\n#if DEBUG\n    func debugOnly() {}\n#endif\n    func always() {}\n}\n#if DEBUG\nlet version = 1\nextension Page {\n    func n() {}\n}\n#endif\n";
+    for (needle, reason) in [
+        ("func local", "inside a function"),
+        ("func inner", "inside a function"),
+        ("func debugOnly", "`#if`"),
+        ("func n()", "`#if`"),
+    ] {
+        let error = destination(more, needle).unwrap_err();
+        assert!(error.contains(reason), "{needle}: {error}");
+    }
+    assert_eq!(destination(more, "func always").unwrap(), "Page");
+    let conditional = "#if DEBUG\nextension Page {\n}\n#endif\n";
+    assert!(insert_member(conditional, "Page", "    func g() {}\n").starts_with(conditional));
+
     let target = "public extension Page {\n}\n";
     let out = insert_member(target, "Page", "    func g() {}\n");
     assert_eq!(

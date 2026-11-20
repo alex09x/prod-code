@@ -76,15 +76,62 @@ fn words(text: &str) -> Vec<&str> {
         .collect()
 }
 
+/// A word that can stand before a declaration's keyword: an attribute or a modifier.
+fn is_modifier(word: &str) -> bool {
+    let base = word.split('(').next().unwrap_or(word);
+    word.starts_with('@')
+        || ACCESS_MODIFIERS.contains(&base)
+        || matches!(
+            base,
+            "final"
+                | "indirect"
+                | "nonisolated"
+                | "static"
+                | "dynamic"
+                | "override"
+                | "mutating"
+                | "nonmutating"
+                | "convenience"
+                | "required"
+                | "lazy"
+                | "weak"
+                | "unowned"
+                | "distributed"
+        )
+}
+
+/// The lines of `header` that belong to the declaration its `{` opens: from the last line whose
+/// first word after its modifiers is a declaration keyword, with the attribute lines above it.
+/// A brace-free declaration before it (`let version = 1`, `case a`) is left out.
+fn declaration_lines(header: &str) -> String {
+    let lines: Vec<&str> = header
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let starts_declaration = |line: &str| {
+        words(line)
+            .into_iter()
+            .find(|w| !is_modifier(w))
+            .is_some_and(|w| TYPE_KEYWORDS.contains(&w) || MEMBER_KEYWORDS.contains(&w))
+    };
+    let Some(mut first) = lines.iter().rposition(|l| starts_declaration(l)) else {
+        return lines.join(" ");
+    };
+    while first > 0 && lines[first - 1].starts_with('@') {
+        first -= 1;
+    }
+    lines[first..].join(" ")
+}
+
 fn opener(header: &str) -> Opener {
-    let tokens = words(header);
-    // Where the declaration this header opens starts: a brace-free declaration before it
-    // (`let version = 1`, `case a`) ends at its member keyword.
-    let mut start = 0;
+    let declaration = declaration_lines(header);
+    let tokens = words(&declaration);
     for (i, token) in tokens.iter().enumerate() {
+        // A function, an initializer or an accessor: its parameter labels (`actor target:`,
+        // `struct name:`) are no type keywords.
         if MEMBER_KEYWORDS.contains(token) {
-            start = i + 1;
-            continue;
+            break;
         }
         let Some(&keyword) = TYPE_KEYWORDS.iter().find(|k| *k == token) else {
             continue;
@@ -98,17 +145,10 @@ fn opener(header: &str) -> Opener {
         }
         let spelled = tokens.get(i + 1).copied().unwrap_or("");
         let name = spelled.split(['<', ':', '{']).next().unwrap_or("");
-        let before = &tokens[start..i];
-        // A `#if` still open over the header; one an `#endif` closed is another block's.
-        let conditional = before
-            .iter()
-            .rev()
-            .find(|t| t.starts_with('#'))
-            .is_some_and(|t| *t != "#endif");
-        let decorated = conditional
-            || before.iter().any(|t| {
-                ACCESS_MODIFIERS.contains(&t.split('(').next().unwrap_or(t)) || t.starts_with('@')
-            });
+        let before = &tokens[..i];
+        let decorated = before.iter().any(|t| {
+            ACCESS_MODIFIERS.contains(&t.split('(').next().unwrap_or(t)) || t.starts_with('@')
+        });
         return Opener {
             keyword: Some(keyword),
             name: name.to_string(),
@@ -127,6 +167,26 @@ fn opener(header: &str) -> Opener {
         decorated: false,
         file_private: false,
     }
+}
+
+/// How many `#if` blocks are open at byte `offset` of `source`: counted over the whole file,
+/// since a header reaches back only to the previous brace.
+fn open_conditions(source: &str, mask: &[bool], offset: usize) -> usize {
+    let mut depth = 0usize;
+    let mut at = 0;
+    for line in source[..offset.min(source.len())].split_inclusive('\n') {
+        let indent = line.len() - line.trim_start().len();
+        let code = line.trim_start();
+        if mask.get(at + indent).copied().unwrap_or(false) {
+            if code.starts_with("#if") {
+                depth += 1;
+            } else if code.starts_with("#endif") {
+                depth = depth.saturating_sub(1);
+            }
+        }
+        at += line.len();
+    }
+    depth
 }
 
 /// The enclosing `{` positions of byte `offset`, outermost first.
@@ -220,8 +280,21 @@ pub(super) fn member_destination(source: &str, line: u32, item: &str) -> Result<
     let mask = code_mask(source);
     let mut path = Vec::new();
     let mut innermost = "";
-    for brace in enclosing(source, &mask, offset) {
-        let opener = opener(&header(source, &mask, brace));
+    let braces = enclosing(source, &mask, offset);
+    // A `#if` opened inside the type around the member: moved out, the member would be
+    // compiled unconditionally.
+    if braces.first().is_some_and(|outer| {
+        open_conditions(source, &mask, offset) > open_conditions(source, &mask, *outer)
+    }) {
+        return Err(
+            "it is inside a `#if` within its type, whose condition an extension in another file would drop".into(),
+        );
+    }
+    for brace in braces {
+        let mut opener = opener(&header(source, &mask, brace));
+        if opener.keyword == Some("extension") && open_conditions(source, &mask, brace) > 0 {
+            opener.decorated = true;
+        }
         match opener.keyword {
             None => {
                 return Err(
@@ -377,6 +450,7 @@ pub(super) fn insert_member(target: &str, path: &str, item: &str) -> String {
                         && opener.name == path
                         && !opener.constrained
                         && !opener.decorated
+                        && open_conditions(target, &mask, i) == 0
                     {
                         open = Some(i);
                     }

@@ -49,17 +49,19 @@ pub(crate) fn inside_impl_of(text: &str, line: usize, owner: &str) -> bool {
         if *row_level < level {
             return false;
         }
+        // An item that ended above (`impl Exec {}`, `mod cancel;`) is not this block's header.
+        if at != open && (row.ends_with('}') || row.ends_with(';')) {
+            return false;
+        }
         if is_block_header(row) {
             // The header may continue on the lines below it (`impl Trait for` / `    Exec {`).
             let header: Vec<&str> = code[at..].iter().map(|(_, row)| *row).collect();
             return names_owner(&header.join(" "), owner);
         }
-        if at == open && row.ends_with('{') && !row.starts_with('{') && !row.starts_with("where") {
-            // The line opens a block of its own (`mod nested {`, `fn run() {`): the line is in
-            // that block, not in a type's above it.
-            return false;
-        }
-        if at != open && (row.ends_with('}') || row.ends_with(';')) {
+        // Only a `where` clause or the lone `{` of a type's header is read past; any other line
+        // starts a block of its own (`mod nested {`, `pub fn helper<T>(x: T)` / `where …` /
+        // `{`), which holds the line instead.
+        if !(row.starts_with('{') || row.starts_with("where")) {
             return false;
         }
     }
@@ -231,6 +233,18 @@ where
 mod nested {
     fn cancel() {}
 }
+impl Exec {}
+pub fn helper<T>(x: T) -> bool
+where
+    T: Clone,
+{
+    fn spawn() {}
+}
+impl Exec {}
+mod inner
+{
+    fn close() {}
+}
 unsafe impl Send for Queue {}
 impl<T: Fn() -> bool> Filter<T> {
     fn keep(&self) {}
@@ -246,6 +260,8 @@ impl fmt::Debug for
 ";
         let at = |needle: &str| source.lines().position(|l| l.contains(needle)).unwrap();
         assert!(!inside_impl_of(source, at("fn cancel"), "Exec"));
+        assert!(!inside_impl_of(source, at("fn spawn"), "Exec"));
+        assert!(!inside_impl_of(source, at("fn close"), "Exec"));
         assert!(has_impl_of(source, "Queue"));
         assert!(has_impl_of(source, "Filter"));
         assert!(inside_impl_of(source, at("fn keep"), "Filter"));
