@@ -35,6 +35,7 @@ pub async fn pull_up_impl(
     if members_to_pull.is_empty() {
         bail!("No members specified to pull up");
     }
+    super::reject_repeated_members(members_to_pull)?;
 
     let sub_file_text = std::fs::read_to_string(file)
         .with_context(|| format!("cannot read file {}", file.display()))?;

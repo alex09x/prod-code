@@ -32,6 +32,27 @@ fn apply_edits_counting(
     edits: &[serde_json::Value],
     width: fn(char) -> usize,
 ) -> Result<String> {
+    // A missing coordinate or `newText` is a malformed edit, not a position 0 or a deletion: a
+    // whole-file edit without its text would otherwise empty the file.
+    for edit in edits {
+        for field in [
+            "/range/start/line",
+            "/range/start/character",
+            "/range/end/line",
+            "/range/end/character",
+        ] {
+            anyhow::ensure!(
+                edit.pointer(field).is_some_and(serde_json::Value::is_u64),
+                "malformed text edit: `{}` is missing or not a number",
+                &field[1..]
+            );
+        }
+        anyhow::ensure!(
+            edit.get("newText")
+                .is_some_and(serde_json::Value::is_string),
+            "malformed text edit: `newText` is missing or not a string"
+        );
+    }
     let line_count = text.lines().count() as u64;
     let is_full_replacement = if let [edit] = edits
         && edit.pointer("/range/start/line").and_then(|v| v.as_u64()) == Some(0)
@@ -92,7 +113,7 @@ fn apply_edits_counting(
         }
         start + end_of_line
     };
-    let mut spans: Vec<(usize, usize, String)> = edits
+    let spans: Vec<(usize, usize, String)> = edits
         .iter()
         .map(|e| {
             let sl = e
@@ -119,9 +140,25 @@ fn apply_edits_counting(
             (offset(sl, sc), offset(el, ec), new_text)
         })
         .collect();
-    spans.sort_by_key(|span| std::cmp::Reverse(span.0));
+    // Overlapping edits have no defined result, and applying one after the other could cut a
+    // character in half (a panic) or splice text into the middle of a replacement.
+    let mut ordered: Vec<(usize, usize)> = spans.iter().map(|s| (s.0, s.1)).collect();
+    ordered.sort_unstable();
+    if let Some(pair) = ordered.windows(2).find(|w| w[1].0 < w[0].1) {
+        return Err(anyhow!(
+            "text edits overlap: {}..{} and {}..{}",
+            pair[0].0,
+            pair[0].1,
+            pair[1].0,
+            pair[1].1
+        ));
+    }
+    // From the end backwards. At one start a replacement goes first, so an insertion there lands
+    // before it rather than inside its range; insertions at one point keep their listed order.
+    let mut spans: Vec<(usize, (usize, usize, String))> = spans.into_iter().enumerate().collect();
+    spans.sort_by_key(|(index, span)| std::cmp::Reverse((span.0, span.1, *index)));
     let mut out = text.to_string();
-    for (start, end, new_text) in spans {
+    for (_, (start, end, new_text)) in spans {
         if start > end || end > out.len() {
             return Err(anyhow!("text edit range {start}..{end} out of bounds"));
         }

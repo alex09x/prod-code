@@ -25,7 +25,11 @@ const LISTED: usize = 8;
 pub(crate) fn old_name_at(text: &str, line: u32, character: u32) -> Option<String> {
     let at = crate::signature::offset_of(text, line, character)?;
     let is_word = |c: char| c.is_alphanumeric() || c == '_';
-    let start = text[..at].rfind(|c: char| !is_word(c)).map_or(0, |i| i + 1);
+    // Past the whole separator: one byte on would land inside a non-ASCII one (an em space).
+    let start = text[..at]
+        .char_indices()
+        .rfind(|&(_, c)| !is_word(c))
+        .map_or(0, |(i, c)| i + c.len_utf8());
     let name: String = text[start..].chars().take_while(|c| is_word(*c)).collect();
     (!name.is_empty()).then_some(name)
 }
@@ -109,6 +113,13 @@ mod tests {
     fn only_whole_words_outside_comment_lines_count() {
         let source = "// check() is documented here\nlet a = model.check()\nlet b = checked()\nlet c = recheck()\nfunc check_all() {}\n";
         assert_eq!(lines_naming(source, "check"), vec![2]);
+    }
+
+    /// One byte past an em space is inside it: the slice panicked.
+    #[test]
+    fn a_name_after_a_non_ascii_separator_is_read_whole() {
+        let source = "let\u{2003}total = 1\n";
+        assert_eq!(old_name_at(source, 1, 7).as_deref(), Some("total"));
     }
 
     #[test]

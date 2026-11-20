@@ -155,7 +155,7 @@ mod tests {
             0o640,
             "a shebang does not keep it executable"
         );
-        assert_eq!(mode(&plain) & 0o111, 0o111);
+        assert_eq!(mode(&plain), 0o751, "read and write bits are kept");
         assert_eq!(mode(&root.join("new.txt")) & 0o111, 0, "a new plain file");
         assert_eq!(
             std::fs::read_to_string(&was_executable).unwrap(),

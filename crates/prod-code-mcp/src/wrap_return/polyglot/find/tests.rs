@@ -142,3 +142,13 @@ fn coverage_find_refusals_and_selected_lines() {
         "function declaration `f` not found"
     );
 }
+
+/// The 500-byte look-back before a name could start inside a character and panicked.
+#[test]
+fn the_import_look_back_starts_on_a_character() {
+    let text = format!(
+        "const s = \"{}\";\n\nfunction f(): number {{ return 1; }}\n",
+        "é".repeat(300)
+    );
+    let _ = find_polyglot_decl(&text, Language::TypeScript, Some("f"), None);
+}

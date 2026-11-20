@@ -103,7 +103,13 @@ pub async fn migrate_ext(
              variable or a function's return type"
         )
     })?;
-    let was = text[start..end].trim().to_string();
+    // The span finder's scans are textual: a range inside a character or reversed is refused
+    // rather than sliced.
+    let was = text
+        .get(start..end)
+        .with_context(|| format!("`{name}`'s declared type was not found on a character boundary"))?
+        .trim()
+        .to_string();
     anyhow::ensure!(was != to.trim(), "`{name}` is already declared as `{to}`");
 
     let mut new_text = text.clone();

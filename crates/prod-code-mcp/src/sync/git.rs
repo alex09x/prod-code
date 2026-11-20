@@ -255,7 +255,8 @@ pub(crate) fn collect_git_dirty_files(root: &Path, use_cache: bool) -> Result<Ve
         .arg("-C")
         .arg(root)
         .arg("status")
-        .arg("--porcelain")
+        .arg("--porcelain=v1")
+        .arg("-z")
         .arg("-uall")
         .output()?;
 
@@ -263,7 +264,10 @@ pub(crate) fn collect_git_dirty_files(root: &Path, use_cache: bool) -> Result<Ve
         anyhow::bail!("git status non-zero exit");
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    // `-z`: without it git quotes and escapes unusual names (`"a b.rs"`, `"\303\251.rs"`), and
+    // a name containing ` -> ` read as a rename deleted another path. A copy keeps its source.
+    let mut statuses = BTreeMap::new();
+    parse_porcelain_status(&output.stdout, &mut statuses);
     let sync_include = SyncInclude::load(root);
     let mut deltas = Vec::new();
     let mut cache = if use_cache {
@@ -273,38 +277,8 @@ pub(crate) fn collect_git_dirty_files(root: &Path, use_cache: bool) -> Result<Ve
     };
     let mut cache_modified = false;
 
-    for line in stdout.lines() {
-        if line.len() < 4 {
-            continue;
-        }
-        let status = &line[..2];
-        let raw_path = line[3..].trim();
-
-        let (is_delete, rel_path, old_path) = if status.contains('D') {
-            (true, raw_path, None)
-        } else if let Some((old_p, new_p)) = raw_path.split_once(" -> ") {
-            (
-                false,
-                new_p.trim().trim_matches('"'),
-                Some(old_p.trim().trim_matches('"')),
-            )
-        } else {
-            (false, raw_path.trim_matches('"'), None)
-        };
-
-        if let Some(old) = old_path
-            && !old.starts_with(".git")
-        {
-            deltas.push(FileDelta {
-                relative_path: old.to_string(),
-                content: None,
-                is_executable: false,
-            });
-            if cache.files.remove(old).is_some() {
-                cache_modified = true;
-            }
-        }
-
+    for (rel_path, is_delete) in &statuses {
+        let (rel_path, is_delete) = (rel_path.as_str(), *is_delete);
         let candidate_paths: Vec<String> =
             if !is_delete && let Some(expanded) = expand_contained_dir_symlink(root, rel_path) {
                 expanded

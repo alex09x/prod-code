@@ -72,3 +72,25 @@ fn unicode_identifiers_in_an_arm_do_not_panic() {
         vec![("0", "f(é, 0)"), ("_", "0")]
     );
 }
+
+/// Only the last line of a pattern was kept (`A\n| B` lost `A`), and an `=>` inside a string,
+/// a raw string or a comment split the arm.
+#[test]
+fn a_multiline_pattern_is_kept_whole_and_a_literal_arrow_is_not_the_separator() {
+    let text = "match kind {\n    Kind::A\n    | Kind::B => one(),\n    _ => two(),\n}";
+    let result = parse_rust_match(text, 0).unwrap();
+    assert_eq!(result.branches[0].tag, "Kind::A | Kind::B");
+    for pattern in ["\"=>\"", "r#\"\"=>\"#", "/* => */ \"a\""] {
+        let text = format!("match s {{\n    {pattern} => one(),\n    _ => two(),\n}}");
+        // Refusing is fine (the brace matcher does not read raw strings); a wrong split is not.
+        if let Some(result) = parse_rust_match(&text, 0) {
+            assert_eq!(result.branches[0].tag, pattern);
+            assert_eq!(result.branches[0].body, "one()", "{pattern}");
+        }
+    }
+    let text = "match s {\n    \"=>\" => one(),\n    _ => two(),\n}";
+    assert!(
+        parse_rust_match(text, 0).is_some(),
+        "a plain string pattern is parsed"
+    );
+}

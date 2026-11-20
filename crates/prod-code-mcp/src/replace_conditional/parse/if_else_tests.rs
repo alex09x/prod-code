@@ -104,3 +104,36 @@ fn coverage_b2_python_crlf_offsets_preserve_the_following_statement() {
     assert_eq!(result.branches[0].body, "    a()");
     assert_eq!(result.branches[1].body, "    b()");
 }
+
+/// An inline suite's body sat on the header line: `f()` became part of the tag and `g()` was
+/// dropped.
+#[test]
+fn an_inline_python_suite_is_refused() {
+    let text = "if kind == 'a': f()\nelse: g()\n";
+    assert!(parse_if_else_block(text, 0).is_none());
+    // A `#` inside a string is not a comment that the colon could end before.
+    let text = "if kind == 'a':\n    f()\nelse: log(\":#\")\n";
+    assert!(parse_if_else_block(text, 0).is_none());
+    // An f-string may nest quotes (Python 3.12), which the quote scan cannot follow.
+    for header in [
+        "else: log(f\"{\"a:#\"}\")",
+        "elif kind == f\"{\"a:#\"}\": g()",
+        // A triple-quoted string: its inner quote read as the end hid the `:` before the body.
+        "elif kind == \"b\": log(\"\"\"a\":#\"\"\")",
+        "elif kind == \"#\":",
+        "elif kind == 'a:b':",
+        "elif kind == {1: 2}:",
+    ] {
+        let text = format!("if kind == 'a':\n    f()\n{header}\n");
+        assert!(parse_if_else_block(&text, 0).is_none(), "{header}");
+    }
+    // A real trailing comment after the colon is fine.
+    let text = "if kind == 'a':  # first\n    f()\nelse:  # rest\n    g()\n";
+    let tags: Vec<_> = parse_if_else_block(text, 0)
+        .unwrap()
+        .branches
+        .into_iter()
+        .map(|b| b.tag)
+        .collect();
+    assert_eq!(tags, ["'a'", "default"]);
+}

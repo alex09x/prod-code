@@ -36,6 +36,39 @@ pub fn parse_if_else_block(text: &str, search_offset: usize) -> Option<Condition
     }
 }
 
+/// The header of a Python `if`/`elif`/`else` line without its comment, only in a form whose
+/// suite colon is certain: the header ends at a colon, its condition has no colon of its own
+/// and at most one plain string literal (two equal quotes, no backslash), and nothing but a
+/// comment follows. Any other form (an inline suite, a triple-quoted or f-string, a `#` or `:`
+/// inside a literal, a dict or a lambda) is `None`: reading it by hand lost branch bodies.
+fn python_header(line: &str) -> Option<&str> {
+    // A `#` inside the literal leaves one quote before it, which is refused below.
+    let code = line.split('#').next().unwrap_or(line).trim_end();
+    let condition = code.strip_suffix(':')?;
+    if condition.contains(':') || condition.contains('\\') {
+        return None;
+    }
+    let quotes: Vec<char> = condition
+        .chars()
+        .filter(|c| *c == '"' || *c == '\'')
+        .collect();
+    match quotes.as_slice() {
+        [] => {}
+        [a, b] if a == b => {}
+        _ => return None,
+    }
+    // A prefixed literal (`f"…"`, `r'…'`) is not a plain one: an f-string can nest quotes.
+    if let Some(open) = condition.find(['"', '\''])
+        && condition[..open]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+    {
+        return None;
+    }
+    Some(code)
+}
+
 fn parse_python_if_elif(text: &str, if_idx: usize, base_indent: &str) -> Option<ConditionalBlock> {
     let mut branches = Vec::new();
     let mut discriminator = String::new();
@@ -56,6 +89,15 @@ fn parse_python_if_elif(text: &str, if_idx: usize, base_indent: &str) -> Option<
                 || trimmed.starts_with("elif ")
                 || trimmed.starts_with("else:"))
         {
+            // An inline suite (`if x == 'A': f()`, `else: g()`) has its body on the header line,
+            // where it was read as part of the tag or dropped; only a provable header is read,
+            // without its comment, so the tag ends at the colon.
+            if let Some(after) = trimmed.strip_prefix("else:")
+                && !(after.trim().is_empty() || after.trim_start().starts_with('#'))
+            {
+                return None;
+            }
+            let trimmed = python_header(trimmed)?;
             // Flush previous branch
             if !current_tag.is_empty() {
                 branches.push(ConditionalBranch {

@@ -296,6 +296,32 @@ fn cpp_conversion_evaluates_range_once_and_preserves_accumulator_type() {
     assert!(poly.replacement.contains("static_cast<long long>(0)"));
 }
 
+/// What the replacement would delete or change silently is refused: a statement sharing the
+/// loop's line, an assignment-form header, a declaration naming two variables.
+#[test]
+fn go_loops_whose_rewrite_would_lose_code_are_refused() {
+    for (src, reason) in [
+        (
+            "func f(xs []int) int {\n    total := 0\n    prepare(); for _, x := range xs {\n        total += x\n    }\n    return total\n}",
+            "shares its line",
+        ),
+        (
+            "func f(xs []int) int {\n    total := 0\n    var i, x int\n    for i, x = range xs {\n        total += x\n    }\n    return total + i\n}",
+            "assigns to existing",
+        ),
+        (
+            "func f(xs []int) []int {\n    var a , b []int\n    for _, x := range xs {\n        a = append(a, x)\n    }\n    return append(a, b...)\n}",
+            "more than one variable",
+        ),
+    ] {
+        let error = recognise_go(src, src.find("for ").unwrap())
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(reason), "{error}");
+    }
+}
+
 #[test]
 fn go_single_range_variable_remains_the_index() {
     let src = "func total(values []int) int {\n    sum := 0\n    for i := range values {\n        sum += i\n    }\n    return sum\n}";

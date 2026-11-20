@@ -45,15 +45,19 @@ pub fn drop_import(text: &str, name: &str) -> (String, Vec<String>) {
     let mut out = text.to_string();
     let mut notes = Vec::new();
     for _ in 0..64 {
+        // Only a statement whose every leaf is accounted for is rewritten: a leaf the scans
+        // miss (`sub:: *`, one behind a block comment) went with the statement.
         let Some((start, end)) = use_statements(&out).into_iter().find(|(s, e)| {
             let stmt = &out[*s..*e];
-            leaf_names(stmt).iter().any(|leaf| leaf == name)
+            leaf_names(stmt).iter().any(|leaf| leaf == name) && every_leaf_accounted(stmt)
         }) else {
             break;
         };
         let stmt = out[start..end].to_string();
         let leaves = leaf_names(&stmt);
-        let replacement = if leaves.len() <= 1 {
+        // A group that also holds a glob or a `Trait as _` keeps them: counting only the named
+        // leaves dropped the whole statement with them.
+        let replacement = if leaves.len() + unnamed_entries(&stmt).len() <= 1 {
             notes.push(format!("dropped `{}`", stmt.trim()));
             String::new()
         } else {
@@ -72,7 +76,51 @@ pub fn drop_import(text: &str, name: &str) -> (String, Vec<String>) {
         }
         out.replace_range(start..tail_end, &replacement);
     }
+    for (start, end) in use_statements(&out) {
+        let stmt = &out[start..end];
+        if leaf_names(stmt).iter().any(|leaf| leaf == name) && !every_leaf_accounted(stmt) {
+            notes.push(format!(
+                "left `{}` as it is: not every entry in it could be read; take `{name}` out by \
+                 hand",
+                stmt.trim()
+            ));
+        }
+    }
     (out, notes)
+}
+
+/// Whether the named and the unnamed leaves found in `stmt` are all the leaves it has, and it
+/// holds no block comment the scans cannot read.
+fn every_leaf_accounted(stmt: &str) -> bool {
+    if stmt.contains("/*") {
+        return false;
+    }
+    let clean = without_line_comments(stmt);
+    let total = match clean.split_once('{') {
+        Some((_, rest)) => count_leaves(rest.rsplit_once('}').map_or(rest, |(group, _)| group)),
+        None => 1,
+    };
+    leaf_names(stmt).len() + unnamed_entries(stmt).len() == total
+}
+
+fn count_leaves(group: &str) -> usize {
+    split_top_level_commas(group)
+        .into_iter()
+        .map(str::trim)
+        .filter(|seg| !seg.is_empty())
+        .map(|seg| match (seg.find('{'), seg.rfind('}')) {
+            (Some(open), Some(close)) if close > open => count_leaves(&seg[open + 1..close]),
+            _ => 1,
+        })
+        .sum()
+}
+
+/// `seg` with no whitespace around `::` and single spaces elsewhere: `sub:: *` is `sub::*`.
+fn compact_path(seg: &str) -> String {
+    seg.split("::")
+        .map(|part| part.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect::<Vec<_>>()
+        .join("::")
 }
 
 fn is_valid_rust_ident(s: &str) -> bool {
@@ -155,11 +203,7 @@ pub(crate) fn use_tree_entries(stmt: &str) -> Vec<(String, String)> {
     let Some(at) = stmt.find("use ") else {
         return Vec::new();
     };
-    let clean: String = stmt[at + 4..]
-        .lines()
-        .map(|line| line.split("//").next().unwrap_or(line))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let clean = without_line_comments(&stmt[at + 4..]);
     let body = clean.trim().trim_end_matches(';').trim();
     let mut out = Vec::new();
     if let Some(open) = body.find('{')
@@ -180,6 +224,13 @@ pub(crate) fn use_tree_entries(stmt: &str) -> Vec<(String, String)> {
     out
 }
 
+fn without_line_comments(text: &str) -> String {
+    text.lines()
+        .map(|line| line.split("//").next().unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// The names a `use` statement actually brings into scope.
 pub(crate) fn leaf_names(stmt: &str) -> Vec<String> {
     use_tree_entries(stmt)
@@ -195,12 +246,61 @@ pub(crate) fn remove_from_group(stmt: &str, name: &str) -> String {
     };
     let (_, tail) = rest.rsplit_once('}').unwrap_or((rest, ""));
     let entries = use_tree_entries(stmt);
-    let kept: Vec<String> = entries
+    let mut kept: Vec<String> = entries
         .into_iter()
         .filter(|(_, leaf)| leaf != name)
         .map(|(rel, _)| rel)
         .collect();
+    // Entries that bring in no name (`*`, `Trait as _`, `self`) are kept too: rebuilt from the
+    // named leaves alone, the group lost them.
+    kept.extend(unnamed_entries(stmt));
     format!("{head}{{{}}}{tail}", kept.join(", "))
+}
+
+/// The entries of a `use` group that name nothing, a glob or an anonymous trait import, at any
+/// depth: `sub::{*, Trait as _}` gives `sub::*` and `sub::Trait as _`, paths from the first brace
+/// as the named entries are.
+fn unnamed_entries(stmt: &str) -> Vec<String> {
+    // Without line comments, as the named entries are read: `* // note` is still a glob.
+    let stmt = without_line_comments(stmt);
+    let Some((_, rest)) = stmt.split_once('{') else {
+        return Vec::new();
+    };
+    let group = rest.rsplit_once('}').map_or(rest, |(group, _)| group);
+    let mut out = Vec::new();
+    collect_unnamed("", group, &mut out);
+    out
+}
+
+fn collect_unnamed(prefix: &str, group: &str, out: &mut Vec<String>) {
+    let join = |seg: &str| {
+        if prefix.is_empty() {
+            seg.to_string()
+        } else {
+            format!("{prefix}::{seg}")
+        }
+    };
+    for raw in split_top_level_commas(group) {
+        let seg = raw.trim();
+        if let Some(open) = seg.find('{')
+            && let Some(close) = seg.rfind('}')
+            && close > open
+        {
+            let sub = seg[..open].trim().trim_end_matches("::").trim();
+            let nested = if sub.is_empty() {
+                prefix.to_string()
+            } else {
+                join(sub)
+            };
+            collect_unnamed(&nested, &seg[open + 1..close], out);
+        } else {
+            // Tokens may be spaced (`sub:: *`, `Trait  as  _`).
+            let seg = compact_path(seg);
+            if seg == "*" || seg.ends_with("::*") || seg.ends_with(" as _") {
+                out.push(join(&seg));
+            }
+        }
+    }
 }
 
 /// `text` with `use_line` added, after the imports it already has.

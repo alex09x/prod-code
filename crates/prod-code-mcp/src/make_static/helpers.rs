@@ -152,6 +152,9 @@ pub fn extract_receiver(before: &str) -> Option<&str> {
                     break;
                 }
             }
+            // A byte of a non-ASCII identifier (`个`): the scan walks through all of its bytes,
+            // where reading one as a Latin-1 character could stop inside it and slicing panicked.
+            b if b >= 0x80 => {}
             _ => {
                 if depth_paren == 0 && depth_bracket == 0 {
                     let c = b as char;

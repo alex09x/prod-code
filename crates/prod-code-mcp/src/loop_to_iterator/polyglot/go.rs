@@ -29,11 +29,23 @@ pub fn recognise_go(text: &str, at: usize) -> Result<PolyglotLoop> {
     };
 
     let for_line_start = text[..for_at].rfind('\n').map_or(0, |i| i + 1);
+    // The replacement runs from the declaration above to the loop's end: a statement before
+    // `for` on its line (`prepare(); for …`) would go with it.
+    anyhow::ensure!(
+        text[for_line_start..for_at].trim().is_empty(),
+        "the loop shares its line with other code; put it on a line of its own first"
+    );
     let open_brace = at_depth_zero(text, for_at + 4, "{").context("the loop has no body `{`")?;
     let header = text[for_at + 4..open_brace].trim();
     let (lhs, source) = header
         .split_once(" range ")
         .context("expected `range` in for loop")?;
+    // `for i, x = range xs` assigns variables declared outside: their values after the loop
+    // are observable, and the `:=` every template writes would declare new ones.
+    anyhow::ensure!(
+        lhs.trim_end().ends_with(":="),
+        "the loop assigns to existing variables (`=`), which the iterator conversion cannot preserve"
+    );
     let source = source.trim().to_string();
     let range_vars: Vec<&str> = lhs.split(',').map(str::trim).collect();
     anyhow::ensure!(
@@ -74,6 +86,11 @@ pub fn recognise_go(text: &str, at: usize) -> Result<PolyglotLoop> {
     let (acc, init) = if let Some((a, i)) = dec_trimmed.split_once(":=") {
         (a.trim().to_string(), i.trim())
     } else if let Some(rest) = dec_trimmed.strip_prefix("var ") {
+        // `var a , b []int` names two: the replacement would delete `b`'s declaration too.
+        anyhow::ensure!(
+            !rest.split('=').next().unwrap_or(rest).contains(','),
+            "the declaration above the loop names more than one variable"
+        );
         if let Some((lhs, i)) = rest.split_once('=') {
             let a = lhs.split_whitespace().next().unwrap_or(lhs).trim();
             (a.to_string(), i.trim())

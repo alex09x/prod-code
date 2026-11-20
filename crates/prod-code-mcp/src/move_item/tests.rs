@@ -99,6 +99,32 @@ mod tests {
         let (text, notes) = drop_import("use a::b::Other;\n", "Name");
         assert_eq!(text, "use a::b::Other;\n");
         assert!(notes.is_empty());
+
+        // A glob and an anonymous trait import name nothing, and stay: counted by named leaves
+        // alone, the whole statement went.
+        let (text, _) = drop_import("use m::{Name, *, Trait as _};\n", "Name");
+        assert_eq!(text, "use m::{*, Trait as _};\n");
+        let (text, _) = drop_import("use m::{Name, Other, *};\n", "Name");
+        assert_eq!(text, "use m::{Other, *};\n");
+        // In a nested group too: only the outer list was looked at.
+        let (text, _) = drop_import("use m::{Name, sub::{*, Trait as _}};\n", "Name");
+        assert_eq!(text, "use m::{sub::*, sub::Trait as _};\n");
+        // A line comment after a glob does not hide it.
+        let (text, _) = drop_import("pub use m::{Name, sub::{* // keep\n}};\n", "Name");
+        assert_eq!(text, "pub use m::{sub::*};\n");
+        // A block comment is beyond the scan: the statement stays, with a note.
+        let source = "use m::{Name, sub::{* /* keep */}};\n";
+        let (text, notes) = drop_import(source, "Name");
+        assert_eq!(text, source);
+        assert!(notes[0].contains("could be read"), "{notes:?}");
+        // Spaced tokens are the same glob.
+        let (text, _) = drop_import("pub use m::{Name, sub:: *};\n", "Name");
+        assert_eq!(text, "pub use m::{sub::*};\n");
+        // A leaf neither scan reads leaves the statement alone.
+        let source = "use m::{Name, sub::{*, 'x}};\n";
+        let (text, notes) = drop_import(source, "Name");
+        assert_eq!(text, source);
+        assert!(notes[0].contains("could be read"), "{notes:?}");
     }
 
     #[test]
