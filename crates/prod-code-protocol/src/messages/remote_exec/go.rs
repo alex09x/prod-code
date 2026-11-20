@@ -66,7 +66,8 @@ pub fn parse_go_test_json_event(line: &str) -> Option<RemoteExecStream> {
     // Summary lines such as "PASS", "FAIL", "ok  \tpkg\t0.012s", "FAIL\tpkg\t0.015s" are ignored.
     if let Some(rest) = trimmed.strip_prefix("=== RUN") {
         let name = rest.trim().to_string();
-        if !name.is_empty() {
+        // `=== RUNNING cleanup` is output, not a start: the name follows whitespace.
+        if !name.is_empty() && rest.starts_with(char::is_whitespace) {
             return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Started {
                 name,
             }));

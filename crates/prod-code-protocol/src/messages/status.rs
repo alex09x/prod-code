@@ -43,7 +43,10 @@ impl HostResources {
 
     /// The free share of the workspaces filesystem (0.0 to 1.0), when known.
     pub fn storage_free_share(&self) -> Option<f64> {
-        self.storage_free_millis.map(|m| m as f64 / 1000.0)
+        // A reading above 1000‰ is not a reading: unknown, not healthier than healthy.
+        self.storage_free_millis
+            .filter(|m| *m <= 1000)
+            .map(|m| m as f64 / 1000.0)
     }
 
     /// Why the host should take no new workspace (`memory 91% used`, `disk 4% free`), or `None`
@@ -230,6 +233,8 @@ impl StatusResponse {
         // Running commands (builds, tests, checks) add significant instantaneous load
         score += self.running_commands.len() as f64 * 0.35;
 
-        score
+        // 1000 and up means hard pressure, which placement filters out; a node not under
+        // pressure, however loaded, stays below it.
+        score.min(999.0)
     }
 }

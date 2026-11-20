@@ -10,6 +10,17 @@
   - An error a Swift move carries along is set aside only on the lines where the moved block landed, so the same error on an identical line elsewhere in the batch stays blocking. A block that was already in the target before the cut no longer makes a deletion count as a move (#2038).
   - Moving a Swift member into an extension: a brace-free declaration before the type (`let version = 1`, a stored property above a nested type) no longer hides the type. A member of a `public`, `@MainActor` or `#if` extension, or of `extension Array<Int>`, is refused rather than moved into a plain extension that would change its access, isolation, compilation or constraint. Such an extension in the target is not joined. A member of a `private` or `fileprivate` type is refused too, because another file cannot name the type (#2040).
   - The missing compile-database note names `meson setup build` for a Meson checkout, and a directory called `compile_commands.json` no longer counts as one (#2047).
+- **Protocol and Gateway Defects Found by a Full-File Review** (`crates/prod-code-protocol`, `crates/prod-code-gateway`): the DNS, TLS server, `pki init`, test parser, disk reading and `/metrics` fixes each have a regression test that fails without the fix. The others are covered only by the existing tests.
+  - **DNS client**: the SRV/TXT query used a fixed transaction ID and accepted the first datagram from any address. It now connects to the server, uses an unpredictable ID per query, and drops a datagram that is not the reply to that query.
+  - **TLS server**: a configuration requiring client authentication with no client CA roots started without client authentication; it is now refused.
+  - **`pki init`**: it wrote the new CA before issuing the node certificate, so a bad server name left a CA the existing node certificate fails. The whole hierarchy is now made first. The key is written before the certificate, each write stages under its own name, and the printed `export` lines quote their paths.
+  - **TLS client**: a peer that accepts the TCP connection but never finishes the TLS handshake now times out after 8 s instead of holding the caller.
+  - **Test parsers**: `test x ... ignored, reason` (`#[ignore = "reason"]`) is a skip with its reason, and `=== RUNNING …` output is no longer a test start.
+  - **Node status**: a disk reading above 1000‰ is unknown, not healthy. A node under no pressure always scores below the hard-pressure range (1000 and up).
+  - **`/metrics`**: duration, items, bytes and compilation series were keyed finer than their labels and printed duplicate samples, which makes Prometheus reject the whole scrape. Each label set is now one sample, and failures carry `error_class`. Scrapes have a 10 s deadline and at most 32 run at once.
+  - **Toolchain version probe**: it drains both pipes within its 2 s deadline, so a descendant holding a pipe open no longer stalls the inventory. Its 80-character cut no longer panics inside a multi-byte character.
+  - **Embeddings**: an ONNX model without a `last_hidden_state` output, or with an output of another shape, is reported as an error instead of panicking the search path.
+  - **Exec reports**: they are written to a directory that only the gateway's user can enter, not to a predictable name in the shared temporary directory.
 
 ## v0.3.62 — 2026-11-19
 

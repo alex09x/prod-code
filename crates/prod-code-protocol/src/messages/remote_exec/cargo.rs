@@ -175,10 +175,18 @@ pub fn parse_cargo_json_event(line: &str) -> Option<RemoteExecStream> {
                 backtrace: None,
                 output: None,
             }));
-        } else if outcome == "ignored" || outcome.starts_with("ignored ") {
+        } else if outcome == "ignored"
+            || outcome.starts_with("ignored ")
+            || outcome.starts_with("ignored,")
+        {
+            // `#[ignore = "why"]` prints `ignored, why`.
+            let reason = outcome
+                .strip_prefix("ignored,")
+                .map(|why| why.trim().to_string())
+                .filter(|why| !why.is_empty());
             return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Skipped {
                 name: test_name,
-                reason: None,
+                reason,
             }));
         } else if let Some(bench_str) = outcome.strip_prefix("bench:") {
             return Some(RemoteExecStream::TestEvent(RemoteExecTestEvent::Bench {

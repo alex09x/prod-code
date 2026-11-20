@@ -88,6 +88,13 @@ fn a_host_short_of_memory_or_disk_says_so() {
     };
     assert_eq!(disk_only.pressure().as_deref(), Some("disk 9% free"));
     assert_eq!(disk_only.describe(), "disk 9% free");
+
+    // A reading above 1000‰ is no reading: not "150% free".
+    let impossible = HostResources {
+        storage_free_millis: Some(1500),
+        ..HostResources::default()
+    };
+    assert_eq!(impossible.storage_free_share(), None);
 }
 
 #[test]

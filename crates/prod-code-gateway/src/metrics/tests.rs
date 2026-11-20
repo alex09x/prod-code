@@ -657,7 +657,7 @@ fn compilation_metrics_and_host_gauges_format_correctly() {
 
     // Check compilation metrics
     assert!(rendered.contains("prod_code_compilations_total{node=\"test-node-1\",engine=\"rust\",compiler=\"rustc 1.85.0\",status=\"ok\"} 1"));
-    assert!(rendered.contains("prod_code_compilations_total{node=\"test-node-1\",engine=\"rust\",compiler=\"rustc 1.85.0\",status=\"error\"} 1"));
+    assert!(rendered.contains("prod_code_compilations_total{node=\"test-node-1\",engine=\"rust\",compiler=\"rustc 1.85.0\",status=\"error\",error_class=\"exit_non_zero\"} 1"));
     assert!(rendered.contains("prod_code_compilation_duration_seconds_total{node=\"test-node-1\",engine=\"rust\",compiler=\"rustc 1.85.0\",status=\"ok\"} 1.250"));
     assert!(rendered.contains("prod_code_compilation_errors_total{node=\"test-node-1\",engine=\"rust\",compiler=\"rustc 1.85.0\",error_class=\"exit_non_zero\"} 1"));
 
@@ -726,4 +726,42 @@ fn command_method_normalization() {
     assert!(is_compilation_command("cargo test"));
     assert!(is_compilation_command("npx --no-install tsc --noEmit"));
     assert!(!is_compilation_command("npx --no-install eslint ."));
+}
+
+/// Failures of one operation in two error classes, with items and bytes, give one sample per
+/// label set: Prometheus rejects a whole scrape with a duplicate sample.
+#[test]
+fn every_sample_has_its_own_label_set() {
+    let temp = tempfile::tempdir().unwrap();
+    let m = Metrics::new(temp.path().join("metrics"));
+    m.set_node("test-node-1");
+    for class in ["exit_non_zero", "timeout", "exit_non_zero"] {
+        let mut ev = Event::blank("exec");
+        ev.command = "cargo check".into();
+        ev.method = "cargo-check".into();
+        ev.engine = "rust".into();
+        ev.compiler = Some("rustc 1.85.0".into());
+        ev.duration_ms = 100;
+        ev.items = 2;
+        ev.bytes = 10;
+        ev.ok = false;
+        ev.error_class = Some(class.into());
+        m.record(ev);
+    }
+    let rendered = super::format_prometheus_metrics(&m, None);
+    let mut seen = std::collections::HashSet::new();
+    for line in rendered
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+    {
+        let series = line.rsplit_once(' ').map_or(line, |(series, _)| series);
+        assert!(
+            seen.insert(series.to_string()),
+            "duplicate sample: {line}\n{rendered}"
+        );
+    }
+    assert!(
+        rendered.contains("prod_code_operation_items_total{node=\"test-node-1\",category=\"exec\",method=\"cargo-check\",engine=\"rust\"} 6"),
+        "{rendered}"
+    );
 }

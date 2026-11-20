@@ -182,41 +182,58 @@ fn probe_tool_version(tool: &str, args: &[&str]) -> Option<String> {
         .spawn()
         .ok()?;
 
-    // Bounded wait loop
-    loop {
+    // Both pipes are drained while the tool runs, and read within the same deadline: a tool
+    // that fills a pipe no longer times out, and a descendant that keeps a pipe open after the
+    // tool exits no longer holds the inventory.
+    let drain = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+        let (sent, got) = std::sync::mpsc::channel();
+        if let Some(mut pipe) = pipe {
+            std::thread::spawn(move || {
+                let mut text = Vec::new();
+                let _ = pipe.read_to_end(&mut text);
+                let _ = sent.send(text);
+            });
+        }
+        got
+    };
+    use std::io::Read as _;
+    let stdout = drain(child.stdout.take().map(|p| Box::new(p) as _));
+    let stderr = drain(child.stderr.take().map(|p| Box::new(p) as _));
+    let succeeded = loop {
         match child.try_wait() {
-            Ok(Some(status)) => {
-                if status.success() {
-                    let output = child.wait_with_output().ok()?;
-                    let stdout_str = String::from_utf8_lossy(&output.stdout);
-                    if let Some(line) = stdout_str.lines().find(|l| !l.trim().is_empty()) {
-                        return Some(clean_version_line(line.trim()));
-                    }
-                    let stderr_str = String::from_utf8_lossy(&output.stderr);
-                    if let Some(line) = stderr_str.lines().find(|l| !l.trim().is_empty()) {
-                        return Some(clean_version_line(line.trim()));
-                    }
-                    return None;
-                }
-                return None;
-            }
-            Ok(None) => {
-                if start.elapsed() >= VERSION_PROBE_TIMEOUT {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return None;
-                }
+            Ok(Some(status)) => break status.success(),
+            Ok(None) if start.elapsed() < VERSION_PROBE_TIMEOUT => {
                 std::thread::sleep(Duration::from_millis(15));
             }
-            Err(_) => return None,
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    if !succeeded {
+        return None;
+    }
+    let left = || VERSION_PROBE_TIMEOUT.saturating_sub(start.elapsed());
+    for got in [stdout, stderr] {
+        let text = got.recv_timeout(left()).unwrap_or_default();
+        let text = String::from_utf8_lossy(&text);
+        if let Some(line) = text.lines().find(|l| !l.trim().is_empty()) {
+            return Some(clean_version_line(line.trim()));
         }
     }
+    None
 }
 
 /// Normalizes output from various `--version` commands into concise version strings.
 fn clean_version_line(raw: &str) -> String {
     // Truncate overly verbose output (e.g. clang full license headers) to max 80 chars
-    let s = if raw.len() > 80 { &raw[..80] } else { raw };
+    let mut cut = raw.len().min(80);
+    while !raw.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let s = &raw[..cut];
     s.trim().to_string()
 }
 

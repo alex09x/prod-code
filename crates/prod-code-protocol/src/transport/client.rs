@@ -249,7 +249,19 @@ pub async fn connect_stream_with_client_config(
 
     if let Some((config, server_name)) = configured_tls {
         let tcp = connect_raw_tcp(addr).await?;
-        let mut tls = crate::tls::upgrade_client_stream(tcp, config, server_name).await?;
+        // A peer that takes the socket and never finishes the handshake no longer holds the
+        // caller forever.
+        let mut tls = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            crate::tls::upgrade_client_stream(tcp, config, server_name),
+        )
+        .await
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("TLS handshake with {addr} did not finish within 8 s"),
+            )
+        })??;
         if let Some(token) = token {
             let mut frame = bytes::BytesMut::new();
             crate::codec::ProdCodeCodec::new()

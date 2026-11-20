@@ -187,10 +187,24 @@ pub fn query_dns(
     qtype: DnsQueryType,
     timeout: Duration,
 ) -> std::io::Result<Vec<DnsAnswer>> {
-    let sock = std::net::UdpSocket::bind("0.0.0.0:0")?;
+    let local = if server.is_ipv6() {
+        "[::]:0"
+    } else {
+        "0.0.0.0:0"
+    };
+    let sock = std::net::UdpSocket::bind(local)?;
+    // A connected socket takes datagrams from the server only.
+    sock.connect(server)?;
     sock.set_read_timeout(Some(timeout))?;
 
-    let id: u16 = 0x4242;
+    // An unpredictable ID per query: a fixed one let any host on the network answer for the
+    // server.
+    let id = {
+        use std::hash::{BuildHasher, Hasher};
+        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+        hasher.write(domain.as_bytes());
+        hasher.finish() as u16
+    };
 
     let mut query = Vec::with_capacity(64);
     query.extend_from_slice(&id.to_be_bytes());
@@ -203,25 +217,32 @@ pub fn query_dns(
     query.extend_from_slice(&qtype.to_u16().to_be_bytes());
     query.extend_from_slice(&1u16.to_be_bytes());
 
-    sock.send_to(&query, server)?;
+    sock.send(&query)?;
 
     let mut buf = [0u8; 1024];
-    let (n, _) = sock.recv_from(&mut buf)?;
+    // A datagram that is not the reply to this query (another ID, not a response) is dropped,
+    // and the wait goes on until the read timeout.
+    let n = loop {
+        let n = sock.recv(&mut buf)?;
+        let reply = &buf[..n];
+        if reply.len() >= 12
+            && u16::from_be_bytes([reply[0], reply[1]]) == id
+            && reply[2] & 0x80 != 0
+        {
+            break n;
+        }
+    };
     let resp = &buf[..n];
-    if resp.len() < 12 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::UnexpectedEof,
-            "DNS reply too short",
-        ));
-    }
 
     let ancount = u16::from_be_bytes([resp[6], resp[7]]) as usize;
     let mut offset = 12;
     // Skip question
-    let _ = decode_dns_name(resp, &mut offset);
+    decode_dns_name(resp, &mut offset)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     offset += 4; // qtype + qclass
 
-    let mut answers = Vec::with_capacity(ancount);
+    // A record takes at least 11 bytes: the count cannot ask for more than the reply holds.
+    let mut answers = Vec::with_capacity(ancount.min(n / 11));
     for _ in 0..ancount {
         if offset >= resp.len() {
             break;
