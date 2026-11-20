@@ -304,16 +304,30 @@ pub fn write_read_only(mirror_root: &Path, path: &Path, bytes: &[u8]) -> std::io
             }
         }
     }
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
-    #[cfg(unix)]
-    if path.exists() {
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644))?;
+    // Staged beside the file and renamed over it: a reader never sees half a file, and a
+    // failed write leaves no truncated file for the cache to trust from then on.
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let staged = path.with_file_name(format!(
+        ".{}.tmp.{}.{}",
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("mirror"),
+        std::process::id(),
+        WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let written = (|| {
+        std::fs::write(&staged, bytes)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o444))?;
+        }
+        std::fs::rename(&staged, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&staged);
     }
-    std::fs::write(path, bytes)?;
-    #[cfg(unix)]
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o444))?;
-    Ok(())
+    written
 }
 
 #[cfg(test)]

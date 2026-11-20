@@ -113,6 +113,71 @@ async fn verify_flow_propagates_hash_and_fetch_errors() {
     assert_eq!(lines.len(), 2);
 }
 
+/// A binary that is not the published one, or a manifest without its asset, fails `package
+/// verify`: the exit status said success either way.
+#[tokio::test]
+async fn verify_flow_fails_on_a_mismatch_or_a_missing_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let exe = abc_binary(dir.path());
+    for sums in [
+        HashMap::from([("prod-code-t".to_string(), "00".repeat(32))]),
+        HashMap::new(),
+    ] {
+        let mut lines = Vec::new();
+        let err = verify_flow(&mut |l| lines.push(l), &exe, "t", "1.0.0", |_| async {
+            Ok(sums)
+        })
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("prod-code-t"), "{err}");
+    }
+}
+
+/// With the release checksums, a download that does not match is refused and the installed
+/// binary stays; one that matches is installed.
+#[cfg(all(unix, not(target_os = "macos")))]
+#[test]
+fn install_flow_refuses_a_download_that_does_not_match_its_checksum() {
+    let target = current_target().unwrap();
+    let assets = tempfile::tempdir().unwrap();
+    let payload = b"#!/bin/sh\necho fake-v2.0.0\n".to_vec();
+    let tag_dir = assets.path().join("v2.0.0");
+    std::fs::create_dir_all(&tag_dir).unwrap();
+    let asset = tag_dir.join(format!("prod-code-{target}"));
+    std::fs::write(&asset, &payload).unwrap();
+    let base = format!("file://{}", assets.path().display());
+    let dest = tempfile::tempdir().unwrap();
+    let bin = dest.path().join("prod-code");
+    std::fs::write(&bin, b"old").unwrap();
+    let name = format!("prod-code-{target}");
+    let wrong = HashMap::from([(name.clone(), "00".repeat(32))]);
+    let mut lines = Vec::new();
+    let err = install_flow(
+        &mut |l| lines.push(l),
+        "1.0.0",
+        target,
+        &json!({"tag_name": "v2.0.0"}),
+        (false, false),
+        (dest.path(), &base),
+        Some(&wrong),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("does not match"), "{err}");
+    assert_eq!(std::fs::read(&bin).unwrap(), b"old");
+    let right = HashMap::from([(name, compute_sha256(&asset).unwrap())]);
+    install_flow(
+        &mut |l| lines.push(l),
+        "1.0.0",
+        target,
+        &json!({"tag_name": "v2.0.0"}),
+        (false, false),
+        (dest.path(), &base),
+        Some(&right),
+    )
+    .unwrap();
+    assert_eq!(std::fs::read(&bin).unwrap(), payload);
+}
+
 #[cfg(unix)]
 #[test]
 fn install_flow_decides_between_skip_install_and_refusal() {
@@ -141,6 +206,7 @@ fn install_flow_decides_between_skip_install_and_refusal() {
             &tag,
             flags,
             (dir, &base),
+            None,
         );
         (res, lines)
     };

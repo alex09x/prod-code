@@ -248,6 +248,7 @@ pub async fn apply_sync_probe(
         .cloned()
         .collect();
     let manifest_len = stamps.len();
+    let every_path: Vec<String> = stamps.iter().map(|s| s.relative_path.clone()).collect();
     let (mut missing, deleted) = tokio::task::spawn_blocking(move || {
         let previously_managed = super::manifest::load(&root);
         let reconciled = reconcile_manifest_with_ownership(&root, &stamps, &previously_managed);
@@ -262,7 +263,12 @@ pub async fn apply_sync_probe(
         reconciled
     })
     .await
-    .unwrap_or_default();
+    .unwrap_or_else(|error| {
+        // Reconciliation stopped partway: "nothing missing" would leave the copy stale, so the
+        // client is asked for every file instead.
+        tracing::error!(%error, "sync reconciliation failed; asking for every file");
+        (every_path, Vec::new())
+    });
 
     // Coordinate typeRoots only after the client manifest has been reconciled, so this
     // server-side config change cannot make a matching client file appear missing. The writer

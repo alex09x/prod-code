@@ -3,6 +3,17 @@
 ## [Unreleased]
 
 ### Fixed
+- **Gateway and Client Defects Found by a Full-File Review** (`crates/prod-code-gateway`, `crates/prod-code-client`):
+  - **`code_exec` with pulled changes**: when the pre-command snapshot failed, the command ran against an empty "before", so a rollback would have removed every existing file as created by the command. The command is now refused instead.
+  - **Structured test output**: a stdout chunk that ended inside a multi-byte character was dropped with every record in it. The incomplete character now waits for the next chunk, and only bytes that are not UTF-8 at all are dropped.
+  - **Killing a timed-out command**: the gateway spawned and waited for a `kill` program on the runtime thread, and a missing `kill` left the command running. It now signals the group and the leader directly.
+  - **Rust `didChange`**: the gateway advertises full-document sync, yet a ranged change replaced the whole file in the engine with its fragment. Ranged changes are now ignored with a warning, and the last full change wins.
+  - **Status and gossip**: `Authorization: Basic …=` kept part of the credential, because the name was split at the padding `=`. The name now ends at the first `=` or `:`.
+  - **`--prune-below-free-percent`**: a value above 100, which made the disk-pressure pass delete every idle worktree, is refused.
+  - **Sync reconciliation**: when it failed, the client was told that nothing was missing. It is now asked for every file.
+  - **`prod-code package verify`**: it exits non-zero on a checksum mismatch, or when the manifest has no entry for the binary.
+  - **`prod-code package install`**: it checks the download against the release's `SHA256SUMS` before replacing the binary. On Linux nothing verified it before.
+  - **Editor mirror files**: they are staged and renamed into place, so a failed write no longer leaves a truncated file that the cache trusts from then on.
 - **Review Fixes for the v0.3.62 Changes** (`crates/prod-code-mcp`): a review of the release diff found these, each now with a regression test that fails on v0.3.62.
   - Sync read a data directory again for every file in it while deciding whether it holds source code, so a large dataset directory cost a quadratic scan; it is now read once per directory per scan. A `settings.toml`, a `*.lock` or a `go.sum` beside data no longer makes the directory a package, only source code does (#2048).
   - A Rust declaration in a block that opens on its own line (`mod nested {` after `impl Exec {}`) is no longer taken for a member of the `impl` above it. `unsafe impl`, an `impl` header broken after `for`, a `->` in a generic bound (`impl<T: Fn() -> bool>`) and a `for<'a>` in a bound now name their type (#2045).
