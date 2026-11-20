@@ -45,11 +45,11 @@ pub fn drop_import(text: &str, name: &str) -> (String, Vec<String>) {
     let mut out = text.to_string();
     let mut notes = Vec::new();
     for _ in 0..64 {
-        // A statement with a block comment is left alone: the leaf scans read line comments
-        // only, and one they miss would go with the statement.
+        // Only a statement whose every leaf is accounted for is rewritten: a leaf the scans
+        // miss (`sub:: *`, one behind a block comment) went with the statement.
         let Some((start, end)) = use_statements(&out).into_iter().find(|(s, e)| {
             let stmt = &out[*s..*e];
-            !stmt.contains("/*") && leaf_names(stmt).iter().any(|leaf| leaf == name)
+            leaf_names(stmt).iter().any(|leaf| leaf == name) && every_leaf_accounted(stmt)
         }) else {
             break;
         };
@@ -78,14 +78,49 @@ pub fn drop_import(text: &str, name: &str) -> (String, Vec<String>) {
     }
     for (start, end) in use_statements(&out) {
         let stmt = &out[start..end];
-        if stmt.contains("/*") && leaf_names(stmt).iter().any(|leaf| leaf == name) {
+        if leaf_names(stmt).iter().any(|leaf| leaf == name) && !every_leaf_accounted(stmt) {
             notes.push(format!(
-                "left `{}` as it is: it has a block comment; take `{name}` out by hand",
+                "left `{}` as it is: not every entry in it could be read; take `{name}` out by \
+                 hand",
                 stmt.trim()
             ));
         }
     }
     (out, notes)
+}
+
+/// Whether the named and the unnamed leaves found in `stmt` are all the leaves it has, and it
+/// holds no block comment the scans cannot read.
+fn every_leaf_accounted(stmt: &str) -> bool {
+    if stmt.contains("/*") {
+        return false;
+    }
+    let clean = without_line_comments(stmt);
+    let total = match clean.split_once('{') {
+        Some((_, rest)) => count_leaves(rest.rsplit_once('}').map_or(rest, |(group, _)| group)),
+        None => 1,
+    };
+    leaf_names(stmt).len() + unnamed_entries(stmt).len() == total
+}
+
+fn count_leaves(group: &str) -> usize {
+    split_top_level_commas(group)
+        .into_iter()
+        .map(str::trim)
+        .filter(|seg| !seg.is_empty())
+        .map(|seg| match (seg.find('{'), seg.rfind('}')) {
+            (Some(open), Some(close)) if close > open => count_leaves(&seg[open + 1..close]),
+            _ => 1,
+        })
+        .sum()
+}
+
+/// `seg` with no whitespace around `::` and single spaces elsewhere: `sub:: *` is `sub::*`.
+fn compact_path(seg: &str) -> String {
+    seg.split("::")
+        .map(|part| part.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect::<Vec<_>>()
+        .join("::")
 }
 
 fn is_valid_rust_ident(s: &str) -> bool {
@@ -258,8 +293,12 @@ fn collect_unnamed(prefix: &str, group: &str, out: &mut Vec<String>) {
                 join(sub)
             };
             collect_unnamed(&nested, &seg[open + 1..close], out);
-        } else if seg == "*" || seg.ends_with("::*") || seg.ends_with(" as _") {
-            out.push(join(seg));
+        } else {
+            // Tokens may be spaced (`sub:: *`, `Trait  as  _`).
+            let seg = compact_path(seg);
+            if seg == "*" || seg.ends_with("::*") || seg.ends_with(" as _") {
+                out.push(join(&seg));
+            }
         }
     }
 }

@@ -36,33 +36,37 @@ pub fn parse_if_else_block(text: &str, search_offset: usize) -> Option<Condition
     }
 }
 
-/// One Python line without its trailing comment: a `#` inside a string (`log(":#")`) does not
-/// start one. `None` when the line cannot be read this way: an f-string (whose `{…}` may hold
-/// quotes of its own, Python 3.12) or a string still open at the end of the line.
-fn python_code(line: &str) -> Option<&str> {
-    let mut quote: Option<char> = None;
-    let mut escaped = false;
-    for (at, ch) in line.char_indices() {
-        match quote {
-            Some(_) if escaped => escaped = false,
-            Some(_) if ch == '\\' => escaped = true,
-            Some(open) if ch == open => quote = None,
-            Some(_) => {}
-            None if ch == '"' || ch == '\'' => {
-                let mut prefix = line[..at]
-                    .chars()
-                    .rev()
-                    .take_while(|c| c.is_ascii_alphabetic());
-                if prefix.any(|c| c.eq_ignore_ascii_case(&'f')) {
-                    return None;
-                }
-                quote = Some(ch);
-            }
-            None if ch == '#' => return Some(&line[..at]),
-            None => {}
-        }
+/// The header of a Python `if`/`elif`/`else` line without its comment, only in a form whose
+/// suite colon is certain: the header ends at a colon, its condition has no colon of its own
+/// and at most one plain string literal (two equal quotes, no backslash), and nothing but a
+/// comment follows. Any other form (an inline suite, a triple-quoted or f-string, a `#` or `:`
+/// inside a literal, a dict or a lambda) is `None`: reading it by hand lost branch bodies.
+fn python_header(line: &str) -> Option<&str> {
+    // A `#` inside the literal leaves one quote before it, which is refused below.
+    let code = line.split('#').next().unwrap_or(line).trim_end();
+    let condition = code.strip_suffix(':')?;
+    if condition.contains(':') || condition.contains('\\') {
+        return None;
     }
-    quote.is_none().then_some(line)
+    let quotes: Vec<char> = condition
+        .chars()
+        .filter(|c| *c == '"' || *c == '\'')
+        .collect();
+    match quotes.as_slice() {
+        [] => {}
+        [a, b] if a == b => {}
+        _ => return None,
+    }
+    // A prefixed literal (`f"…"`, `r'…'`) is not a plain one: an f-string can nest quotes.
+    if let Some(open) = condition.find(['"', '\''])
+        && condition[..open]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+    {
+        return None;
+    }
+    Some(code)
 }
 
 fn parse_python_if_elif(text: &str, if_idx: usize, base_indent: &str) -> Option<ConditionalBlock> {
@@ -86,18 +90,14 @@ fn parse_python_if_elif(text: &str, if_idx: usize, base_indent: &str) -> Option<
                 || trimmed.starts_with("else:"))
         {
             // An inline suite (`if x == 'A': f()`, `else: g()`) has its body on the header line,
-            // where it was read as part of the tag or dropped.
-            // The header without its comment, so the tag is read up to the colon.
-            // After `else:` only a comment may follow, whatever the scan makes of the rest.
+            // where it was read as part of the tag or dropped; only a provable header is read,
+            // without its comment, so the tag ends at the colon.
             if let Some(after) = trimmed.strip_prefix("else:")
                 && !(after.trim().is_empty() || after.trim_start().starts_with('#'))
             {
                 return None;
             }
-            let trimmed = python_code(trimmed)?.trim_end();
-            if !trimmed.ends_with(':') {
-                return None;
-            }
+            let trimmed = python_header(trimmed)?;
             // Flush previous branch
             if !current_tag.is_empty() {
                 branches.push(ConditionalBranch {

@@ -118,6 +118,11 @@ fn an_inline_python_suite_is_refused() {
     for header in [
         "else: log(f\"{\"a:#\"}\")",
         "elif kind == f\"{\"a:#\"}\": g()",
+        // A triple-quoted string: its inner quote read as the end hid the `:` before the body.
+        "elif kind == \"b\": log(\"\"\"a\":#\"\"\")",
+        "elif kind == \"#\":",
+        "elif kind == 'a:b':",
+        "elif kind == {1: 2}:",
     ] {
         let text = format!("if kind == 'a':\n    f()\n{header}\n");
         assert!(parse_if_else_block(&text, 0).is_none(), "{header}");

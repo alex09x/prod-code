@@ -116,7 +116,15 @@ mod tests {
         let source = "use m::{Name, sub::{* /* keep */}};\n";
         let (text, notes) = drop_import(source, "Name");
         assert_eq!(text, source);
-        assert!(notes[0].contains("block comment"), "{notes:?}");
+        assert!(notes[0].contains("could be read"), "{notes:?}");
+        // Spaced tokens are the same glob.
+        let (text, _) = drop_import("pub use m::{Name, sub:: *};\n", "Name");
+        assert_eq!(text, "pub use m::{sub::*};\n");
+        // A leaf neither scan reads leaves the statement alone.
+        let source = "use m::{Name, sub::{*, 'x}};\n";
+        let (text, notes) = drop_import(source, "Name");
+        assert_eq!(text, source);
+        assert!(notes[0].contains("could be read"), "{notes:?}");
     }
 
     #[test]
