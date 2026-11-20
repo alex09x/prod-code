@@ -57,6 +57,30 @@ func AuditUser(svc *UserService) {
     assert!(out.contains("func AuditUser(svc *UserService) {"));
 }
 
+/// `func f(a, b *T)` binds both names to one type: changing it for `b` changes it for `a`,
+/// whose uses were never checked, so the group is left alone. A CRLF Python file no longer
+/// panics while its body is measured.
+#[test]
+fn grouped_go_parameters_and_crlf_python_are_safe() {
+    let go =
+        "package user\n\nfunc Both(a, b *UserService) {\n    _ = a.db\n    b.GetUser(\"1\")\n}\n";
+    let methods = vec!["GetUser".to_string()];
+    let (out, migrations) =
+        migrate_caller_annotations(go, "UserService", "UserReader", &methods, Language::Go);
+    assert!(migrations.is_empty(), "{migrations:?}");
+    assert_eq!(out, go);
+
+    let py = "def f(acc: AccountService):\r\n    acc.déposit(1)\r\n    acc.secret_key()\r\n";
+    let (_, migrations) = migrate_caller_annotations(
+        py,
+        "AccountService",
+        "IAccount",
+        &["déposit".to_string()],
+        Language::Python,
+    );
+    assert!(migrations.is_empty(), "{migrations:?}");
+}
+
 #[test]
 fn test_python_caller_migration() {
     let py = r#"def transfer(acc: AccountService, other: AccountService):

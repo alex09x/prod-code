@@ -201,7 +201,11 @@ fn apply_hunks(text: &str, hunks: &[Hunk], shown: &str) -> Result<String> {
                     .all(|(a, b)| a == b)
         };
         let at = if old.is_empty() {
-            Some(expected.min(lines.len()))
+            // A pure insertion (`@@ -N,0 +…`, as `diff -U0` writes it) names the line it goes
+            // after, not the one it replaces: line N's index is N - 1, so it goes in at N. A
+            // position before an earlier hunk's end or past the end of the file does not fit.
+            let after = (hunk.old_start as isize + shift).max(0) as usize;
+            (floor..=lines.len()).contains(&after).then_some(after)
         } else {
             (0..=lines.len())
                 .filter(|at| fits(*at))

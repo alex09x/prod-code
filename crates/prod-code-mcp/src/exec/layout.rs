@@ -64,7 +64,11 @@ fn tokens(text: &str) -> Option<Vec<&str>> {
             i += 1;
             // Keep numeric spelling and adjoining operators intact too; floats, exponents,
             // suffixes and macro literal inputs cannot be proven by splitting on punctuation.
+            // A comment opener ends it: `1// note` swallowed into the number let moving code
+            // into the comment pass as layout.
             while text[i..].starts_with(|c: char| !c.is_whitespace() && !"()[]{};,\"'".contains(c))
+                && !text[i..].starts_with("//")
+                && !text[i..].starts_with("/*")
             {
                 i += text[i..].chars().next()?.len_utf8();
             }

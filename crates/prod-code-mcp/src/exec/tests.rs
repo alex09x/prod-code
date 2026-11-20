@@ -72,6 +72,11 @@ fn a_formatter_s_rewrite_is_layout_and_an_edit_is_not() {
         !layout_only(braced, unbraced),
         "uncertain closure changes still warn"
     );
+    // Code moved into a comment that ends a number is an edit, not layout.
+    assert!(!layout_only(
+        b"let x = 1// note\n + 2\n;\n",
+        b"let x = 1// note + 2\n;\n"
+    ));
     let outcome = RemoteOutcome {
         executor: Default::default(),
         exit: ExecExit {
