@@ -1,0 +1,11 @@
+{
+  "name": "prod-code-pi",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT OR Apache-2.0",
+  "keywords": ["pi-package"],
+  "scripts": { "test": "node test.mjs" },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*", "typebox": "*" },
+  "pi": { "extensions": ["./index.ts"], "skills": ["./skills"] }
+}
