@@ -18,9 +18,9 @@ pub mod diagnostics;
 pub mod documents;
 pub mod engine;
 pub mod lsp;
-pub mod min_version;
 pub mod probe;
 pub mod reader;
+pub mod ridx;
 pub mod types;
 
 #[cfg(test)]
