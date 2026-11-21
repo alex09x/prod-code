@@ -232,9 +232,29 @@ fn variant_id(action: &serde_json::Value) -> Option<String> {
                 .collect()
         })
         .unwrap_or_default();
+    // The document version in `documentChanges` is the server's count of the text it was sent,
+    // not part of what the edit changes: another session opening the same file raises it with
+    // the text unchanged. Every URI, range and replacement stays in.
+    let mut edit = action
+        .get("edit")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    if let Some(changes) = edit
+        .get_mut("documentChanges")
+        .and_then(|c| c.as_array_mut())
+    {
+        for change in changes {
+            if let Some(document) = change
+                .get_mut("textDocument")
+                .and_then(|d| d.as_object_mut())
+            {
+                document.remove("version");
+            }
+        }
+    }
     let target = serde_json::json!({
         "title": action.get("title"),
-        "edit": action.get("edit"),
+        "edit": edit,
         "diagnostics": diagnostics,
         "command": action.get("command"),
     });

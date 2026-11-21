@@ -224,3 +224,44 @@ async fn actions_sharing_a_server_id_are_chosen_by_what_they_change() {
         .to_string();
     assert!(subtype.contains("a subtype does not select"), "{subtype}");
 }
+
+/// A fix reissued at a new document version (another session opened the unchanged file) is the
+/// same variant: it is applied, with the version the server gives now.
+#[tokio::test]
+async fn a_fix_reissued_at_a_new_document_version_keeps_its_selector() {
+    let temp = tempfile::tempdir().unwrap();
+    let versioned = |line: u64, version: u64| {
+        let range = json!({"start":{"line":line,"character":8},"end":{"line":line,"character":12}});
+        json!({
+            "title": "Remove unnecessary `mut`",
+            "kind": "quickfix",
+            "diagnostics": [{"range": range, "code": "unused_mut", "message": "variable does not need to be mutable"}],
+            "edit": {"documentChanges": [{"textDocument": {"uri": "file:///a.rs", "version": version},
+                                          "edits": [{"range": range, "newText": ""}]}]},
+            "data": {"id": "remove_unnecessary_mut"}
+        })
+    };
+    let engine = crate::lsp::test_support::server(
+        temp.path(),
+        json!({
+            "textDocument/diagnostic":{"result":{"kind":"full","items":[]}},
+            "textDocument/codeAction":[
+                {"result":[versioned(3, 1), versioned(7, 1)]},
+                {"result":[versioned(3, 2), versioned(7, 2)]}
+            ]
+        }),
+    )
+    .await;
+    let managed = ManagedLsp::Generic(&engine);
+    let listed = lsp_code_actions(&managed, "prodCode/assists", json!({}))
+        .await
+        .unwrap();
+    let second_id = listed[1]["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        lsp_code_actions(&managed, "prodCode/applyAssist", json!({"id": second_id}))
+            .await
+            .unwrap(),
+        versioned(7, 2)["edit"],
+        "the line-7 fix, at the version given now"
+    );
+}
