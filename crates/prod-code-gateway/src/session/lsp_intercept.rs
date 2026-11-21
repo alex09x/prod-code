@@ -169,6 +169,35 @@ pub fn intercept_assists_for_managed(
     out_tx: &SharedOutputSender,
     translator: &PathTranslator,
 ) -> Option<Flow> {
+    // Safe delete on a generic server is Rust Intelligence's `ridx/safeDelete`; a server
+    // without it gets the request as before (and refuses it).
+    if let (Some("prodCode/safeDelete"), Some(req_id), Some(generic)) =
+        (method, id, view.workspace.generic_engine.clone())
+    {
+        let params = val.get("params").cloned().unwrap_or(serde_json::json!({}));
+        let out_tx_task = out_tx.clone();
+        let translator_task = translator.clone();
+        let r_id = req_id.clone();
+        TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+        tokio::task::spawn(async move {
+            let resp = match generic.ridx_safe_delete(&params).await {
+                Some(Ok(edit)) => {
+                    serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "result": edit })
+                }
+                Some(Err(err)) => serde_json::json!({
+                    "jsonrpc": "2.0", "id": r_id,
+                    "error": { "code": -32602, "message": format!("{err:#}") }
+                }),
+                None => serde_json::json!({
+                    "jsonrpc": "2.0", "id": r_id,
+                    "error": { "code": -32601, "message": "this language server has no safe delete" }
+                }),
+            };
+            let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+            let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+        });
+        return Some(Flow::Next);
+    }
     if let (Some(pm @ ("prodCode/assists" | "prodCode/applyAssist")), Some(req_id)) = (method, id)
         && (view.workspace.go_engine.is_some() || view.workspace.generic_engine.is_some())
     {

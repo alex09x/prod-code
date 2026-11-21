@@ -98,6 +98,50 @@ pub fn collect_candidates(
     symbols: &[serde_json::Value],
     out: &mut Vec<CandidateSymbol>,
 ) -> std::result::Result<(), String> {
+    collect_within(symbols, &Parents::default(), out)
+}
+
+/// The symbols a nested symbol is listed under, as ` > `-joined lowercased names: all of them,
+/// and only the modules (namespaces, packages) among them.
+#[derive(Default)]
+struct Parents {
+    all: String,
+    modules: String,
+}
+
+impl Parents {
+    fn join(chain: &str, name: &str) -> String {
+        if chain.is_empty() {
+            name.to_string()
+        } else {
+            format!("{chain} > {name}")
+        }
+    }
+
+    fn under(&self, name: &str, kind: u64) -> Self {
+        let name = name.to_ascii_lowercase();
+        Self {
+            all: Self::join(&self.all, &name),
+            // Module, Namespace, Package: only these make their items tests by name.
+            modules: if matches!(kind, 2..=4) {
+                Self::join(&self.modules, &name)
+            } else {
+                self.modules.clone()
+            },
+        }
+    }
+}
+
+/// [`collect_candidates`] for symbols nested under `parents`. A hierarchical answer (Rust
+/// Intelligence, most servers) gives children no `containerName`: their container is the parent
+/// they are listed under. An `impl Shape for Circle` parent makes a method a trait method; only
+/// a module parent named like `tests` makes its items tests, so `fn run_contests() { fn
+/// helper() {} }` is still checked.
+fn collect_within(
+    symbols: &[serde_json::Value],
+    parents: &Parents,
+    out: &mut Vec<CandidateSymbol>,
+) -> std::result::Result<(), String> {
     for sym in symbols {
         let malformed = || crate::impact::unreadable("textDocument/documentSymbol", sym);
         let (Some(name), Some(kind)) = (
@@ -109,14 +153,18 @@ pub fn collect_candidates(
         if name.is_empty() || !(1..=26).contains(&kind) {
             return Err(malformed());
         }
-        let container = match sym.get("containerName") {
-            None | Some(serde_json::Value::Null) => String::new(),
-            Some(serde_json::Value::String(c)) => c.to_ascii_lowercase(),
+        // A flat answer's containerName stands for both chains, as before.
+        let (container, modules) = match sym.get("containerName") {
+            None | Some(serde_json::Value::Null) => (parents.all.clone(), parents.modules.clone()),
+            Some(serde_json::Value::String(c)) => {
+                let c = c.to_ascii_lowercase();
+                (c.clone(), c)
+            }
             Some(_) => return Err(malformed()),
         };
         // Items inside a test module are tests, whatever they are called. rust-analyzer labels
         // modules by name ("tests"), other servers by kind and name.
-        if container.split(" > ").any(|c| {
+        if modules.split(" > ").any(|c| {
             let c = c.trim_start_matches("mod ");
             c == "tests" || c == "test" || c.ends_with("tests")
         }) {
@@ -170,7 +218,13 @@ pub fn collect_candidates(
         }
         match sym.get("children") {
             None | Some(serde_json::Value::Null) => {}
-            Some(serde_json::Value::Array(children)) => collect_candidates(children, out)?,
+            Some(serde_json::Value::Array(children)) => {
+                let own = Parents {
+                    all: container,
+                    modules,
+                };
+                collect_within(children, &own.under(name, kind), out)?
+            }
             Some(_) => return Err(malformed()),
         }
     }

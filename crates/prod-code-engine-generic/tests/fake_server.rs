@@ -186,6 +186,10 @@ while True:
                 "message": "something the fake server disliked"
             }]
         }})
+    elif method == "ridx/safeDelete":
+        # Rust Intelligence's deletion: an edit, unless FAKE_RIDX_SAFE_DELETE says otherwise.
+        answer = os.environ.get("FAKE_RIDX_SAFE_DELETE", '{"edit": {"changes": {"file:///w/src/util.rs": []}}}')
+        send({"jsonrpc": "2.0", "id": message["id"], "result": json.loads(answer)})
     elif method == "ridx/status":
         # Rust Intelligence's per-root index state (FAKE_RIDX_STATUS, else one indexed root).
         status = os.environ.get("FAKE_RIDX_STATUS", '{"roots": [{"root": "/w", "indexed": true, "error": null}]}')
@@ -3550,5 +3554,96 @@ async fn a_server_started_as_ridx_without_its_capabilities_is_refused_for_valida
     assert!(
         format!("{err:#}").contains("Upgrade Rust Intelligence"),
         "{err:#}"
+    );
+}
+
+/// A deletion is asked of ridx only when its safeDelete refuses on an index behind saved
+/// changes (version 2) and `ridx/status` shows nothing being rebuilt: a call saved in another
+/// file a moment ago, not indexed yet, must not let an older index approve the deletion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ridx_deletion_needs_a_fresh_index() {
+    let (dir, script) = workspace();
+    let params = serde_json::json!({ "textDocument": { "uri": "file:///w/src/util.rs" },
+        "position": { "line": 0, "character": 7 } });
+
+    // Version 1 may read an index behind saved changes: refused, nothing asked.
+    let v1 = GenericLspEngine::spawn(
+        dir.path(),
+        ridx_config(
+            &script,
+            serde_json::json!({ "ridx/status": 1, "ridx/safeDelete": 1 }),
+        ),
+    )
+    .await
+    .expect("the fake server starts");
+    let err = v1
+        .ridx_safe_delete(&params)
+        .await
+        .expect("declared")
+        .expect_err("refused");
+    assert!(
+        format!("{err:#}").contains("Upgrade Rust Intelligence"),
+        "{err:#}"
+    );
+
+    // Version 2 while the root is being rebuilt (the saved caller is not indexed yet): refused.
+    let mut rebuilding = ridx_config(
+        &script,
+        serde_json::json!({ "ridx/status": 1, "ridx/safeDelete": 2 }),
+    );
+    rebuilding.env.insert(
+        "FAKE_RIDX_STATUS".to_string(),
+        serde_json::json!({ "roots": [{ "root": "/w", "indexed": true, "error": null,
+            "building": true }] })
+        .to_string(),
+    );
+    let engine = GenericLspEngine::spawn(dir.path(), rebuilding)
+        .await
+        .expect("the fake server starts");
+    let err = engine
+        .ridx_safe_delete(&params)
+        .await
+        .expect("declared")
+        .expect_err("refused");
+    assert!(format!("{err:#}").contains("being rebuilt"), "{err:#}");
+
+    // Version 2 refusing on its own stale index: its reason is passed on.
+    let mut stale = ridx_config(
+        &script,
+        serde_json::json!({ "ridx/status": 1, "ridx/safeDelete": 2 }),
+    );
+    stale.env.insert(
+        "FAKE_RIDX_SAFE_DELETE".to_string(),
+        serde_json::json!({ "refused": true, "reason": "staleIndex", "remainingUses": [] })
+            .to_string(),
+    );
+    let engine = GenericLspEngine::spawn(dir.path(), stale)
+        .await
+        .expect("the fake server starts");
+    let err = engine
+        .ridx_safe_delete(&params)
+        .await
+        .expect("declared")
+        .expect_err("refused");
+    assert!(format!("{err:#}").contains("staleIndex"), "{err:#}");
+
+    // Version 2, indexed and idle: the edit.
+    let fresh = GenericLspEngine::spawn(
+        dir.path(),
+        ridx_config(
+            &script,
+            serde_json::json!({ "ridx/status": 1, "ridx/safeDelete": 2 }),
+        ),
+    )
+    .await
+    .expect("the fake server starts");
+    let edit = fresh
+        .ridx_safe_delete(&params)
+        .await
+        .expect("declared")
+        .expect("an edit");
+    assert!(
+        edit["changes"].get("file:///w/src/util.rs").is_some(),
+        "{edit}"
     );
 }
