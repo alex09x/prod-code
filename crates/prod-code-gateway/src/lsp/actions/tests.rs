@@ -130,67 +130,72 @@ async fn listing_and_application_select_exact_edits_resolve_lazy_edits_and_repor
     );
 }
 
-/// Actions that share a server id (one `auto_import` per import path) are listed with their
-/// subtype, applied by it, and refused as ambiguous without it.
+/// Actions that share a server id (one `auto_import` per import path) are listed by variant
+/// ids naming the variant. Applying re-queries the server: a reordered list still applies the
+/// variant asked for, a variant that is gone is refused rather than replaced by the one left,
+/// a plain id that is shared is ambiguous, and a subtype selects nothing here.
 #[tokio::test]
-async fn actions_sharing_a_server_id_are_chosen_by_subtype() {
+async fn actions_sharing_a_server_id_are_chosen_by_their_variant() {
     let temp = tempfile::tempdir().unwrap();
     let first = json!({"changes":{"file:///a.rs":[{"newText":"use a::Map;\n"}]}});
     let second = json!({"changes":{"file:///a.rs":[{"newText":"use b::Map;\n"}]}});
+    let a = json!({"title":"Import `a::Map`","kind":"quickfix","edit":first,"data":{"id":"auto_import"}});
+    let b = json!({"title":"Import `b::Map`","kind":"quickfix","edit":second,"data":{"id":"auto_import"}});
+    let typed = json!({"title":"Add explicit type","kind":"refactor.rewrite","edit":first,"data":{"id":"add_explicit_type"}});
     let engine = crate::lsp::test_support::server(
         temp.path(),
         json!({
             "textDocument/diagnostic":{"result":{"kind":"full","items":[]}},
-            "textDocument/codeAction":{"result":[
-                {"title":"Import `a::Map`","kind":"quickfix","edit":first,"data":{"id":"auto_import"}},
-                {"title":"Import `b::Map`","kind":"quickfix","edit":second,"data":{"id":"auto_import"}},
-                {"title":"Add explicit type","kind":"refactor.rewrite","edit":first,"data":{"id":"add_explicit_type"}}
-            ]}
+            "textDocument/codeAction":[
+                {"result":[a, b, typed]},
+                {"result":[b, a, typed]},
+                {"result":[a, typed]},
+                {"result":[a, b]},
+                {"result":[a, b]}
+            ]
         }),
     )
     .await;
     let managed = ManagedLsp::Generic(&engine);
+    let apply =
+        |params: serde_json::Value| lsp_code_actions(&managed, "prodCode/applyAssist", params);
     assert_eq!(
         lsp_code_actions(&managed, "prodCode/assists", json!({}))
             .await
             .unwrap(),
         json!([
-            {"id":"auto_import","kind":"quickfix","label":"Import `a::Map`","subtype":0},
-            {"id":"auto_import","kind":"quickfix","label":"Import `b::Map`","subtype":1},
+            {"id":"auto_import:import_a_map","kind":"quickfix","label":"Import `a::Map`"},
+            {"id":"auto_import:import_b_map","kind":"quickfix","label":"Import `b::Map`"},
             {"id":"add_explicit_type","kind":"refactor.rewrite","label":"Add explicit type"}
         ])
     );
-    for (subtype, edit) in [(0, &first), (1, &second)] {
-        assert_eq!(
-            &lsp_code_actions(
-                &managed,
-                "prodCode/applyAssist",
-                json!({"id":"auto_import","subtype":subtype})
-            )
+    // Reordered: the variant asked for, not the one now first.
+    assert_eq!(
+        apply(json!({"id":"auto_import:import_b_map"}))
             .await
             .unwrap(),
-            edit
-        );
-    }
-    let ambiguous = lsp_code_actions(
-        &managed,
-        "prodCode/applyAssist",
-        json!({"id":"auto_import"}),
-    )
-    .await
-    .unwrap_err()
-    .to_string();
+        second
+    );
+    // Gone: refused, although `a::Map` is now the only `auto_import`.
+    let gone = apply(json!({"id":"auto_import:import_b_map"}))
+        .await
+        .unwrap_err()
+        .to_string();
     assert!(
-        ambiguous.contains("ambiguous") && ambiguous.contains("1: Import `b::Map`"),
+        gone.contains("no code action `auto_import:import_b_map`"),
+        "{gone}"
+    );
+    let ambiguous = apply(json!({"id":"auto_import"}))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        ambiguous.contains("ambiguous") && ambiguous.contains("`auto_import:import_b_map`"),
         "{ambiguous}"
     );
-    let missing = lsp_code_actions(
-        &managed,
-        "prodCode/applyAssist",
-        json!({"id":"auto_import","subtype":2}),
-    )
-    .await
-    .unwrap_err()
-    .to_string();
-    assert!(missing.contains("no subtype 2"), "{missing}");
+    let subtype = apply(json!({"id":"auto_import:import_a_map","subtype":0}))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(subtype.contains("a subtype does not select"), "{subtype}");
 }

@@ -32,11 +32,15 @@ pub(crate) fn code_action_id(index: usize, action: &serde_json::Value) -> String
     {
         return id.to_string();
     }
-    let title = action
+    format!("{index}:{}", title_slug(action, 6))
+}
+
+/// The title's ASCII words, lowercased and joined by `_`, at most `words` of them.
+fn title_slug(action: &serde_json::Value, words: usize) -> String {
+    action
         .get("title")
         .and_then(|t| t.as_str())
-        .unwrap_or("action");
-    let slug: String = title
+        .unwrap_or("action")
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() {
@@ -48,10 +52,9 @@ pub(crate) fn code_action_id(index: usize, action: &serde_json::Value) -> String
         .collect::<String>()
         .split('_')
         .filter(|p| !p.is_empty())
-        .take(6)
+        .take(words)
         .collect::<Vec<_>>()
-        .join("_");
-    format!("{index}:{slug}")
+        .join("_")
 }
 
 /// Lists (`prodCode/assists`) or applies (`prodCode/applyAssist`) LSP code actions on a
@@ -102,6 +105,7 @@ pub(crate) async fn lsp_code_actions(
         .enumerate()
         .map(|(i, a)| code_action_id(i, a))
         .collect();
+    let variants: Vec<Option<String>> = actions.iter().map(variant_id).collect();
     match method {
         "prodCode/assists" => Ok(serde_json::Value::Array(
             actions
@@ -115,17 +119,19 @@ pub(crate) async fn lsp_code_actions(
                             "action"
                         },
                     );
-                    let mut item = serde_json::json!({
-                        "id": ids[i],
+                    // Actions sharing a server id (one `auto_import` per import path) are
+                    // listed by their variant id, which names the variant itself, so a later
+                    // listing that drops or reorders candidates cannot hand over another one.
+                    let shared = ids.iter().filter(|id| **id == ids[i]).count() > 1;
+                    let id = match (&variants[i], shared) {
+                        (Some(variant), true) => variant.clone(),
+                        _ => ids[i].clone(),
+                    };
+                    serde_json::json!({
+                        "id": id,
                         "kind": kind,
                         "label": a.get("title").and_then(|t| t.as_str()).unwrap_or(""),
-                    });
-                    // Actions sharing a server id (every `auto_import` candidate) are told
-                    // apart by their place among those with that id.
-                    if let Some(subtype) = shared_id_subtype(&ids, i) {
-                        item["subtype"] = serde_json::json!(subtype);
-                    }
-                    item
+                    })
                 })
                 .collect(),
         )),
@@ -135,53 +141,50 @@ pub(crate) async fn lsp_code_actions(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let same: Vec<usize> = (0..actions.len()).filter(|&i| ids[i] == wanted).collect();
-            if same.len() > 1 {
-                let Some(subtype) = params.get("subtype").and_then(|v| v.as_u64()) else {
-                    anyhow::bail!(
-                        "code action `{wanted}` is ambiguous at this position: pass its subtype ({})",
-                        same.iter()
-                            .enumerate()
-                            .map(|(n, &i)| format!(
-                                "{n}: {}",
-                                actions[i]
-                                    .get("title")
-                                    .and_then(|t| t.as_str())
-                                    .unwrap_or("")
-                            ))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    );
-                };
-                let Some(&chosen) = usize::try_from(subtype).ok().and_then(|n| same.get(n)) else {
-                    anyhow::bail!(
-                        "code action `{wanted}` has no subtype {subtype} (0..{})",
-                        same.len()
-                    );
-                };
-                return apply_action(engine, &actions[chosen]).await;
-            }
-            let found = actions
-                .iter()
-                .enumerate()
-                .find(|(i, _)| ids[*i] == wanted)
-                .or_else(|| {
-                    // Fall back to the title, so an id from an older listing still matches.
-                    let title = wanted.split_once(':').map(|(_, t)| t).unwrap_or(&wanted);
-                    actions
-                        .iter()
-                        .enumerate()
-                        .find(|(i, a)| code_action_id(*i, a).ends_with(&format!(":{title}")))
-                });
-            let Some((_, action)) = found else {
+            if params.get("subtype").is_some_and(|s| !s.is_null()) {
                 anyhow::bail!(
-                    "no code action `{wanted}` at this position (available: {})",
-                    actions
+                    "code action `{wanted}`: a subtype does not select a code action of this \
+                     language server; pass the id it was listed with"
+                );
+            }
+            // The id as listed: a server id that is unique now, or a variant id. A variant
+            // that is gone, or a server id now shared, is refused rather than guessed.
+            let matching: Vec<usize> = (0..actions.len())
+                .filter(|&i| ids[i] == wanted || variants[i].as_deref() == Some(wanted.as_str()))
+                .collect();
+            if matching.len() > 1 {
+                anyhow::bail!(
+                    "code action `{wanted}` is ambiguous at this position: pass one of {}",
+                    matching
                         .iter()
-                        .enumerate()
-                        .map(|(i, a)| code_action_id(i, a))
+                        .map(|&i| format!(
+                            "`{}` ({})",
+                            variants[i].as_deref().unwrap_or(&ids[i]),
+                            actions[i]
+                                .get("title")
+                                .and_then(|t| t.as_str())
+                                .unwrap_or("")
+                        ))
                         .collect::<Vec<_>>()
                         .join(", ")
+                );
+            }
+            let found = matching.first().map(|&i| &actions[i]).or_else(|| {
+                // Fall back to the title, so an index id from an older listing still matches.
+                let title = wanted.split_once(':').map(|(_, t)| t).unwrap_or(&wanted);
+                actions
+                    .iter()
+                    .enumerate()
+                    .find(|(i, a)| {
+                        variants[*i].is_none()
+                            && code_action_id(*i, a).ends_with(&format!(":{title}"))
+                    })
+                    .map(|(_, a)| a)
+            });
+            let Some(action) = found else {
+                anyhow::bail!(
+                    "no code action `{wanted}` at this position (available: {})",
+                    ids.join(", ")
                 );
             };
             apply_action(engine, action).await
@@ -189,10 +192,14 @@ pub(crate) async fn lsp_code_actions(
     }
 }
 
-/// The place of action `i` among the actions that share its id, when more than one does.
-fn shared_id_subtype(ids: &[String], i: usize) -> Option<usize> {
-    let same = ids.iter().filter(|id| **id == ids[i]).count();
-    (same > 1).then(|| ids[..i].iter().filter(|id| **id == ids[i]).count())
+/// `data.id:slug-of-the-whole-title` for an action with a server id: the variant itself
+/// (`auto_import:import_b_map`), not its place in one listing.
+fn variant_id(action: &serde_json::Value) -> Option<String> {
+    let id = action
+        .pointer("/data/id")
+        .and_then(|v| v.as_str())
+        .filter(|id| !id.is_empty())?;
+    Some(format!("{id}:{}", title_slug(action, usize::MAX)))
 }
 
 /// The WorkspaceEdit of one code action: its own edit, its resolved edit, or what its command

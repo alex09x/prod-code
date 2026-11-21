@@ -12,7 +12,8 @@ use prod_code_engine_generic::{GenericLspConfig, GenericLspEngine};
 use serde_json::Value;
 use std::path::Path;
 
-/// A framed local server with explicit answers and an ordered notification transcript.
+/// A framed local server with explicit answers and an ordered notification transcript. An
+/// answer given as a JSON array is a sequence: one element per request, the last repeating.
 pub(crate) async fn server(root: &Path, responses: Value) -> GenericLspEngine {
     GenericLspEngine::spawn(
         root,
@@ -54,7 +55,10 @@ while True:
     if method == 'initialize':
         answer = {'result':{'capabilities':{'diagnosticProvider':{'interFileDependencies':False,'workspaceDiagnostics':False}}}}
     elif method == 'test/events': answer = {'result':events}
-    else: answer = answers.get(method, {'result':None})
+    else:
+        answer = answers.get(method, {'result':None})
+        # A list is a sequence of answers, one per request; the last one repeats.
+        if isinstance(answer, list): answer = answer.pop(0) if len(answer) > 1 else answer[0]
     send(dict({'jsonrpc':'2.0','id':msg['id']}, **answer))
 "#).unwrap();
     vec![
