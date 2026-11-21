@@ -97,6 +97,11 @@ pub(crate) async fn lsp_code_actions(
         )
         .await?;
     let actions = actions.as_array().cloned().unwrap_or_default();
+    let ids: Vec<String> = actions
+        .iter()
+        .enumerate()
+        .map(|(i, a)| code_action_id(i, a))
+        .collect();
     match method {
         "prodCode/assists" => Ok(serde_json::Value::Array(
             actions
@@ -110,11 +115,17 @@ pub(crate) async fn lsp_code_actions(
                             "action"
                         },
                     );
-                    serde_json::json!({
-                        "id": code_action_id(i, a),
+                    let mut item = serde_json::json!({
+                        "id": ids[i],
                         "kind": kind,
                         "label": a.get("title").and_then(|t| t.as_str()).unwrap_or(""),
-                    })
+                    });
+                    // Actions sharing a server id (every `auto_import` candidate) are told
+                    // apart by their place among those with that id.
+                    if let Some(subtype) = shared_id_subtype(&ids, i) {
+                        item["subtype"] = serde_json::json!(subtype);
+                    }
+                    item
                 })
                 .collect(),
         )),
@@ -124,10 +135,36 @@ pub(crate) async fn lsp_code_actions(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            let same: Vec<usize> = (0..actions.len()).filter(|&i| ids[i] == wanted).collect();
+            if same.len() > 1 {
+                let Some(subtype) = params.get("subtype").and_then(|v| v.as_u64()) else {
+                    anyhow::bail!(
+                        "code action `{wanted}` is ambiguous at this position: pass its subtype ({})",
+                        same.iter()
+                            .enumerate()
+                            .map(|(n, &i)| format!(
+                                "{n}: {}",
+                                actions[i]
+                                    .get("title")
+                                    .and_then(|t| t.as_str())
+                                    .unwrap_or("")
+                            ))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                };
+                let Some(&chosen) = usize::try_from(subtype).ok().and_then(|n| same.get(n)) else {
+                    anyhow::bail!(
+                        "code action `{wanted}` has no subtype {subtype} (0..{})",
+                        same.len()
+                    );
+                };
+                return apply_action(engine, &actions[chosen]).await;
+            }
             let found = actions
                 .iter()
                 .enumerate()
-                .find(|(i, a)| code_action_id(*i, a) == wanted)
+                .find(|(i, _)| ids[*i] == wanted)
                 .or_else(|| {
                     // Fall back to the title, so an id from an older listing still matches.
                     let title = wanted.split_once(':').map(|(_, t)| t).unwrap_or(&wanted);
@@ -147,51 +184,64 @@ pub(crate) async fn lsp_code_actions(
                         .join(", ")
                 );
             };
-            if let Some(edit) = action.get("edit").filter(|e| !e.is_null()) {
-                return Ok(edit.clone());
-            }
-            if action.get("title").is_some()
-                && action.get("command").and_then(|c| c.as_str()).is_none()
-            {
-                let resolved = engine.request("codeAction/resolve", action.clone()).await?;
-                if let Some(edit) = resolved.get("edit").filter(|e| !e.is_null()) {
-                    return Ok(edit.clone());
-                }
-            }
-            // A command-only action (clangd refactorings, some tsserver fixes): run it and
-            // capture the edit the server pushes back.
-            let command = match action.get("command") {
-                Some(c) if c.is_object() => c.clone(),
-                Some(c) if c.is_string() => serde_json::json!({
-                    "command": c,
-                    "arguments": action.get("arguments").cloned().unwrap_or(serde_json::json!([])),
-                }),
-                _ => serde_json::Value::Null,
-            };
-            let title = action
-                .get("title")
-                .and_then(|t| t.as_str())
-                .unwrap_or(&wanted)
-                .to_string();
-            if command.is_null() {
-                anyhow::bail!("code action `{title}` carries neither an edit nor a command");
-            }
-            if let ManagedLsp::Generic(generic) = engine
-                && let Some(edit) = generic
-                    .execute_command_capturing_edit(command.clone())
-                    .await?
-            {
-                return Ok(edit);
-            }
-            anyhow::bail!(
-                "code action `{title}` ran the server command `{}` without producing an edit",
-                command
-                    .get("command")
-                    .and_then(|c| c.as_str())
-                    .unwrap_or("?")
-            )
+            apply_action(engine, action).await
         }
     }
+}
+
+/// The place of action `i` among the actions that share its id, when more than one does.
+fn shared_id_subtype(ids: &[String], i: usize) -> Option<usize> {
+    let same = ids.iter().filter(|id| **id == ids[i]).count();
+    (same > 1).then(|| ids[..i].iter().filter(|id| **id == ids[i]).count())
+}
+
+/// The WorkspaceEdit of one code action: its own edit, its resolved edit, or what its command
+/// pushes back.
+async fn apply_action(
+    engine: &ManagedLsp<'_>,
+    action: &serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    if let Some(edit) = action.get("edit").filter(|e| !e.is_null()) {
+        return Ok(edit.clone());
+    }
+    if action.get("title").is_some() && action.get("command").and_then(|c| c.as_str()).is_none() {
+        let resolved = engine.request("codeAction/resolve", action.clone()).await?;
+        if let Some(edit) = resolved.get("edit").filter(|e| !e.is_null()) {
+            return Ok(edit.clone());
+        }
+    }
+    // A command-only action (clangd refactorings, some tsserver fixes): run it and capture
+    // the edit the server pushes back.
+    let command = match action.get("command") {
+        Some(c) if c.is_object() => c.clone(),
+        Some(c) if c.is_string() => serde_json::json!({
+            "command": c,
+            "arguments": action.get("arguments").cloned().unwrap_or(serde_json::json!([])),
+        }),
+        _ => serde_json::Value::Null,
+    };
+    let title = action
+        .get("title")
+        .and_then(|t| t.as_str())
+        .unwrap_or("action")
+        .to_string();
+    if command.is_null() {
+        anyhow::bail!("code action `{title}` carries neither an edit nor a command");
+    }
+    if let ManagedLsp::Generic(generic) = engine
+        && let Some(edit) = generic
+            .execute_command_capturing_edit(command.clone())
+            .await?
+    {
+        return Ok(edit);
+    }
+    anyhow::bail!(
+        "code action `{title}` ran the server command `{}` without producing an edit",
+        command
+            .get("command")
+            .and_then(|c| c.as_str())
+            .unwrap_or("?")
+    )
 }
 
 /// Builds an LSP `WorkspaceEdit` (as `documentChanges`) from a refactoring outcome: new files

@@ -83,6 +83,19 @@ fn nested_symbols_take_their_container_from_their_parent() {
             30,
             serde_json::json!([at("runs", 12, 32, serde_json::json!([]))]),
         ),
+        // A function or class named like a test module does not make its items tests.
+        at(
+            "run_contests",
+            12,
+            40,
+            serde_json::json!([at("unused_helper", 12, 41, serde_json::json!([]))]),
+        ),
+        at(
+            "Contests",
+            5,
+            50,
+            serde_json::json!([at("score", 6, 51, serde_json::json!([]))]),
+        ),
     ];
     let mut out = Vec::new();
     assert_eq!(collect(&symbols, &mut out), Ok(()));
@@ -99,6 +112,12 @@ fn nested_symbols_take_their_container_from_their_parent() {
         !kinds.iter().any(|(n, _)| n == "runs"),
         "a test is not a candidate: {kinds:?}"
     );
+    for name in ["unused_helper", "score"] {
+        assert!(
+            kinds.iter().any(|(n, _)| n == name),
+            "{name} is checked: {kinds:?}"
+        );
+    }
 }
 
 #[test]

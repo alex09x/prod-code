@@ -40,9 +40,25 @@ pub fn declares_status(capabilities: &Value) -> bool {
     level(capabilities, "/experimental/ridx/methods/ridx~1status") >= 1
 }
 
-/// `capabilities.experimental.ridx.methods["ridx/safeDelete"]`.
+/// `capabilities.experimental.ridx.methods["ridx/safeDelete"]`: the method exists.
 pub fn declares_safe_delete(capabilities: &Value) -> bool {
     level(capabilities, "/experimental/ridx/methods/ridx~1safeDelete") >= 1
+}
+
+/// Version 2 of `ridx/safeDelete`: it refuses with `staleIndex` while any change it has been
+/// told of (a watched file, a save) is not indexed yet, so its "no uses" covers every saved file.
+pub fn declares_fresh_safe_delete(capabilities: &Value) -> bool {
+    level(capabilities, "/experimental/ridx/methods/ridx~1safeDelete") >= 2
+}
+
+/// Why an index answer may not cover the latest saved changes: a root still being rebuilt.
+pub fn index_building(status: &Value) -> Option<String> {
+    status.get("roots")?.as_array()?.iter().find_map(|root| {
+        (root.get("building").and_then(Value::as_bool) == Some(true)).then(|| {
+            let name = root.get("root").and_then(Value::as_str).unwrap_or("?");
+            format!("the ridx index of {name} is being rebuilt")
+        })
+    })
 }
 
 /// The edit of a `ridx/safeDelete` answer, or why nothing may be deleted: the refusal's reason
@@ -214,17 +230,49 @@ impl GenericLspEngine {
     /// `ridx/safeDelete {textDocument, position}` for a server that declares it: the
     /// WorkspaceEdit that deletes the item, or an error with the refusal's reason and the uses
     /// still left. `None` when the server does not declare the method.
+    ///
+    /// A deletion is written at once, so it is asked only of a ridx that refuses (`staleIndex`)
+    /// while any saved change it has been told of is not indexed yet (version 2 of the method),
+    /// and only while `ridx/status` shows every root indexed, without an error, not rebuilding.
+    /// A caller saved in another file a moment ago is then never missed for an older index.
     pub async fn ridx_safe_delete(&self, params: &Value) -> Option<Result<Value>> {
         if !self.caps_satisfy(declares_safe_delete).await {
             return None;
+        }
+        Some(self.fresh_safe_delete(params).await)
+    }
+
+    async fn fresh_safe_delete(&self, params: &Value) -> Result<Value> {
+        if !self.caps_satisfy(declares_fresh_safe_delete).await {
+            anyhow::bail!(
+                "this ridx's safe delete can read an index that has not caught up with changes \
+                 saved in other files, so nothing is deleted with it. Upgrade Rust Intelligence \
+                 (methods[\"ridx/safeDelete\"] >= 2)"
+            );
+        }
+        let status = self.ridx_status().await?;
+        if let Some(reason) = index_failure(&status).or_else(|| index_building(&status)) {
+            anyhow::bail!("{reason}; nothing is deleted until it is indexed");
         }
         let request = serde_json::json!({
             "textDocument": params.get("textDocument").cloned().unwrap_or(Value::Null),
             "position": params.get("position").cloned().unwrap_or(Value::Null),
         });
-        Some(match self.send_request("ridx/safeDelete", request).await {
-            Err(err) => Err(err),
-            Ok(answer) => safe_delete_outcome(&answer),
+        safe_delete_outcome(&self.send_request("ridx/safeDelete", request).await?)
+    }
+
+    async fn ridx_status(&self) -> Result<Value> {
+        // Boxed: the status request goes through `send_request`, which calls the index gate
+        // (not for `ridx/status` itself, which needs no index).
+        let answer = Box::pin(self.send_request("ridx/status", serde_json::json!({}))).await?;
+        answer.get("result").cloned().ok_or_else(|| {
+            anyhow!(
+                "ridx/status failed: {}",
+                answer
+                    .get("error")
+                    .map(Value::to_string)
+                    .unwrap_or_default()
+            )
         })
     }
 
@@ -236,19 +284,7 @@ impl GenericLspEngine {
         if !self.caps_satisfy(declares_status).await {
             return Ok(());
         }
-        // Boxed: the status request goes through `send_request`, which calls this gate (not
-        // for `ridx/status` itself, which needs no index).
-        let answer = Box::pin(self.send_request("ridx/status", serde_json::json!({}))).await?;
-        let status = answer.get("result").ok_or_else(|| {
-            anyhow!(
-                "ridx/status failed: {}",
-                answer
-                    .get("error")
-                    .map(Value::to_string)
-                    .unwrap_or_default()
-            )
-        })?;
-        match index_failure(status) {
+        match index_failure(&self.ridx_status().await?) {
             Some(reason) => Err(anyhow!("{reason}; its index answers are not final")),
             None => Ok(()),
         }
@@ -294,6 +330,19 @@ mod tests {
     fn a_safe_delete_answer_is_an_edit_or_its_refusal_with_the_uses_left() {
         assert!(declares_safe_delete(&ridx(json!({"ridx/safeDelete": 1}))));
         assert!(!declares_safe_delete(&ridx(json!({"ridx/status": 1}))));
+        assert!(!declares_fresh_safe_delete(&ridx(
+            json!({"ridx/safeDelete": 1})
+        )));
+        assert!(declares_fresh_safe_delete(&ridx(
+            json!({"ridx/safeDelete": 2})
+        )));
+        let building = json!({"roots": [{"root": "/w", "indexed": true, "building": true}]});
+        assert_eq!(
+            index_building(&building).as_deref(),
+            Some("the ridx index of /w is being rebuilt")
+        );
+        let idle = json!({"roots": [{"root": "/w", "indexed": true, "building": false}]});
+        assert_eq!(index_building(&idle), None);
         let edit = json!({"changes": {"file:///w/src/util.rs": []}});
         assert_eq!(
             safe_delete_outcome(&json!({"result": {"edit": edit}})).unwrap(),
