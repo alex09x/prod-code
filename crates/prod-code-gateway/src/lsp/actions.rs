@@ -99,7 +99,7 @@ pub(crate) async fn lsp_code_actions(
             }),
         )
         .await?;
-    let actions = actions.as_array().cloned().unwrap_or_default();
+    let actions = without_equivalent_duplicates(actions.as_array().cloned().unwrap_or_default());
     let ids: Vec<String> = actions
         .iter()
         .enumerate()
@@ -192,26 +192,54 @@ pub(crate) async fn lsp_code_actions(
     }
 }
 
-/// `data.id:title` for an action with a server id, the title encoded losslessly: the variant
-/// itself, not its place in one listing. ASCII letters and digits stand as they are and every
-/// other byte as `~XX`, so `Import `net_http::Map`` and `Import `net::http::Map`` stay apart.
+/// The actions with a later copy of an earlier one removed: the same server id and digest, and
+/// an edit already in hand, so applying either changes the same text. Lazy actions (no edit
+/// yet) are kept as they are, and refused as ambiguous when indistinguishable.
+fn without_equivalent_duplicates(actions: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    let mut seen = std::collections::HashSet::new();
+    actions
+        .into_iter()
+        .filter(|a| {
+            let has_edit = a.get("edit").is_some_and(|e| !e.is_null());
+            match variant_id(a) {
+                Some(variant) if has_edit => seen.insert(variant),
+                _ => true,
+            }
+        })
+        .collect()
+}
+
+/// `data.id:digest` for an action with a server id: the variant itself, not its place in one
+/// listing. The digest covers what the action does — its title, its edit, the diagnostics it
+/// fixes (range, code, message) and its command — so two `remove_unnecessary_mut` fixes with
+/// one title but different ranges, or two import paths, never share a selector. Request
+/// metadata (`data` beyond the id) is left out. Two actions with the same digest do the same.
 fn variant_id(action: &serde_json::Value) -> Option<String> {
     let id = action
         .pointer("/data/id")
         .and_then(|v| v.as_str())
         .filter(|id| !id.is_empty())?;
-    let title = action.get("title").and_then(|t| t.as_str()).unwrap_or("");
-    let encoded: String = title
-        .bytes()
-        .map(|b| {
-            if b.is_ascii_alphanumeric() {
-                char::from(b).to_string()
-            } else {
-                format!("~{b:02X}")
-            }
+    let diagnostics: Vec<serde_json::Value> = action
+        .get("diagnostics")
+        .and_then(|d| d.as_array())
+        .map(|ds| {
+            ds.iter()
+                .map(|d| {
+                    serde_json::json!({
+                        "range": d.get("range"), "code": d.get("code"), "message": d.get("message"),
+                    })
+                })
+                .collect()
         })
-        .collect();
-    Some(format!("{id}:{encoded}"))
+        .unwrap_or_default();
+    let target = serde_json::json!({
+        "title": action.get("title"),
+        "edit": action.get("edit"),
+        "diagnostics": diagnostics,
+        "command": action.get("command"),
+    });
+    let digest = xxhash_rust::xxh3::xxh3_64(target.to_string().as_bytes());
+    Some(format!("{id}:{digest:016x}"))
 }
 
 /// The WorkspaceEdit of one code action: its own edit, its resolved edit, or what its command

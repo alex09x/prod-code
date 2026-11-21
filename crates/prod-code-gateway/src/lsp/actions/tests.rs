@@ -130,28 +130,42 @@ async fn listing_and_application_select_exact_edits_resolve_lazy_edits_and_repor
     );
 }
 
-/// Actions that share a server id (one `auto_import` per import path) are listed by variant
-/// ids naming the variant losslessly (`net_http::Map` and `net::http::Map` stay apart). Applying re-queries the server: a reordered list still applies the
-/// variant asked for, a variant that is gone is refused rather than replaced by the one left,
-/// a plain id that is shared is ambiguous, and a subtype selects nothing here.
+/// One `remove_unnecessary_mut` fix per `unused_mut` warning: one id, one title, different
+/// ranges and edits.
+fn mut_fix(line: u64) -> serde_json::Value {
+    let range = json!({"start":{"line":line,"character":8},"end":{"line":line,"character":12}});
+    json!({
+        "title": "Remove unnecessary `mut`",
+        "kind": "quickfix",
+        "diagnostics": [{"range": range, "code": "unused_mut", "message": "variable does not need to be mutable"}],
+        "edit": {"changes":{"file:///a.rs":[{"range": range, "newText": ""}]}},
+        "data": {"id": "remove_unnecessary_mut"}
+    })
+}
+
+/// Actions that share a server id are listed by a variant id derived from what each one does
+/// (title, edit, the diagnostics it fixes). Applying re-queries the server: a reordered list
+/// still applies the variant asked for; a variant that is gone is refused rather than replaced
+/// by the one left, even when the other has the same title; a plain id that is shared is
+/// ambiguous; an exact copy of an action is one action; and a subtype selects nothing here.
 #[tokio::test]
-async fn actions_sharing_a_server_id_are_chosen_by_their_variant() {
+async fn actions_sharing_a_server_id_are_chosen_by_what_they_change() {
     let temp = tempfile::tempdir().unwrap();
-    let first = json!({"changes":{"file:///a.rs":[{"newText":"use net_http::Map;\n"}]}});
-    let second = json!({"changes":{"file:///a.rs":[{"newText":"use net::http::Map;\n"}]}});
-    let a = json!({"title":"Import `net_http::Map`","kind":"quickfix","edit":first,"data":{"id":"auto_import"}});
-    let b = json!({"title":"Import `net::http::Map`","kind":"quickfix","edit":second,"data":{"id":"auto_import"}});
-    let typed = json!({"title":"Add explicit type","kind":"refactor.rewrite","edit":first,"data":{"id":"add_explicit_type"}});
+    let (first, second) = (mut_fix(3), mut_fix(7));
+    let net_http = json!({"title":"Import `net_http::Map`","kind":"quickfix","data":{"id":"auto_import"},
+        "edit":{"changes":{"file:///a.rs":[{"newText":"use net_http::Map;\n"}]}}});
+    let net_dot_http = json!({"title":"Import `net::http::Map`","kind":"quickfix","data":{"id":"auto_import"},
+        "edit":{"changes":{"file:///a.rs":[{"newText":"use net::http::Map;\n"}]}}});
     let engine = crate::lsp::test_support::server(
         temp.path(),
         json!({
             "textDocument/diagnostic":{"result":{"kind":"full","items":[]}},
             "textDocument/codeAction":[
-                {"result":[a, b, typed]},
-                {"result":[b, a, typed]},
-                {"result":[a, typed]},
-                {"result":[a, b]},
-                {"result":[a, b]}
+                {"result":[first, second, net_http, net_dot_http, first]},
+                {"result":[second, first]},
+                {"result":[first]},
+                {"result":[first, second]},
+                {"result":[first, second]}
             ]
         }),
     )
@@ -159,42 +173,52 @@ async fn actions_sharing_a_server_id_are_chosen_by_their_variant() {
     let managed = ManagedLsp::Generic(&engine);
     let apply =
         |params: serde_json::Value| lsp_code_actions(&managed, "prodCode/applyAssist", params);
+    let listed = lsp_code_actions(&managed, "prodCode/assists", json!({}))
+        .await
+        .unwrap();
+    let ids: Vec<&str> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["id"].as_str().unwrap())
+        .collect();
+    // The exact copy of the first fix is one action; the other four are each their own.
+    assert_eq!(ids.len(), 4, "{listed}");
+    let unique: std::collections::HashSet<_> = ids.iter().collect();
     assert_eq!(
-        lsp_code_actions(&managed, "prodCode/assists", json!({}))
-            .await
-            .unwrap(),
-        json!([
-            {"id":"auto_import:Import~20~60net~5Fhttp~3A~3AMap~60","kind":"quickfix","label":"Import `net_http::Map`"},
-            {"id":"auto_import:Import~20~60net~3A~3Ahttp~3A~3AMap~60","kind":"quickfix","label":"Import `net::http::Map`"},
-            {"id":"add_explicit_type","kind":"refactor.rewrite","label":"Add explicit type"}
-        ])
+        unique.len(),
+        4,
+        "every variant has its own selector: {listed}"
     );
+    assert!(
+        ids.iter()
+            .all(|id| id.starts_with("remove_unnecessary_mut:") || id.starts_with("auto_import:")),
+        "{listed}"
+    );
+    let (first_id, second_id) = (ids[0].to_string(), ids[1].to_string());
     // Reordered: the variant asked for, not the one now first.
     assert_eq!(
-        apply(json!({"id":"auto_import:Import~20~60net~3A~3Ahttp~3A~3AMap~60"}))
-            .await
-            .unwrap(),
-        second
+        apply(json!({"id": second_id})).await.unwrap(),
+        second["edit"]
     );
-    // Gone: refused, although `a::Map` is now the only `auto_import`.
-    let gone = apply(json!({"id":"auto_import:Import~20~60net~3A~3Ahttp~3A~3AMap~60"}))
+    // Gone: refused, although the fix left has the same id and title.
+    let gone = apply(json!({"id": second_id}))
         .await
         .unwrap_err()
         .to_string();
     assert!(
-        gone.contains("no code action `auto_import:Import~20~60net~3A~3Ahttp~3A~3AMap~60`"),
+        gone.contains(&format!("no code action `{second_id}`")),
         "{gone}"
     );
-    let ambiguous = apply(json!({"id":"auto_import"}))
+    let ambiguous = apply(json!({"id":"remove_unnecessary_mut"}))
         .await
         .unwrap_err()
         .to_string();
     assert!(
-        ambiguous.contains("ambiguous")
-            && ambiguous.contains("`auto_import:Import~20~60net~3A~3Ahttp~3A~3AMap~60`"),
+        ambiguous.contains("ambiguous") && ambiguous.contains(&second_id),
         "{ambiguous}"
     );
-    let subtype = apply(json!({"id":"auto_import:Import~20~60net~5Fhttp~3A~3AMap~60","subtype":0}))
+    let subtype = apply(json!({"id": first_id, "subtype": 0}))
         .await
         .unwrap_err()
         .to_string();
