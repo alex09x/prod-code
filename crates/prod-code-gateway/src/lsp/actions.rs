@@ -192,14 +192,26 @@ pub(crate) async fn lsp_code_actions(
     }
 }
 
-/// `data.id:slug-of-the-whole-title` for an action with a server id: the variant itself
-/// (`auto_import:import_b_map`), not its place in one listing.
+/// `data.id:title` for an action with a server id, the title encoded losslessly: the variant
+/// itself, not its place in one listing. ASCII letters and digits stand as they are and every
+/// other byte as `~XX`, so `Import `net_http::Map`` and `Import `net::http::Map`` stay apart.
 fn variant_id(action: &serde_json::Value) -> Option<String> {
     let id = action
         .pointer("/data/id")
         .and_then(|v| v.as_str())
         .filter(|id| !id.is_empty())?;
-    Some(format!("{id}:{}", title_slug(action, usize::MAX)))
+    let title = action.get("title").and_then(|t| t.as_str()).unwrap_or("");
+    let encoded: String = title
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() {
+                char::from(b).to_string()
+            } else {
+                format!("~{b:02X}")
+            }
+        })
+        .collect();
+    Some(format!("{id}:{encoded}"))
 }
 
 /// The WorkspaceEdit of one code action: its own edit, its resolved edit, or what its command

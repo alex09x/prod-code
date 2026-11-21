@@ -131,16 +131,16 @@ async fn listing_and_application_select_exact_edits_resolve_lazy_edits_and_repor
 }
 
 /// Actions that share a server id (one `auto_import` per import path) are listed by variant
-/// ids naming the variant. Applying re-queries the server: a reordered list still applies the
+/// ids naming the variant losslessly (`net_http::Map` and `net::http::Map` stay apart). Applying re-queries the server: a reordered list still applies the
 /// variant asked for, a variant that is gone is refused rather than replaced by the one left,
 /// a plain id that is shared is ambiguous, and a subtype selects nothing here.
 #[tokio::test]
 async fn actions_sharing_a_server_id_are_chosen_by_their_variant() {
     let temp = tempfile::tempdir().unwrap();
-    let first = json!({"changes":{"file:///a.rs":[{"newText":"use a::Map;\n"}]}});
-    let second = json!({"changes":{"file:///a.rs":[{"newText":"use b::Map;\n"}]}});
-    let a = json!({"title":"Import `a::Map`","kind":"quickfix","edit":first,"data":{"id":"auto_import"}});
-    let b = json!({"title":"Import `b::Map`","kind":"quickfix","edit":second,"data":{"id":"auto_import"}});
+    let first = json!({"changes":{"file:///a.rs":[{"newText":"use net_http::Map;\n"}]}});
+    let second = json!({"changes":{"file:///a.rs":[{"newText":"use net::http::Map;\n"}]}});
+    let a = json!({"title":"Import `net_http::Map`","kind":"quickfix","edit":first,"data":{"id":"auto_import"}});
+    let b = json!({"title":"Import `net::http::Map`","kind":"quickfix","edit":second,"data":{"id":"auto_import"}});
     let typed = json!({"title":"Add explicit type","kind":"refactor.rewrite","edit":first,"data":{"id":"add_explicit_type"}});
     let engine = crate::lsp::test_support::server(
         temp.path(),
@@ -164,25 +164,25 @@ async fn actions_sharing_a_server_id_are_chosen_by_their_variant() {
             .await
             .unwrap(),
         json!([
-            {"id":"auto_import:import_a_map","kind":"quickfix","label":"Import `a::Map`"},
-            {"id":"auto_import:import_b_map","kind":"quickfix","label":"Import `b::Map`"},
+            {"id":"auto_import:Import~20~60net~5Fhttp~3A~3AMap~60","kind":"quickfix","label":"Import `net_http::Map`"},
+            {"id":"auto_import:Import~20~60net~3A~3Ahttp~3A~3AMap~60","kind":"quickfix","label":"Import `net::http::Map`"},
             {"id":"add_explicit_type","kind":"refactor.rewrite","label":"Add explicit type"}
         ])
     );
     // Reordered: the variant asked for, not the one now first.
     assert_eq!(
-        apply(json!({"id":"auto_import:import_b_map"}))
+        apply(json!({"id":"auto_import:Import~20~60net~3A~3Ahttp~3A~3AMap~60"}))
             .await
             .unwrap(),
         second
     );
     // Gone: refused, although `a::Map` is now the only `auto_import`.
-    let gone = apply(json!({"id":"auto_import:import_b_map"}))
+    let gone = apply(json!({"id":"auto_import:Import~20~60net~3A~3Ahttp~3A~3AMap~60"}))
         .await
         .unwrap_err()
         .to_string();
     assert!(
-        gone.contains("no code action `auto_import:import_b_map`"),
+        gone.contains("no code action `auto_import:Import~20~60net~3A~3Ahttp~3A~3AMap~60`"),
         "{gone}"
     );
     let ambiguous = apply(json!({"id":"auto_import"}))
@@ -190,10 +190,11 @@ async fn actions_sharing_a_server_id_are_chosen_by_their_variant() {
         .unwrap_err()
         .to_string();
     assert!(
-        ambiguous.contains("ambiguous") && ambiguous.contains("`auto_import:import_b_map`"),
+        ambiguous.contains("ambiguous")
+            && ambiguous.contains("`auto_import:Import~20~60net~3A~3Ahttp~3A~3AMap~60`"),
         "{ambiguous}"
     );
-    let subtype = apply(json!({"id":"auto_import:import_a_map","subtype":0}))
+    let subtype = apply(json!({"id":"auto_import:Import~20~60net~5Fhttp~3A~3AMap~60","subtype":0}))
         .await
         .unwrap_err()
         .to_string();
