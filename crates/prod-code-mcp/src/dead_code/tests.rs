@@ -55,6 +55,52 @@ fn a_malformed_symbol_fails_the_file_instead_of_being_skipped() {
     assert_eq!(collect(&[], &mut Vec::new()), Ok(()));
 }
 
+/// A hierarchical answer (Rust Intelligence) gives children no `containerName`: the parent they
+/// are listed under encloses them, so a trait impl's method is a trait method and an item in
+/// `mod tests` is a test, as in a flat answer.
+#[test]
+fn nested_symbols_take_their_container_from_their_parent() {
+    let at = |name: &str, kind: u64, line: u64, children: serde_json::Value| {
+        serde_json::json!({ "name": name, "kind": kind, "children": children,
+            "selectionRange": { "start": { "line": line, "character": 3 } } })
+    };
+    let symbols = [
+        at(
+            "impl Shape for Square",
+            19,
+            18,
+            serde_json::json!([at("area", 6, 19, serde_json::json!([]))]),
+        ),
+        at(
+            "impl Square",
+            19,
+            24,
+            serde_json::json!([at("side_len", 6, 25, serde_json::json!([]))]),
+        ),
+        at(
+            "tests",
+            2,
+            30,
+            serde_json::json!([at("runs", 12, 32, serde_json::json!([]))]),
+        ),
+    ];
+    let mut out = Vec::new();
+    assert_eq!(collect(&symbols, &mut out), Ok(()));
+    let kinds: Vec<(String, String)> = out.into_iter().map(|(n, k, _, _)| (n, k)).collect();
+    assert!(
+        kinds.contains(&("area".to_string(), "trait-method".to_string())),
+        "{kinds:?}"
+    );
+    assert!(
+        kinds.contains(&("side_len".to_string(), "method".to_string())),
+        "{kinds:?}"
+    );
+    assert!(
+        !kinds.iter().any(|(n, _)| n == "runs"),
+        "a test is not a candidate: {kinds:?}"
+    );
+}
+
 #[test]
 fn only_a_list_counts_references() {
     assert_eq!(reference_count(Ok(serde_json::json!([]))), Ok(0));

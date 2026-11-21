@@ -21,8 +21,17 @@ pub(crate) fn range_line(value: &serde_json::Value, end: bool) -> u64 {
         .unwrap_or(0)
 }
 
-/// Stable id of a code action in a list: its index plus a slug of the title.
+/// Stable id of a code action in a list: the server's own `data.id` when it gives one (Rust
+/// Intelligence gives rust-analyzer's assist ids, `extract_variable`), else its index plus a
+/// slug of the title.
 pub(crate) fn code_action_id(index: usize, action: &serde_json::Value) -> String {
+    if let Some(id) = action
+        .pointer("/data/id")
+        .and_then(|v| v.as_str())
+        .filter(|id| !id.is_empty())
+    {
+        return id.to_string();
+    }
     let title = action
         .get("title")
         .and_then(|t| t.as_str())

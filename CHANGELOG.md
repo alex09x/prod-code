@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Rust Tools on Rust Intelligence** (#2072):
+  - `prodCode/assists` and `prodCode/applyAssist` take a server's own `data.id` as the assist id, with no index, so `inline_local_variable` matches ridx's action.
+  - `code_dead_code` and `code_prune` take a nested document symbol's container from the symbol it is listed under. On a hierarchical answer, a method of `impl Trait for Type` was reported unreferenced, and an item in `mod tests` was not seen as a test.
+  - `code_safe_delete` and `code_prune` delete through `ridx/safeDelete` when the server declares it. A refusal says why (`used`, `traitItem`, …) and lists the uses left.
+  - `rust-analyzer/viewSyntaxTree` and `rust-analyzer/expandMacro` go to `ridx/syntaxTree` and `ridx/expandMacro` when the server declares them, so `code_introduce_variable` and `code_convert_to_method` run on ridx.
+
 ### Added
 - **Rust Through Rust Intelligence, Opt-In** (`PROD_CODE_RUST_SERVER=ridx`): the gateway serves Rust from `ridx lsp` through the generic LSP engine instead of the in-process rust-analyzer engine, and editors get `ridx lsp` too. A ridx that does not start fails the load; it never falls back to rust-analyzer. Admission counts it at 1 GiB, not the 4 GiB of an in-process rust-analyzer. A server that declares the `minVersion` request option gets it on diagnostic pulls, so a pull right after an edit waits for that text's compile rather than answering an empty list. All 12 live tests that need a real analyzer pass on ridx (main 43ac9527, the release after 0.3.11) on a Linux aarch64 build node, in 1–8 s each instead of 2–5 min; rust-analyzer passes 10 of the 12. rust-analyzer stays the default.
 - **`code_introduce_parameter_object` Reads the Drop Marker at the End of a Layout Line** (`size = 1, align = 0x1, no Drop`), as the rust-analyzer binary and Rust Intelligence print it, as well as on a line of its own.

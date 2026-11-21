@@ -21,6 +21,13 @@ fn stable_ids_and_range_defaults_cover_malformed_and_unicode_inputs() {
             json!({"title":"É😀 Fix--ABC\r\nOne Two Three Four Five Six"}),
             "3:fix_abc_one_two_three_four",
         ),
+        // The server's own id (Rust Intelligence: rust-analyzer's assist id), with no index.
+        (
+            json!({"title":"Extract into variable","data":{"id":"extract_variable"}}),
+            "extract_variable",
+        ),
+        (json!({"title":"Fix it","data":{"id":""}}), "3:fix_it"),
+        (json!({"title":"Fix it","data":{"id":7}}), "3:fix_it"),
     ] {
         assert_eq!(code_action_id(3, &action), expected);
     }

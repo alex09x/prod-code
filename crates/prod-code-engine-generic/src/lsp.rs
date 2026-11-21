@@ -204,6 +204,15 @@ impl GenericLspEngine {
             anyhow::bail!("Language server process has exited before request '{method}'{details}");
         }
         let _activity = OrdinaryActivity::begin(&self.ordinary_activity, &self.ordinary_epoch);
+        // A rust-analyzer extension the tools send goes to the Rust Intelligence method that
+        // answers it, when the server declares one.
+        let aliased = self
+            .capabilities
+            .read()
+            .await
+            .as_ref()
+            .and_then(|caps| crate::ridx::ridx_alias(caps, method));
+        let method = aliased.unwrap_or(method);
         // A question answered from the index waits until the server has built it; one still
         // not built when the wait ends is answered with a note of how far it got (#391).
         let busy = if needs_index(method) {

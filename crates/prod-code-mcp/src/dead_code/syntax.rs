@@ -98,6 +98,18 @@ pub fn collect_candidates(
     symbols: &[serde_json::Value],
     out: &mut Vec<CandidateSymbol>,
 ) -> std::result::Result<(), String> {
+    collect_within(symbols, "", out)
+}
+
+/// [`collect_candidates`] for symbols nested in `parent` (a ` > `-joined, lowercased chain of
+/// the enclosing symbols' names). A hierarchical answer (Rust Intelligence, most servers) gives
+/// children no `containerName`: their container is the parent they are listed under, so an
+/// `impl Shape for Circle` or a `mod tests` encloses them as a flat answer's containerName does.
+fn collect_within(
+    symbols: &[serde_json::Value],
+    parent: &str,
+    out: &mut Vec<CandidateSymbol>,
+) -> std::result::Result<(), String> {
     for sym in symbols {
         let malformed = || crate::impact::unreadable("textDocument/documentSymbol", sym);
         let (Some(name), Some(kind)) = (
@@ -110,7 +122,7 @@ pub fn collect_candidates(
             return Err(malformed());
         }
         let container = match sym.get("containerName") {
-            None | Some(serde_json::Value::Null) => String::new(),
+            None | Some(serde_json::Value::Null) => parent.to_string(),
             Some(serde_json::Value::String(c)) => c.to_ascii_lowercase(),
             Some(_) => return Err(malformed()),
         };
@@ -170,7 +182,15 @@ pub fn collect_candidates(
         }
         match sym.get("children") {
             None | Some(serde_json::Value::Null) => {}
-            Some(serde_json::Value::Array(children)) => collect_candidates(children, out)?,
+            Some(serde_json::Value::Array(children)) => {
+                let own = name.to_ascii_lowercase();
+                let chain = if container.is_empty() {
+                    own
+                } else {
+                    format!("{container} > {own}")
+                };
+                collect_within(children, &chain, out)?
+            }
             Some(_) => return Err(malformed()),
         }
     }
