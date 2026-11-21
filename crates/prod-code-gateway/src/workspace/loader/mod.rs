@@ -140,7 +140,22 @@ pub(crate) async fn load_as_leader(
 
     tracing::info!(workspace = ?workspace_root, engine, "Leader starting workspace load");
 
-    let (rust_engine, go_engine, generic_engine, backend) = if engine == "rust" {
+    let ridx = engine == "rust"
+        && prod_code_engine_generic::RustServer::from_env()
+            == prod_code_engine_generic::RustServer::Ridx;
+    let (rust_engine, go_engine, generic_engine, backend) = if ridx {
+        // Rust Intelligence is an ordinary language server: the generic engine drives it. No
+        // fallback: a ridx that does not start fails the load rather than handing the session
+        // to rust-analyzer behind the selection's back.
+        let config = prod_code_engine_generic::GenericLspConfig::for_rust_ridx();
+        let ge = prod_code_engine_generic::GenericLspEngine::spawn(workspace_root, config)
+            .await
+            .map_err(|err| {
+                anyhow::anyhow!("the Rust Intelligence server did not start: {err:#}")
+            })?;
+        tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (Rust ridx) active");
+        (None, None, Some(Arc::new(ge)), None)
+    } else if engine == "rust" {
         let (re, be) = rust::load_rust(workspace_root, &manager.rust_loader).await?;
         (re, None, None, be)
     } else if engine == "go" {

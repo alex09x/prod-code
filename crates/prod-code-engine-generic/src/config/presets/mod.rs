@@ -13,4 +13,5 @@ mod data;
 mod languages;
 mod languages_extra;
 mod markup;
+pub mod rust;
 mod typescript;

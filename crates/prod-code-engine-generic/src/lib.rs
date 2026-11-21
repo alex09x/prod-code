@@ -18,6 +18,7 @@ pub mod diagnostics;
 pub mod documents;
 pub mod engine;
 pub mod lsp;
+pub mod min_version;
 pub mod probe;
 pub mod reader;
 pub mod types;
@@ -27,7 +28,7 @@ mod tests;
 
 pub use config::{
     DEFAULT_HEALTH_PROBE_INTERVAL, DEFAULT_MAX_RETAINED_DOCUMENTS, DEFAULT_REQUEST_TIMEOUT,
-    GenericLspConfig, settings_for_section, venv_python, which_bin,
+    GenericLspConfig, RustServer, settings_for_section, venv_python, which_bin,
 };
 pub use diagnostics::{DiagnosticsUnavailable, Unavailable};
 pub use engine::GenericLspEngine;

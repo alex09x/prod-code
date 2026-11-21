@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Added
+- **Rust Through Rust Intelligence, Opt-In** (`PROD_CODE_RUST_SERVER=ridx`): the gateway serves Rust from `ridx lsp` through the generic LSP engine instead of the in-process rust-analyzer engine, and editors get `ridx lsp` too. A ridx that does not start fails the load; it never falls back to rust-analyzer. Admission counts it at 1 GiB, not the 4 GiB of an in-process rust-analyzer. A server that declares the `minVersion` request option gets it on diagnostic pulls, so a pull right after an edit waits for that text's compile rather than answering an empty list. All 12 live tests that need a real analyzer pass on ridx (main 43ac9527, the release after 0.3.11) on a Linux aarch64 build node, in 1–8 s each instead of 2–5 min; rust-analyzer passes 10 of the 12. rust-analyzer stays the default.
+- **`code_introduce_parameter_object` Reads the Drop Marker at the End of a Layout Line** (`size = 1, align = 0x1, no Drop`), as the rust-analyzer binary and Rust Intelligence print it, as well as on a line of its own.
 - **A Pi Extension** in `editors/pi`: it registers `code_definition`, `code_references`, `code_callers`, `code_hover`, `code_outline`, `code_symbols` and `code_diagnostics` as native Pi tools over the `prod-code` CLI (no shell, 20 s timeout, output capped at 100 lines / 8192 characters). After a successful `edit` or `write` on a Go, Rust, TypeScript, JavaScript, Python, Swift or C/C++ file, it appends that file's analyzer diagnostics to the tool result; when the check fails, the result says "diagnostics unavailable" and the edit still succeeds. A bundled skill steers identifier lookups away from grep.
 
 ### Fixed

@@ -93,12 +93,17 @@ pub fn no_drop_glue(hover: &str, name: &str) -> Result<(), String> {
     if ty.contains("{unknown}") {
         return Err(format!("the analyzer does not resolve its type (`{ty}`)"));
     }
-    match lines.find(|l| {
+    // The marker stands on a line of its own (the in-process engine), or ends the layout line
+    // `size = 1, align = 0x1, no Drop` (the rust-analyzer binary, Rust Intelligence).
+    let marker = |l: &str| {
+        let last = l.rsplit(", ").next().unwrap_or(l);
         matches!(
-            *l,
+            last,
             "no Drop" | "needs Drop" | "impl Drop" | "type param may need Drop"
         )
-    }) {
+        .then(|| last.to_string())
+    };
+    match lines.find_map(marker).as_deref() {
         Some("no Drop") => Ok(()),
         Some(glue) => Err(format!("the analyzer reports `{glue}` for it")),
         None => Err("the analyzer's hover does not say whether its type has drop glue".into()),

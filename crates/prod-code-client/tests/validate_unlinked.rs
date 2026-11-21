@@ -93,10 +93,19 @@ fn stdout_of(out: &Output) -> String {
 }
 
 /// One report of `validate --json`: the `unlinked-file` item is counted and explained, and no
-/// type error is claimed.
+/// type error is claimed. An analyzer that compiles a new integration test as the target Cargo
+/// would build (Rust Intelligence) reports the type error itself, which refuses it too.
 fn assert_refused(report: &Value, shown: &str) {
-    assert_eq!(report["errors"], 1, "{shown}");
     let items = report["items"].as_array().expect("items");
+    if items.iter().any(|d| d["code"] == "E0308") {
+        assert!(
+            report["errors"].as_u64().is_some_and(|n| n >= 1)
+                && items.iter().all(|d| d["code"] != "unlinked-file"),
+            "a type-checked file is not reported unlinked: {shown}"
+        );
+        return;
+    }
+    assert_eq!(report["errors"], 1, "{shown}");
     let item = items
         .iter()
         .find(|d| d["code"] == "unlinked-file")

@@ -104,6 +104,24 @@ fn only_a_resolved_type_without_drop_glue_is_vouched_for() {
     ] {
         assert_eq!(no_drop_glue(hover, name), Err(why.to_string()), "{hover}");
     }
+    // The rust-analyzer binary and Rust Intelligence end the layout line with the marker.
+    let layout = |decl: &str, line: &str| format!("```rust\n{decl}\n```\n\n---\n\n{line}");
+    assert_eq!(
+        no_drop_glue(&layout("on: bool", "size = 1, align = 0x1, no Drop"), "on"),
+        Ok(())
+    );
+    assert_eq!(
+        no_drop_glue(
+            &layout("a: Guard", "size = 24 (0x18), align = 0x8, needs Drop"),
+            "a"
+        ),
+        Err("the analyzer reports `needs Drop` for it".to_string())
+    );
+    // A layout line without a marker vouches for nothing.
+    assert_eq!(
+        no_drop_glue(&layout("t: T", "size = 8, align = 0x8"), "t"),
+        Err("the analyzer's hover does not say whether its type has drop glue".to_string())
+    );
 }
 
 /// `f(a, x, b, y)` with `a`, `b` bundled: `x` is dropped before the struct rather than

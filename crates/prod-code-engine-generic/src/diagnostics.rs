@@ -165,6 +165,16 @@ pub(crate) fn gap(
 }
 
 impl GenericLspEngine {
+    /// Whether the server declares the `minVersion` request option
+    /// (`capabilities.experimental.ridx.requestOptions.minVersion`).
+    pub async fn takes_min_version(&self) -> bool {
+        self.capabilities
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(crate::min_version::declares_min_version)
+    }
+
     pub async fn has_pull_diagnostics(&self) -> bool {
         self.capabilities
             .read()
@@ -184,11 +194,17 @@ impl GenericLspEngine {
         if self.pull_unsupported.load(Ordering::Relaxed) {
             return None;
         }
+        let mut params = serde_json::json!({ "textDocument": { "uri": uri } });
+        // A server that takes `minVersion` (Rust Intelligence) answers only once the
+        // diagnostics of the version sent are computed; without it, a pull right after a
+        // change answers what it has, an empty list before its first compile of that text.
+        if self.takes_min_version().await
+            && let Some(version) = self.sent.read().await.get(uri).and_then(|s| s.version)
+        {
+            params["minVersion"] = serde_json::json!(version);
+        }
         let answer = self
-            .send_request(
-                "textDocument/diagnostic",
-                serde_json::json!({ "textDocument": { "uri": uri } }),
-            )
+            .send_request("textDocument/diagnostic", params)
             .await
             .ok()?;
         if let Some(err) = answer.get("error") {
