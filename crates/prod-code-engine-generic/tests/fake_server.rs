@@ -3517,3 +3517,38 @@ async fn a_failed_ridx_index_makes_index_questions_fail_rather_than_answer_empty
         .expect("an indexed root answers");
     assert_eq!(answer["result"][0]["name"].as_str(), Some("indexed"));
 }
+
+/// A server started as `ridx` is Rust Intelligence whatever it declares: ridx 0.3.8 declares
+/// no `experimental.ridx`, and its plain pull answers `[]` for text it never type-checked. It
+/// validates nothing and says to upgrade.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_started_as_ridx_without_its_capabilities_is_refused_for_validation() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, script) = workspace();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let ridx = bin.join("ridx");
+    std::fs::write(&ridx, "#!/bin/sh\nexec python3 \"$@\"\n").unwrap();
+    std::fs::set_permissions(&ridx, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut c = config(&script);
+    c.command = ridx.display().to_string();
+    c.env.insert(
+        "FAKE_RESPONSE".to_string(),
+        serde_json::json!({ "result": { "kind": "full", "items": [] } }).to_string(),
+    );
+    let engine = GenericLspEngine::spawn(dir.path(), c)
+        .await
+        .expect("the fake server starts");
+    let uri = format!("file://{}/a.rs", dir.path().display());
+    open_late_clean(&engine, &uri).await;
+    let err = engine
+        .ridx_diagnostics(&uri)
+        .await
+        .expect("a server configured as ridx is asked as ridx")
+        .expect_err("refused");
+    assert!(
+        format!("{err:#}").contains("Upgrade Rust Intelligence"),
+        "{err:#}"
+    );
+}

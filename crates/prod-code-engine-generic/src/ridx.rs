@@ -83,8 +83,11 @@ impl GenericLspEngine {
     /// reply) is an error, never replaced by a publication of the same version, which can be
     /// provisional. A ridx that does not declare compiler-backed pulls is refused with what to
     /// upgrade. `None` for every other server.
+    /// Which server this is comes from how it was configured (the `ridx` preset), not only
+    /// from what it declares: ridx 0.3.8 declares no `experimental.ridx`, and a plain pull of
+    /// it answers `[]` for text it never type-checked.
     pub async fn ridx_diagnostics(&self, uri: &str) -> Option<Result<Vec<Value>>> {
-        if !self.caps_satisfy(is_ridx).await {
+        if !(self.config.is_ridx() || self.caps_satisfy(is_ridx).await) {
             return None;
         }
         Some(self.compiler_pull(uri).await)

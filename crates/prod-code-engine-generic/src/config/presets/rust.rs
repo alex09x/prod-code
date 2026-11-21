@@ -51,6 +51,15 @@ impl GenericLspConfig {
             ..Self::default()
         }
     }
+
+    /// Whether this configuration starts Rust Intelligence (`ridx`, by name or path). The
+    /// identity is carried in the configuration, so every clone of it (the validation server)
+    /// is treated as ridx whatever the server declares in its handshake.
+    pub fn is_ridx(&self) -> bool {
+        std::path::Path::new(&self.command)
+            .file_name()
+            .is_some_and(|name| name == "ridx")
+    }
 }
 
 #[cfg(test)]
@@ -81,5 +90,13 @@ mod tests {
         assert_eq!(config.command, "ridx");
         assert_eq!(config.args, ["lsp"]);
         assert!(matches!(config.ready, ReadySignal::Progress));
+        assert!(config.is_ridx());
+        let mut by_path = config.clone();
+        by_path.command = "/opt/ridx-0.3.8/bin/ridx".to_string();
+        assert!(by_path.is_ridx());
+        for other in ["rust-analyzer", "ridx-driver", "/usr/bin/clangd"] {
+            by_path.command = other.to_string();
+            assert!(!by_path.is_ridx(), "{other}");
+        }
     }
 }
