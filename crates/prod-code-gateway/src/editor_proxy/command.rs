@@ -86,6 +86,12 @@ fn server_command_inner(engine: &str, workspace_root: Option<&Path>) -> Option<S
     use prod_code_engine_generic::GenericLspConfig;
     let from = |config: GenericLspConfig| ServerCommand::from_generic(engine, config);
     let command = match engine {
+        "rust"
+            if prod_code_engine_generic::RustServer::from_env()
+                == prod_code_engine_generic::RustServer::Ridx =>
+        {
+            from(GenericLspConfig::for_rust_ridx())
+        }
         "rust" => ServerCommand {
             program: "rust-analyzer".to_string(),
             args: Vec::new(),

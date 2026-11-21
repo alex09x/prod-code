@@ -29,9 +29,15 @@ pub type MemoryProbe = Arc<dyn Fn() -> Option<(u64, u64)> + Send + Sync>;
 
 /// What a new engine of `engine` is assumed to need until it has loaded and settled. An
 /// in-process rust-analyzer database for a large workspace takes several GiB; the language
-/// servers run as their own processes and are smaller.
+/// servers run as their own processes and are smaller. Rust through Rust Intelligence is such a
+/// server: `ridx lsp` keeps an index on disk and measured 72–917 MB.
 pub fn default_reserve(engine: &str) -> u64 {
+    reserve_for(engine, prod_code_engine_generic::RustServer::from_env())
+}
+
+fn reserve_for(engine: &str, rust: prod_code_engine_generic::RustServer) -> u64 {
     match engine {
+        "rust" if rust == prod_code_engine_generic::RustServer::Ridx => GIB,
         "rust" => 4 * GIB,
         "cpp" | "swift" | "typescript" | "go" | "python" => GIB,
         _ => 256 * MIB,
@@ -159,4 +165,20 @@ pub(crate) fn gib(bytes: u64) -> String {
 
 pub(crate) fn limit_bytes(total: u64) -> u64 {
     (total as f64 * MEMORY_PRESSURE_USED).round() as u64
+}
+
+#[cfg(test)]
+mod reserve_tests {
+    use super::*;
+    use prod_code_engine_generic::RustServer;
+
+    #[test]
+    fn a_ridx_rust_engine_is_counted_as_a_language_server_not_an_in_process_database() {
+        assert_eq!(reserve_for("rust", RustServer::RustAnalyzer), 4 * GIB);
+        assert_eq!(reserve_for("rust", RustServer::Ridx), GIB);
+        for rust in [RustServer::RustAnalyzer, RustServer::Ridx] {
+            assert_eq!(reserve_for("go", rust), GIB);
+            assert_eq!(reserve_for("toml", rust), 256 * MIB);
+        }
+    }
 }

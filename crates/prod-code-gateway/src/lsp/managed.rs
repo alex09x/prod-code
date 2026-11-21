@@ -52,6 +52,11 @@ impl ManagedLsp<'_> {
         match self {
             ManagedLsp::Go(_) => Ok(Vec::new()),
             ManagedLsp::Generic(engine) => {
+                // Rust Intelligence: its versioned pull is the only answer. A failed one is
+                // not replaced by a publication of the same version, which can be provisional.
+                if let Some(answer) = engine.ridx_diagnostics(uri).await {
+                    return answer;
+                }
                 if let Some(items) = engine.pull_diagnostics(uri).await {
                     return Ok(items);
                 }

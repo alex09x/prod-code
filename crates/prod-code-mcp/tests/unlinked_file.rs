@@ -88,13 +88,29 @@ fn text_of(result: &McpToolCallResult) -> String {
 }
 
 /// The report's `unlinked-file` item is counted and explained, and does not claim a type error
-/// the analyzer never observed.
+/// the analyzer never observed. An analyzer that compiles a new integration test as the target
+/// Cargo would build (Rust Intelligence) reports the type error itself: that refuses it too.
 fn assert_refused(report: &prod_code_mcp::diagnostics::DiagnosticsReport, what: &str) {
     let rendered = report.render();
     assert!(
         !report.ok(),
         "{what}: an unchecked file validated clean:\n{rendered}"
     );
+    let checked = report
+        .items
+        .iter()
+        .any(|d| d.code.as_deref() == Some("E0308"));
+    if checked {
+        assert!(
+            report.errors >= 1
+                && report
+                    .items
+                    .iter()
+                    .all(|d| d.code.as_deref() != Some("unlinked-file")),
+            "{what}: a type-checked file is not reported unlinked:\n{rendered}"
+        );
+        return;
+    }
     assert_eq!(report.errors, 1, "{what}:\n{rendered}");
     let item = report
         .items

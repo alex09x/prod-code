@@ -14,6 +14,7 @@ mod presets;
 pub mod types;
 
 pub use discovery::{npm_global_root, settings_for_section, venv_python, which_bin};
+pub use presets::rust::RustServer;
 pub use types::{
     DEFAULT_HEALTH_PROBE_INTERVAL, DEFAULT_MAX_RETAINED_DOCUMENTS, DEFAULT_REQUEST_TIMEOUT,
     GenericLspConfig, HEALTH_PROBE_ID_PREFIX, HEALTH_PROBE_METHOD, MAX_IDLE_PROBE_TIMEOUTS,

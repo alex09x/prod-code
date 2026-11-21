@@ -186,6 +186,10 @@ while True:
                 "message": "something the fake server disliked"
             }]
         }})
+    elif method == "ridx/status":
+        # Rust Intelligence's per-root index state (FAKE_RIDX_STATUS, else one indexed root).
+        status = os.environ.get("FAKE_RIDX_STATUS", '{"roots": [{"root": "/w", "indexed": true, "error": null}]}')
+        send({"jsonrpc": "2.0", "id": message["id"], "result": json.loads(status)})
     elif method == "textDocument/diagnostic" and os.environ.get("FAKE_SEMANTIC_AFTER"):
         # As sourcekit-lsp before it has a package's build settings: syntax only, so nothing,
         # until the Nth pull, then the type error on the last line of the opened text.
@@ -3365,4 +3369,186 @@ async fn server_exit_reports_status_and_stderr() {
     assert!(msg.contains("Language server process has exited"), "{msg}");
     assert!(msg.contains("42"), "{msg}");
     assert!(msg.contains("fatal crash in python server"), "{msg}");
+}
+
+/// A fake Rust Intelligence: `experimental.ridx` capabilities with `methods`.
+fn ridx_config(script: &Path, methods: serde_json::Value) -> GenericLspConfig {
+    let mut c = config(script);
+    let caps = serde_json::json!({ "result": { "capabilities": {
+        "hoverProvider": true,
+        "diagnosticProvider": { "interFileDependencies": true },
+        "experimental": { "ridx": { "methods": methods, "requestOptions": { "minVersion": 1 } } },
+    }}});
+    c.env
+        .insert("FAKE_INITIALIZE_RESPONSE".to_string(), caps.to_string());
+    c
+}
+
+async fn open_late_clean(engine: &GenericLspEngine, uri: &str) {
+    // The fake publishes `[]` for version 1 a moment after this didOpen: a provisional clear.
+    engine
+        .send_notification(
+            "textDocument/didOpen",
+            serde_json::json!({ "textDocument": {
+                "uri": uri, "languageId": "rust", "version": 1, "text": "late-clean\n"
+            }}),
+        )
+        .await
+        .expect("didOpen is sent");
+    tokio::time::sleep(Duration::from_millis(800)).await;
+}
+
+/// A ridx pull with minVersion that fails is the answer, an error: the same-version empty
+/// publication before it does not make the text clean.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_ridx_pull_is_not_replaced_by_a_provisional_empty_push() {
+    let (dir, script) = workspace();
+    let uri = format!("file://{}/a.rs", dir.path().display());
+    let methods = serde_json::json!({ "ridx/status": 1, "textDocument/diagnostic": 1 });
+    let mut c = ridx_config(&script, methods);
+    let failed = serde_json::json!({ "error": { "code": -32803, "message": "no diagnostics",
+        "data": { "reason": "diagnosticsUnavailable", "detail": "notChecked", "version": 1 } } });
+    c.env
+        .insert("FAKE_RESPONSE".to_string(), failed.to_string());
+    let engine = GenericLspEngine::spawn(dir.path(), c)
+        .await
+        .expect("the fake server starts");
+    open_late_clean(&engine, &uri).await;
+    let pushed = engine
+        .current_diagnostics_for(&uri, Duration::from_secs(5))
+        .await
+        .expect("the provisional publication arrived");
+    assert!(pushed.is_empty(), "{pushed:?}");
+    let answer = engine
+        .ridx_diagnostics(&uri)
+        .await
+        .expect("a ridx server is asked through its versioned pull");
+    let err = answer.expect_err("a failed pull is an error, not the empty push");
+    assert!(
+        format!("{err:#}").contains("diagnosticsUnavailable"),
+        "{err:#}"
+    );
+
+    // A pull that succeeds is the answer, with the version asked.
+    let ok = ridx_config(
+        &script,
+        serde_json::json!({ "ridx/status": 1, "textDocument/diagnostic": 1 }),
+    );
+    let engine = GenericLspEngine::spawn(dir.path(), ok)
+        .await
+        .expect("the fake server starts");
+    open_late_clean(&engine, &uri).await;
+    let items = engine
+        .ridx_diagnostics(&uri)
+        .await
+        .expect("asked")
+        .expect("answered");
+    assert_eq!(items[0]["message"].as_str(), Some("pulled"));
+}
+
+/// A ridx that takes minVersion but does not declare compiler-backed pulls (0.3.10, 0.3.11)
+/// validates nothing: its answer is an error saying what to upgrade, never its `[]`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ridx_without_compiler_backed_pulls_is_refused_for_validation() {
+    let (dir, script) = workspace();
+    let uri = format!("file://{}/a.rs", dir.path().display());
+    let mut c = ridx_config(&script, serde_json::json!({ "ridx/status": 1 }));
+    c.env.insert(
+        "FAKE_RESPONSE".to_string(),
+        serde_json::json!({ "result": { "kind": "full", "items": [] } }).to_string(),
+    );
+    let engine = GenericLspEngine::spawn(dir.path(), c)
+        .await
+        .expect("the fake server starts");
+    open_late_clean(&engine, &uri).await;
+    let err = engine
+        .ridx_diagnostics(&uri)
+        .await
+        .expect("a ridx server")
+        .expect_err("refused");
+    assert!(
+        format!("{err:#}").contains("Upgrade Rust Intelligence"),
+        "{err:#}"
+    );
+    // Any other server is not asked this way.
+    let plain = GenericLspEngine::spawn(dir.path(), config(&script))
+        .await
+        .expect("the fake server starts");
+    assert!(plain.ridx_diagnostics(&uri).await.is_none());
+}
+
+/// After ridx's progress has ended, an index question is asked only while `ridx/status` shows
+/// every root indexed: a failed build ends its progress too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_ridx_index_makes_index_questions_fail_rather_than_answer_empty() {
+    let (dir, script) = workspace();
+    let mut c = ridx_config(&script, serde_json::json!({ "ridx/status": 1 }));
+    c.env.insert(
+        "FAKE_RIDX_STATUS".to_string(),
+        serde_json::json!({ "roots": [{ "root": "/w", "indexed": false,
+            "error": "could not find ridx-driver" }] })
+        .to_string(),
+    );
+    let engine = GenericLspEngine::spawn(dir.path(), c)
+        .await
+        .expect("the fake server starts");
+    let err = engine
+        .send_request(
+            "workspace/symbol",
+            serde_json::json!({ "query": "indexed" }),
+        )
+        .await
+        .expect_err("no answer from a failed index");
+    let msg = format!("{err:#}");
+    assert!(msg.contains("could not find ridx-driver"), "{msg}");
+
+    let indexed = GenericLspEngine::spawn(
+        dir.path(),
+        ridx_config(&script, serde_json::json!({ "ridx/status": 1 })),
+    )
+    .await
+    .expect("the fake server starts");
+    let answer = indexed
+        .send_request(
+            "workspace/symbol",
+            serde_json::json!({ "query": "indexed" }),
+        )
+        .await
+        .expect("an indexed root answers");
+    assert_eq!(answer["result"][0]["name"].as_str(), Some("indexed"));
+}
+
+/// A server started as `ridx` is Rust Intelligence whatever it declares: ridx 0.3.8 declares
+/// no `experimental.ridx`, and its plain pull answers `[]` for text it never type-checked. It
+/// validates nothing and says to upgrade.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_started_as_ridx_without_its_capabilities_is_refused_for_validation() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, script) = workspace();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let ridx = bin.join("ridx");
+    std::fs::write(&ridx, "#!/bin/sh\nexec python3 \"$@\"\n").unwrap();
+    std::fs::set_permissions(&ridx, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut c = config(&script);
+    c.command = ridx.display().to_string();
+    c.env.insert(
+        "FAKE_RESPONSE".to_string(),
+        serde_json::json!({ "result": { "kind": "full", "items": [] } }).to_string(),
+    );
+    let engine = GenericLspEngine::spawn(dir.path(), c)
+        .await
+        .expect("the fake server starts");
+    let uri = format!("file://{}/a.rs", dir.path().display());
+    open_late_clean(&engine, &uri).await;
+    let err = engine
+        .ridx_diagnostics(&uri)
+        .await
+        .expect("a server configured as ridx is asked as ridx")
+        .expect_err("refused");
+    assert!(
+        format!("{err:#}").contains("Upgrade Rust Intelligence"),
+        "{err:#}"
+    );
 }

@@ -184,6 +184,7 @@ impl GenericLspEngine {
         if self.pull_unsupported.load(Ordering::Relaxed) {
             return None;
         }
+        // Rust Intelligence is asked through `ridx_diagnostics`, whose failures are final.
         let answer = self
             .send_request(
                 "textDocument/diagnostic",
