@@ -3697,3 +3697,43 @@ async fn an_index_question_waits_for_pending_changes_and_needs_their_report() {
         .expect_err("refused");
     assert!(format!("{err:#}").contains("ridx/status 2"), "{err:#}");
 }
+
+/// A ridx rebuild that outlasts the index wait (its progress still running) does not let an
+/// index question through with a busy note: the status must prove the index current, or the
+/// question is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ridx_rebuild_longer_than_the_wait_refuses_instead_of_answering_busy() {
+    let (dir, script) = workspace();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let ridx = bin.join("ridx");
+    std::fs::write(&ridx, "#!/bin/sh\nexec python3 \"$@\"\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&ridx, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut c = ridx_config(&script, serde_json::json!({ "ridx/status": 2 }));
+    c.command = ridx.display().to_string();
+    c.ready = prod_code_protocol::readiness::ReadySignal::Progress;
+    c.index_wait = Duration::from_millis(600);
+    c.env
+        .insert("FAKE_INDEXING".to_string(), "forever".to_string());
+    c.env.insert(
+        "FAKE_RIDX_STATUS".to_string(),
+        serde_json::json!({ "roots": [{ "root": "/w", "indexed": true, "error": null,
+            "building": true, "pendingChanges": false }] })
+        .to_string(),
+    );
+    let engine = GenericLspEngine::spawn(dir.path(), c)
+        .await
+        .expect("the fake server starts");
+    let err = engine
+        .send_request(
+            "workspace/symbol",
+            serde_json::json!({ "query": "indexed" }),
+        )
+        .await
+        .expect_err("refused, not answered from the older index");
+    assert!(format!("{err:#}").contains("being rebuilt"), "{err:#}");
+}

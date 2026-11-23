@@ -85,11 +85,17 @@ pub fn server_command_for_workspace(engine: &str, workspace_root: &Path) -> Opti
 fn server_command_inner(engine: &str, workspace_root: Option<&Path>) -> Option<ServerCommand> {
     use prod_code_engine_generic::GenericLspConfig;
     let from = |config: GenericLspConfig| ServerCommand::from_generic(engine, config);
+    // A Rust workspace that forbids build scripts gets no server of its own: ridx's index build
+    // and the rust-analyzer binary (build scripts and check-on-save on by default) would both run
+    // them. Its editor is answered by the in-process engine, which honours the policy.
+    if engine == "rust"
+        && workspace_root.is_some_and(|root| !crate::workspace::loader::rust::ridx_may_index(root))
+    {
+        return None;
+    }
     // Editors get the Rust server the gateway was started with (`--rust-server`).
-    // A workspace that forbids build scripts is not handed to ridx, whose index build runs them.
     let ridx = prod_code_engine_generic::RustServer::configured()
-        == prod_code_engine_generic::RustServer::Ridx
-        && workspace_root.is_none_or(crate::workspace::loader::rust::ridx_may_index);
+        == prod_code_engine_generic::RustServer::Ridx;
     let command = match engine {
         "rust" if ridx => from(GenericLspConfig::for_rust_ridx()),
         "rust" => ServerCommand {

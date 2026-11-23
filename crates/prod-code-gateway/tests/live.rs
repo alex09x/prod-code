@@ -2276,6 +2276,7 @@ impl EditorSession {
             root,
             init,
             Some(prod_code_protocol::PURPOSE_EDITOR.to_string()),
+            None,
         )
         .await
     }
@@ -2285,6 +2286,7 @@ impl EditorSession {
         root: &Path,
         init: serde_json::Value,
         purpose: Option<String>,
+        engine_subpath: Option<String>,
     ) -> (Self, serde_json::Value) {
         use futures_util::{SinkExt, StreamExt};
         let stream = prod_code_protocol::transport::connect(addr)
@@ -2308,7 +2310,7 @@ impl EditorSession {
                     client_workspace_root: root.to_string_lossy().to_string(),
                     preferred_engine: None,
                     base_workspace_name: Some(identity.name.clone()),
-                    engine_subpath: None,
+                    engine_subpath,
                     client_agent: None,
                     client_host: None,
                     purpose,
@@ -4047,6 +4049,7 @@ async fn oversized_and_malformed_wire_positions_never_select_another_token() {
         &root,
         json!({"rootUri": prod_code_protocol::path::file_uri(&root), "capabilities": {}}),
         None,
+        None,
     )
     .await;
     assert!(initialized.get("error").is_none(), "{initialized}");
@@ -4239,5 +4242,50 @@ async fn test_gateway_http_health_probe() {
     assert!(
         resp_str2.contains("\"error\": \"protocol_mismatch\""),
         "expected protocol mismatch error: {resp_str2}"
+    );
+}
+
+/// A Rust workspace whose `prod-code.toml` forbids build scripts gets no editor server of its
+/// own, neither ridx (its index build runs them) nor the rust-analyzer binary (build scripts and
+/// check-on-save on by default): the in-process engine answers its editor. The policy counts at
+/// the checkout root and at a nested project's root.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_editor_on_a_workspace_forbidding_build_scripts_runs_no_server_of_its_own() {
+    let gateway = Gateway::start();
+    let cargo = "[package]\nname = \"guarded\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n";
+    let forbid = "[rust]\nbuild_scripts = false\n";
+
+    // At the checkout root.
+    let checkout = tempfile::tempdir().expect("checkout");
+    let root = std::fs::canonicalize(checkout.path()).expect("canonical");
+    std::fs::write(root.join("Cargo.toml"), cargo).expect("Cargo.toml");
+    std::fs::write(root.join("prod-code.toml"), forbid).expect("prod-code.toml");
+    std::fs::create_dir_all(root.join("src")).expect("src");
+    std::fs::write(root.join("src/lib.rs"), "pub fn a() {}\n").expect("lib.rs");
+    commit_in(&root);
+    let (_editor, init) = EditorSession::open(gateway.addr, &root).await;
+    assert_eq!(init["result"]["serverInfo"]["name"], "prod-code", "{init}");
+
+    // In a nested project: its own prod-code.toml forbids them, the checkout's does not.
+    let outer = tempfile::tempdir().expect("checkout");
+    let outer_root = std::fs::canonicalize(outer.path()).expect("canonical");
+    let nested = outer_root.join("tools/guarded");
+    std::fs::create_dir_all(nested.join("src")).expect("nested src");
+    std::fs::write(nested.join("Cargo.toml"), cargo).expect("nested Cargo.toml");
+    std::fs::write(nested.join("prod-code.toml"), forbid).expect("nested prod-code.toml");
+    std::fs::write(nested.join("src/lib.rs"), "pub fn a() {}\n").expect("nested lib.rs");
+    commit_in(&outer_root);
+    let root_uri = format!("file://{}", nested.display());
+    let (_nested_editor, nested_init) = EditorSession::open_for(
+        gateway.addr,
+        &outer_root,
+        serde_json::json!({ "rootUri": root_uri, "capabilities": {} }),
+        Some(prod_code_protocol::PURPOSE_EDITOR.to_string()),
+        Some("tools/guarded".to_string()),
+    )
+    .await;
+    assert_eq!(
+        nested_init["result"]["serverInfo"]["name"], "prod-code",
+        "{nested_init}"
     );
 }
