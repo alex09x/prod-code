@@ -16,6 +16,21 @@ use tokio::sync::Mutex;
 use crate::backend::BackendWorker;
 use crate::workspace::types::RustLoader;
 
+/// Whether Rust Intelligence may index the workspace at `root`. Its index build runs `cargo
+/// check`, and so the workspace's build scripts and proc macros, with no way to turn them off.
+/// A workspace whose `[rust] build_scripts = false` forbids running them stays on the in-process
+/// engine, which honours it.
+pub(crate) fn ridx_may_index(root: &Path) -> bool {
+    let allowed = prod_code_engine_rust::ProdCodeConfig::load(root)
+        .rust
+        .build_scripts;
+    if !allowed {
+        tracing::info!(workspace = ?root,
+            "[rust] build_scripts = false: Rust Intelligence would run them, so this workspace is served by the in-process engine");
+    }
+    allowed
+}
+
 pub(crate) async fn load_rust(
     workspace_root: &Path,
     rust_loader: &RustLoader,
@@ -86,5 +101,30 @@ mod tests {
         let result = engine_load_error(anyhow::anyhow!("ordinary load failure"));
 
         assert!(result.unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod ridx_policy_tests {
+    use super::ridx_may_index;
+
+    /// A workspace that forbids build scripts is never handed to Rust Intelligence, whose
+    /// index build runs them; one that says nothing is.
+    #[test]
+    fn a_workspace_forbidding_build_scripts_stays_off_ridx() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(ridx_may_index(dir.path()));
+        std::fs::write(
+            dir.path().join("prod-code.toml"),
+            "[rust]\nbuild_scripts = false\n",
+        )
+        .unwrap();
+        assert!(!ridx_may_index(dir.path()));
+        std::fs::write(
+            dir.path().join("prod-code.toml"),
+            "[rust]\nbuild_scripts = true\n",
+        )
+        .unwrap();
+        assert!(ridx_may_index(dir.path()));
     }
 }

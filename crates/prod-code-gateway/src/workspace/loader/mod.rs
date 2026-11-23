@@ -142,7 +142,9 @@ pub(crate) async fn load_as_leader(
 
     // The Rust server the gateway was started with (`--rust-server`, ridx by default).
     let rust_server = prod_code_engine_generic::RustServer::configured();
-    let ridx = engine == "rust" && rust_server == prod_code_engine_generic::RustServer::Ridx;
+    let ridx = engine == "rust"
+        && rust_server == prod_code_engine_generic::RustServer::Ridx
+        && rust::ridx_may_index(workspace_root);
     let (rust_engine, go_engine, generic_engine, backend) = if ridx {
         // Rust Intelligence is an ordinary language server: the generic engine drives it. No
         // fallback: a ridx that does not start fails the load rather than handing the session

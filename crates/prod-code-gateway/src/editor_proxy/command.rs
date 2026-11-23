@@ -86,8 +86,10 @@ fn server_command_inner(engine: &str, workspace_root: Option<&Path>) -> Option<S
     use prod_code_engine_generic::GenericLspConfig;
     let from = |config: GenericLspConfig| ServerCommand::from_generic(engine, config);
     // Editors get the Rust server the gateway was started with (`--rust-server`).
+    // A workspace that forbids build scripts is not handed to ridx, whose index build runs them.
     let ridx = prod_code_engine_generic::RustServer::configured()
-        == prod_code_engine_generic::RustServer::Ridx;
+        == prod_code_engine_generic::RustServer::Ridx
+        && workspace_root.is_none_or(crate::workspace::loader::rust::ridx_may_index);
     let command = match engine {
         "rust" if ridx => from(GenericLspConfig::for_rust_ridx()),
         "rust" => ServerCommand {

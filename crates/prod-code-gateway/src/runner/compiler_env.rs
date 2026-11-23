@@ -19,6 +19,35 @@ use crate::*;
 /// is not told keeps answering from the text it had before the command, and every position in a
 /// file the command moved is off by however many lines it moved — silently, because the file it
 /// is asked about is opened fresh by the client and only the *other* files come from its copy.
+/// Tells the language servers that read the tree themselves (Rust Intelligence, gopls, the
+/// generic ones, editors' servers) what a command wrote or removed, as a sync tells them;
+/// without it they answer from the files as they were before the command.
+pub(crate) async fn notify_language_servers(
+    workspace_manager: &WorkspaceManager,
+    server_workspace: &std::path::Path,
+    files: &[FileDelta],
+) {
+    use crate::workspace::types::WatchedChange;
+    let watched: Vec<(std::path::PathBuf, WatchedChange)> = files
+        .iter()
+        .map(|file| {
+            let change = if file.content.is_some() {
+                WatchedChange::Changed
+            } else {
+                WatchedChange::Deleted
+            };
+            (server_workspace.join(&file.relative_path), change)
+        })
+        .collect();
+    if watched.is_empty() {
+        return;
+    }
+    for loaded in workspace_manager.loaded_under(server_workspace).await {
+        loaded.notify_watched_files(&watched).await;
+    }
+    workspace_manager.editor_servers.notify(&watched).await;
+}
+
 pub(crate) async fn refresh_engines(
     workspace_manager: &WorkspaceManager,
     server_workspace: &std::path::Path,
@@ -65,6 +94,7 @@ pub(crate) async fn refresh_engines(
             }
         }
     }
+    notify_language_servers(workspace_manager, server_workspace, files).await;
     if project_config_changed {
         let dropped = workspace_manager.unload_under(server_workspace).await;
         if dropped > 0 {
