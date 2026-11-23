@@ -168,6 +168,19 @@ fn a_nested_project_inherits_the_nearest_configuration_within_its_checkout() {
     )
     .unwrap();
     assert!(!ProdCodeConfig::load(&nested).rust.build_scripts);
+    // A value that is not a boolean is not permission either.
+    std::fs::write(
+        nested.join(ProdCodeConfig::FILE_NAME),
+        "[rust]\nbuild_scripts = \"true\"\n",
+    )
+    .unwrap();
+    std::fs::remove_file(checkout.join(ProdCodeConfig::FILE_NAME)).unwrap();
+    assert!(!ProdCodeConfig::load(&nested).rust.build_scripts);
+    std::fs::write(
+        checkout.join(ProdCodeConfig::FILE_NAME),
+        "[rust]\nbuild_scripts = false\n",
+    )
+    .unwrap();
     // An unreadable file in the chain cannot show that build scripts may run.
     std::fs::write(checkout.join(ProdCodeConfig::FILE_NAME), "[rust\n").unwrap();
     std::fs::remove_file(nested.join(ProdCodeConfig::FILE_NAME)).unwrap();

@@ -344,3 +344,41 @@ async fn a_refused_validation_engine_is_asked_for_again() {
     );
     assert_eq!(admission.reserved_bytes(), 0);
 }
+
+/// A build-script prohibition synced while an engine starts is not lost: the engine was chosen
+/// under the old policy, so it is dropped and started again under the new one, and the workspace
+/// records the policy its engine was chosen under (and stays reusable while it holds).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_policy_change_during_an_engine_start_starts_it_again_under_the_new_policy() {
+    let checkout = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(checkout.path().join(".git")).unwrap();
+    let root = checkout.path().join("crates/inner");
+    std::fs::create_dir_all(&root).unwrap();
+    let loads = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&loads);
+    let config = checkout.path().join("prod-code.toml");
+    let load: crate::workspace::types::RustLoader = Arc::new(
+        move |_root: &std::path::Path| -> Result<prod_code_engine_rust::RustEngine> {
+            // The first start is overtaken by a sync that forbids build scripts.
+            if counted.fetch_add(1, Ordering::SeqCst) == 0 {
+                std::fs::write(&config, "[rust]\nbuild_scripts = false\n").unwrap();
+            }
+            anyhow::bail!("scripted load")
+        },
+    );
+    let manager =
+        Arc::new(WorkspaceManager::with_admission(roomy_admission()).with_rust_loader(load));
+    let lease = manager.get_or_load(&root, "rust").await;
+    assert_eq!(
+        loads.load(Ordering::SeqCst),
+        2,
+        "started again under the new policy"
+    );
+    if let Ok(lease) = lease {
+        assert!(
+            !lease.build_scripts_allowed,
+            "recorded under the policy it was chosen by"
+        );
+        assert!(lease.reusable_for("rust"));
+    }
+}

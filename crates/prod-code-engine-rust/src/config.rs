@@ -154,13 +154,17 @@ impl ProdCodeConfig {
                 tracing::warn!(path = %path.display(), "unreadable prod-code.toml: build scripts stay off");
                 true
             }
-            Some(table) => {
-                table
-                    .get("rust")
-                    .and_then(|rust| rust.get("build_scripts"))
-                    .and_then(toml::Value::as_bool)
-                    == Some(false)
-            }
+            // Absent is no prohibition; `false`, or a value that is not a boolean
+            // (`"false"`), is: a policy that cannot be read as allowing them does not.
+            Some(table) => match table.get("rust").map(|rust| rust.get("build_scripts")) {
+                None | Some(None) => false,
+                Some(Some(value)) => {
+                    if value.as_bool().is_none() {
+                        tracing::warn!(path = %path.display(), "[rust] build_scripts is not a boolean: build scripts stay off");
+                    }
+                    value.as_bool() != Some(true)
+                }
+            },
         }
     }
 
