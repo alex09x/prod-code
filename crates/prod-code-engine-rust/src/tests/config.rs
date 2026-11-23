@@ -135,8 +135,8 @@ fn analyzer_build_scripts_get_the_worktree_own_target_when_the_configured_one_is
 }
 
 /// A nested project without its own `prod-code.toml` is governed by the nearest one above it in
-/// the checkout, so a checkout's `build_scripts = false` covers it; its own file wins; nothing
-/// above the checkout (the directory holding `.git`) is read.
+/// the checkout; a prohibition of build scripts anywhere up to the checkout's top holds whatever
+/// a nearer file says; nothing above the checkout (the directory holding `.git`) is read.
 #[test]
 fn a_nested_project_inherits_the_nearest_configuration_within_its_checkout() {
     let outer = tempfile::tempdir().unwrap();
@@ -152,12 +152,26 @@ fn a_nested_project_inherits_the_nearest_configuration_within_its_checkout() {
     assert!(!ProdCodeConfig::load(&nested).rust.build_scripts);
     assert!(!ProdCodeConfig::load(&checkout).rust.build_scripts);
 
+    // A nested file of its own governs its other options, but cannot lift the checkout's
+    // prohibition: not by saying nothing of it, nor by turning it back on.
+    std::fs::write(
+        nested.join(ProdCodeConfig::FILE_NAME),
+        "[rust]\nproc_macro_workers = 2\n",
+    )
+    .unwrap();
+    let own = ProdCodeConfig::load(&nested);
+    assert_eq!(own.rust.proc_macro_workers, Some(2));
+    assert!(!own.rust.build_scripts);
     std::fs::write(
         nested.join(ProdCodeConfig::FILE_NAME),
         "[rust]\nbuild_scripts = true\n",
     )
     .unwrap();
-    assert!(ProdCodeConfig::load(&nested).rust.build_scripts);
+    assert!(!ProdCodeConfig::load(&nested).rust.build_scripts);
+    // An unreadable file in the chain cannot show that build scripts may run.
+    std::fs::write(checkout.join(ProdCodeConfig::FILE_NAME), "[rust\n").unwrap();
+    std::fs::remove_file(nested.join(ProdCodeConfig::FILE_NAME)).unwrap();
+    assert!(!ProdCodeConfig::load(&nested).rust.build_scripts);
 
     // A file above the checkout does not govern it.
     let other = outer.path().join("other");
