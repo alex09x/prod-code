@@ -133,3 +133,39 @@ fn analyzer_build_scripts_get_the_worktree_own_target_when_the_configured_one_is
         )
     );
 }
+
+/// A nested project without its own `prod-code.toml` is governed by the nearest one above it in
+/// the checkout, so a checkout's `build_scripts = false` covers it; its own file wins; nothing
+/// above the checkout (the directory holding `.git`) is read.
+#[test]
+fn a_nested_project_inherits_the_nearest_configuration_within_its_checkout() {
+    let outer = tempfile::tempdir().unwrap();
+    let checkout = outer.path().join("checkout");
+    let nested = checkout.join("tools/guarded");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::create_dir_all(checkout.join(".git")).unwrap();
+    std::fs::write(
+        checkout.join(ProdCodeConfig::FILE_NAME),
+        "[rust]\nbuild_scripts = false\n",
+    )
+    .unwrap();
+    assert!(!ProdCodeConfig::load(&nested).rust.build_scripts);
+    assert!(!ProdCodeConfig::load(&checkout).rust.build_scripts);
+
+    std::fs::write(
+        nested.join(ProdCodeConfig::FILE_NAME),
+        "[rust]\nbuild_scripts = true\n",
+    )
+    .unwrap();
+    assert!(ProdCodeConfig::load(&nested).rust.build_scripts);
+
+    // A file above the checkout does not govern it.
+    let other = outer.path().join("other");
+    std::fs::create_dir_all(other.join(".git")).unwrap();
+    std::fs::write(
+        outer.path().join(ProdCodeConfig::FILE_NAME),
+        "[rust]\nbuild_scripts = false\n",
+    )
+    .unwrap();
+    assert!(ProdCodeConfig::load(&other).rust.build_scripts);
+}

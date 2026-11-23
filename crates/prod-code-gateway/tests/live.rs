@@ -4288,4 +4288,28 @@ async fn an_editor_on_a_workspace_forbidding_build_scripts_runs_no_server_of_its
         nested_init["result"]["serverInfo"]["name"], "prod-code",
         "{nested_init}"
     );
+
+    // In a nested project without a prod-code.toml of its own, under a checkout whose
+    // prod-code.toml forbids them: the checkout's policy governs it.
+    let guarded = tempfile::tempdir().expect("checkout");
+    let guarded_root = std::fs::canonicalize(guarded.path()).expect("canonical");
+    std::fs::write(guarded_root.join("prod-code.toml"), forbid).expect("prod-code.toml");
+    let inner = guarded_root.join("crates/inner");
+    std::fs::create_dir_all(inner.join("src")).expect("inner src");
+    std::fs::write(inner.join("Cargo.toml"), cargo).expect("inner Cargo.toml");
+    std::fs::write(inner.join("src/lib.rs"), "pub fn a() {}\n").expect("inner lib.rs");
+    commit_in(&guarded_root);
+    let inner_uri = format!("file://{}", inner.display());
+    let (_inner_editor, inner_init) = EditorSession::open_for(
+        gateway.addr,
+        &guarded_root,
+        serde_json::json!({ "rootUri": inner_uri, "capabilities": {} }),
+        Some(prod_code_protocol::PURPOSE_EDITOR.to_string()),
+        Some("crates/inner".to_string()),
+    )
+    .await;
+    assert_eq!(
+        inner_init["result"]["serverInfo"]["name"], "prod-code",
+        "{inner_init}"
+    );
 }

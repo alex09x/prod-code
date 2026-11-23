@@ -98,10 +98,14 @@ impl ProdCodeConfig {
     /// The configuration file name looked up at the workspace root.
     pub const FILE_NAME: &'static str = "prod-code.toml";
 
-    /// Reads `<root>/prod-code.toml`; a missing file is the default configuration and a
-    /// malformed one is reported and ignored.
+    /// Reads the `prod-code.toml` that governs `root`: its own, or for a nested project without
+    /// one, the nearest one above it within the checkout (up to the directory holding `.git`).
+    /// A checkout's `[rust] build_scripts = false` thus covers its nested projects too. No file
+    /// is the default configuration; a malformed one is reported and ignored.
     pub fn load(root: &Path) -> Self {
-        let path = root.join(Self::FILE_NAME);
+        let Some(path) = Self::governing_file(root) else {
+            return Self::default();
+        };
         let Ok(text) = std::fs::read_to_string(&path) else {
             return Self::default();
         };
@@ -112,6 +116,21 @@ impl ProdCodeConfig {
                 Self::default()
             }
         }
+    }
+
+    /// The nearest `prod-code.toml` at or above `root`, not past the checkout's top (the first
+    /// directory holding `.git`).
+    fn governing_file(root: &Path) -> Option<std::path::PathBuf> {
+        for dir in root.ancestors() {
+            let path = dir.join(Self::FILE_NAME);
+            if path.is_file() {
+                return Some(path);
+            }
+            if dir.join(".git").exists() {
+                return None;
+            }
+        }
+        None
     }
 
     /// [`Self::cargo_config`] for the workspace at `root`. When Cargo would build it into a

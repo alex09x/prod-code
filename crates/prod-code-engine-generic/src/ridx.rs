@@ -61,10 +61,17 @@ pub fn declares_fresh_safe_delete(capabilities: &Value) -> bool {
 /// one with changes reported to ridx that its loaded index does not cover yet
 /// (`pendingChanges`, set as soon as ridx is told of a change, before a rebuild starts).
 pub fn index_building(status: &Value) -> Option<String> {
-    status.get("roots")?.as_array()?.iter().find_map(|root| {
+    let roots = status.get("roots")?.as_array()?;
+    if roots.is_empty() {
+        // Before ridx has queued the workspace folders it was given.
+        return Some("ridx has not taken up the workspace yet".to_string());
+    }
+    roots.iter().find_map(|root| {
         let name = root.get("root").and_then(Value::as_str).unwrap_or("?");
         let flag = |key: &str| root.get(key).and_then(Value::as_bool) == Some(true);
-        if flag("building") {
+        if root.get("indexed").and_then(Value::as_bool) != Some(true) {
+            Some(format!("the ridx index of {name} is not built yet"))
+        } else if flag("building") {
             Some(format!("the ridx index of {name} is being rebuilt"))
         } else if flag("pendingChanges") {
             Some(format!(
@@ -156,19 +163,18 @@ fn level(capabilities: &Value, pointer: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// Why an index answer of a `ridx/status` result is not final: a root whose last build failed,
-/// or that has no index. `None` when every root is indexed without an error.
+/// Why an index answer of a `ridx/status` result cannot become final by waiting: a root whose
+/// last build failed, or a status without its `roots`. A root not built yet is not a failure:
+/// [`index_building`] waits for it.
 pub fn index_failure(status: &Value) -> Option<String> {
     let Some(roots) = status.get("roots").and_then(Value::as_array) else {
         return Some("ridx/status lists no roots".to_string());
     };
     roots.iter().find_map(|root| {
         let name = root.get("root").and_then(Value::as_str).unwrap_or("?");
-        if let Some(error) = root.get("error").and_then(Value::as_str) {
-            return Some(format!("the ridx index of {name} failed: {error}"));
-        }
-        (root.get("indexed").and_then(Value::as_bool) != Some(true))
-            .then(|| format!("the ridx index of {name} is not built"))
+        root.get("error")
+            .and_then(Value::as_str)
+            .map(|error| format!("the ridx index of {name} failed: {error}"))
     })
 }
 
@@ -265,7 +271,7 @@ impl GenericLspEngine {
                  (methods[\"ridx/safeDelete\"] >= 2)"
             );
         }
-        let status = self.ridx_status().await?;
+        let status = self.ridx_status(self.config.request_timeout).await?;
         if let Some(reason) = index_failure(&status).or_else(|| index_building(&status)) {
             anyhow::bail!("{reason}; nothing is deleted until it is indexed");
         }
@@ -276,10 +282,12 @@ impl GenericLspEngine {
         safe_delete_outcome(&self.send_request("ridx/safeDelete", request).await?)
     }
 
-    async fn ridx_status(&self) -> Result<Value> {
-        // Boxed: the status request goes through `send_request`, which calls the index gate
-        // (not for `ridx/status` itself, which needs no index).
-        let answer = Box::pin(self.send_request("ridx/status", serde_json::json!({}))).await?;
+    async fn ridx_status(&self, timeout: std::time::Duration) -> Result<Value> {
+        // Boxed: the status request goes through `send_request_with_timeout`, which calls the
+        // index gate (not for `ridx/status` itself, which needs no index).
+        let answer =
+            Box::pin(self.send_request_with_timeout("ridx/status", serde_json::json!({}), timeout))
+                .await?;
         answer.get("result").cloned().ok_or_else(|| {
             anyhow!(
                 "ridx/status failed: {}",
@@ -318,22 +326,35 @@ impl GenericLspEngine {
                  upgrade Rust Intelligence"
             );
         }
-        let deadline = tokio::time::Instant::now() + self.config.index_wait;
+        // One deadline bounds the whole wait: every status request and every pause gets only
+        // what is left of it.
+        let wait = self.config.index_wait;
+        let deadline = tokio::time::Instant::now() + wait;
+        let behind_after = |behind: String| {
+            anyhow!(
+                "{behind} after {:.1}s; ask again once it is indexed",
+                wait.as_secs_f64()
+            )
+        };
+        let mut last = "the ridx index did not prove current".to_string();
         loop {
-            let status = self.ridx_status().await?;
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if left.is_zero() {
+                return Err(behind_after(last));
+            }
+            let status = match tokio::time::timeout(left, self.ridx_status(left)).await {
+                Ok(status) => status?,
+                Err(_) => return Err(behind_after(last)),
+            };
             if let Some(reason) = index_failure(&status) {
                 return Err(anyhow!("{reason}; its index answers are not final"));
             }
             let Some(behind) = index_building(&status) else {
                 return Ok(());
             };
-            if tokio::time::Instant::now() >= deadline {
-                return Err(anyhow!(
-                    "{behind} after {}s; ask again once it is indexed",
-                    self.config.index_wait.as_secs()
-                ));
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            last = behind;
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            tokio::time::sleep(left.min(std::time::Duration::from_millis(100))).await;
         }
     }
 }
@@ -445,11 +466,16 @@ mod tests {
             index_failure(&failed).as_deref(),
             Some("the ridx index of /w failed: no driver")
         );
+        // Not built yet, or not taken up yet: waited for, not a failure.
         let unbuilt = json!({"roots": [{"root": "/w", "indexed": false, "error": null}]});
+        assert_eq!(index_failure(&unbuilt), None);
         assert_eq!(
-            index_failure(&unbuilt).as_deref(),
-            Some("the ridx index of /w is not built")
+            index_building(&unbuilt).as_deref(),
+            Some("the ridx index of /w is not built yet")
         );
+        assert_eq!(index_failure(&json!({"roots": []})), None);
+        assert!(index_building(&json!({"roots": []})).is_some());
+        assert_eq!(index_building(&ok), None);
         assert!(index_failure(&json!({})).is_some());
     }
 }

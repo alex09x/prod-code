@@ -3728,6 +3728,7 @@ async fn a_ridx_rebuild_longer_than_the_wait_refuses_instead_of_answering_busy()
     let engine = GenericLspEngine::spawn(dir.path(), c)
         .await
         .expect("the fake server starts");
+    let started = std::time::Instant::now();
     let err = engine
         .send_request(
             "workspace/symbol",
@@ -3735,5 +3736,11 @@ async fn a_ridx_rebuild_longer_than_the_wait_refuses_instead_of_answering_busy()
         )
         .await
         .expect_err("refused, not answered from the older index");
+    let took = started.elapsed();
     assert!(format!("{err:#}").contains("being rebuilt"), "{err:#}");
+    // One index wait (600 ms), not the progress wait and then another.
+    assert!(
+        took >= Duration::from_millis(550) && took < Duration::from_millis(1100),
+        "the refusal came after {took:?}"
+    );
 }
