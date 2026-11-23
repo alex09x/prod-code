@@ -129,7 +129,27 @@ impl EditorServers {
             })
             .collect();
         let mut retire = Vec::new();
+        // A prod-code.toml that changed at or above a Rust server's root may now forbid build
+        // scripts there; a server of its own runs them, so it is retired and the editor's next
+        // session goes to the in-process engine.
+        let policy_dirs: Vec<&std::path::Path> = changes
+            .iter()
+            .filter(|(path, _)| {
+                path.file_name()
+                    .is_some_and(|n| n == prod_code_engine_rust::ProdCodeConfig::FILE_NAME)
+            })
+            .filter_map(|(path, _)| path.parent())
+            .collect();
         for (id, root, input, write_budget) in targets {
+            if policy_dirs.iter().any(|dir| root.starts_with(dir))
+                && root.join("Cargo.toml").is_file()
+                && !prod_code_engine_rust::ProdCodeConfig::load(&root)
+                    .rust
+                    .build_scripts
+            {
+                retire.push(id);
+                continue;
+            }
             let events = crate::workspace::watched_events(&root, changes);
             if events.is_empty() {
                 continue;
@@ -152,5 +172,36 @@ impl EditorServers {
             // this transport has lost part of its stream and must never be reused.
             self.remove(id, true);
         }
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    /// A Rust editor server whose root a synced prod-code.toml now forbids build scripts in (at
+    /// its root or above it) is retired; one under an unrelated change keeps running.
+    #[tokio::test]
+    async fn a_rust_editor_server_is_retired_when_its_policy_forbids_build_scripts() {
+        let checkout = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(checkout.path().join(".git")).unwrap();
+        let root = checkout.path().join("crates/inner");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"inner\"\n").unwrap();
+        let servers = EditorServers::default();
+        let (input, _output) = rapidfire::mpsc::bounded(8);
+        let mut registration = servers.register(root.clone(), input, Duration::from_secs(1));
+
+        let unrelated = vec![(root.join("src/lib.rs"), WatchedChange::Changed)];
+        servers.notify(&unrelated).await;
+        assert_eq!(servers.count(), 1, "an ordinary change keeps the server");
+
+        let config = checkout.path().join("prod-code.toml");
+        std::fs::write(&config, "[rust]\nbuild_scripts = false\n").unwrap();
+        servers.notify(&[(config, WatchedChange::Created)]).await;
+        assert_eq!(servers.count(), 0, "the server is retired");
+        tokio::time::timeout(Duration::from_secs(1), registration.retired())
+            .await
+            .expect("its session is told to end");
     }
 }

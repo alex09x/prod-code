@@ -85,6 +85,7 @@ impl SharedWorkspace {
                 validation_attached: AtomicBool::new(!is_main),
                 rebalance_tx: self.rebalance_tx.clone(),
                 manifest_mtimes: self.manifest_mtimes.clone(),
+                build_scripts_allowed: self.build_scripts_allowed,
                 loading_changes: Arc::clone(&base.loading_changes),
             }));
         }
@@ -124,6 +125,7 @@ impl SharedWorkspace {
             validation_attached: AtomicBool::new(false),
             rebalance_tx: self.rebalance_tx.clone(),
             manifest_mtimes: self.manifest_mtimes.clone(),
+            build_scripts_allowed: self.build_scripts_allowed,
             loading_changes: Arc::clone(&self.loading_changes),
         }))
     }
@@ -316,6 +318,7 @@ impl SharedWorkspace {
             validation_attached: AtomicBool::new(false),
             rebalance_tx: self.rebalance_tx.clone(),
             manifest_mtimes: self.manifest_mtimes.clone(),
+            build_scripts_allowed: self.build_scripts_allowed,
             loading_changes: Arc::clone(&self.loading_changes),
         }))
     }

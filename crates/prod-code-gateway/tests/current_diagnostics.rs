@@ -768,14 +768,19 @@ pub fn external_types() -> ExternalTypes {
     )
     .await
     .expect_err("the compiler-only borrow error is rejected");
+    // rust-analyzer accepts the borrow and only cargo rejects it; Rust Intelligence's compiler
+    // diagnostics reject it before cargo runs. Either way the E0515 refuses the proposal.
+    let analyzer_rejects =
+        refused.starts_with("3 file(s) checked together: 1 error(s)") && refused.contains("E0515");
+    let cargo_rejects = refused.starts_with("3 file(s) checked together: 0 error(s), 0 warning(s)")
+        && refused.contains(
+            "argv=[\"cargo\",\"check\",\"--workspace\",\"--all-targets\",\"--message-format=json\"]",
+        )
+        && refused.contains("exit=101")
+        && refused.contains("E0515");
     assert!(
-        refused.starts_with("3 file(s) checked together: 0 error(s), 0 warning(s)")
-            && refused.contains(
-                "argv=[\"cargo\",\"check\",\"--workspace\",\"--all-targets\",\"--message-format=json\"]"
-            )
-            && refused.contains("exit=101")
-            && refused.contains("E0515"),
-        "rust-analyzer accepts the borrow but cargo rejects it: {refused}"
+        analyzer_rejects || cargo_rejects,
+        "the borrow error is rejected, by the analyzer or by cargo: {refused}"
     );
     assert_snapshot(&root, &before);
     assert_snapshot(&server, &before);

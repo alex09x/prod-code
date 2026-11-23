@@ -66,6 +66,9 @@ pub struct SharedWorkspace {
     pub rebalance_tx: broadcast::Sender<(String, Option<String>)>,
     /// Recorded modification timestamps for project manifests when loaded.
     pub manifest_mtimes: HashMap<PathBuf, Option<std::time::SystemTime>>,
+    /// Whether the root's prod-code.toml chain allowed build scripts when it was loaded; a
+    /// change makes it unreusable.
+    pub(crate) build_scripts_allowed: bool,
     /// While a validation engine of this root loads, the files changed meanwhile, which the
     /// engine read before they changed and catches up on once published (#1490). `None` when
     /// nothing is loading. Shared like `rust_engines` with the views of this root.
@@ -144,6 +147,10 @@ impl SharedWorkspace {
             let mtime = std::fs::metadata(&p).and_then(|m| m.modified()).ok();
             manifest_mtimes.insert(p, mtime);
         }
+        let build_scripts_allowed = engine != "rust"
+            || prod_code_engine_rust::ProdCodeConfig::load(&root)
+                .rust
+                .build_scripts;
         Self {
             key: WorkspaceKey(root.clone()),
             root,
@@ -169,6 +176,7 @@ impl SharedWorkspace {
             validation_attached: AtomicBool::new(false),
             rebalance_tx,
             manifest_mtimes,
+            build_scripts_allowed,
             loading_changes,
         }
     }
@@ -245,6 +253,17 @@ impl SharedWorkspace {
         if self.has_stale_manifests() {
             return false;
         }
+        // The execution policy the engine was loaded under must still hold: a prod-code.toml
+        // that turned build scripts off (at this root or above it) reloads the workspace, onto
+        // the in-process engine that honours it, and one that turned them on reloads it too.
+        if self.engine == "rust"
+            && prod_code_engine_rust::ProdCodeConfig::load(&self.root)
+                .rust
+                .build_scripts
+                != self.build_scripts_allowed
+        {
+            return false;
+        }
         true
     }
 
@@ -268,6 +287,16 @@ impl SharedWorkspace {
             } else if eng.is_base_stale() {
                 return true;
             }
+        }
+        // Rust Intelligence follows manifest changes itself: it is told of them as of any synced
+        // file and reindexes. Its own index build writes `Cargo.lock`, which would otherwise
+        // read as a changed manifest and reload the workspace on the next session.
+        if self
+            .generic_engine
+            .as_ref()
+            .is_some_and(|engine| engine.config.is_ridx())
+        {
+            return false;
         }
         for (path, recorded_mtime) in &self.manifest_mtimes {
             let current = std::fs::metadata(path).and_then(|m| m.modified()).ok();

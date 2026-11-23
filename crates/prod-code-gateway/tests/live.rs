@@ -493,7 +493,9 @@ async fn real_checkout_scenario() {
 
     // An unused import is reported, as rustc reports it and `-D warnings` rejects it, although
     // rust-analyzer computes no diagnostic for it (#134).
-    let with_import = format!("use std::collections::HashMap;\n{LIB}");
+    // After the crate's inner doc comment: before it, rustc rejects the comment (E0753).
+    let (doc, rest) = LIB.split_once('\n').expect("LIB starts with its doc line");
+    let with_import = format!("{doc}\nuse std::collections::HashMap;\n{rest}");
     let validated = text_of(
         &tool(
             addr,
@@ -504,8 +506,11 @@ async fn real_checkout_scenario() {
         .await,
     );
     assert!(
-        validated.contains("unused_imports") && validated.contains(":1:1"),
-        "the unused import is reported: {validated}"
+        // Its line; the column is the `use` (rust-analyzer) or its path (rustc, ridx).
+        validated.contains("unused_imports")
+            && validated.contains("src/lib.rs:2:")
+            && validated.contains("0 error"),
+        "the unused import is reported, and nothing else: {validated}"
     );
 
     // A proposed edit is judged before anything is written.
@@ -802,7 +807,9 @@ async fn real_checkout_scenario() {
 /// become a hover at byte zero or let a forced refactoring touch the checkout.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_gateway_refuses_invalid_native_positions_without_writing() {
-    let gateway = Gateway::start();
+    // On rust-analyzer until ridx refuses a position past the end of a document
+    // (https://github.com/alex09x/rust-intelligence/issues/2).
+    let gateway = Gateway::start_with(&[("PROD_CODE_RUST_SERVER", "rust-analyzer")]);
     let checkout = Checkout::new();
     let (addr, root) = (gateway.addr, checkout.root());
     fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
@@ -1550,6 +1557,8 @@ async fn the_gateway_applies_and_refuses_changes() {
 /// answer questions.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_gateway_runs_commands_and_hypotheses() {
+    // The default Rust server: what a command writes reaches it, and an index question waits
+    // until its index covers the change (rust-intelligence#5).
     let gateway = Gateway::start();
     let checkout = Checkout::new();
     let (addr, root) = (gateway.addr, checkout.root());
@@ -1684,7 +1693,10 @@ async fn the_gateway_runs_commands_and_hypotheses() {
 /// engine is looking at.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn validation_runs_on_its_own_engine_and_sees_every_change() {
-    let gateway = Gateway::start();
+    // On rust-analyzer until ridx's compiler diagnostics carry rustc's label (expected/found,
+    // https://github.com/alex09x/rust-intelligence/issues/4) and its status says when the index
+    // is behind a reported change (https://github.com/alex09x/rust-intelligence/issues/5).
+    let gateway = Gateway::start_with(&[("PROD_CODE_RUST_SERVER", "rust-analyzer")]);
     let checkout = Checkout::new();
     let (addr, root) = (gateway.addr, checkout.root());
     let proposal = format!("{LIB}\npub fn label() -> String {{\n    store::fresh()\n}}\n");
@@ -2264,6 +2276,7 @@ impl EditorSession {
             root,
             init,
             Some(prod_code_protocol::PURPOSE_EDITOR.to_string()),
+            None,
         )
         .await
     }
@@ -2273,6 +2286,7 @@ impl EditorSession {
         root: &Path,
         init: serde_json::Value,
         purpose: Option<String>,
+        engine_subpath: Option<String>,
     ) -> (Self, serde_json::Value) {
         use futures_util::{SinkExt, StreamExt};
         let stream = prod_code_protocol::transport::connect(addr)
@@ -2296,7 +2310,7 @@ impl EditorSession {
                     client_workspace_root: root.to_string_lossy().to_string(),
                     preferred_engine: None,
                     base_workspace_name: Some(identity.name.clone()),
-                    engine_subpath: None,
+                    engine_subpath,
                     client_agent: None,
                     client_host: None,
                     purpose,
@@ -2413,8 +2427,12 @@ pub fn run() -> u32 {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_editor_session_gets_what_an_editor_needs_for_rust() {
     // The in-memory engine answers an editor only where the node has no rust-analyzer for it;
-    // here it is asked to, whatever the node has.
-    let gateway = Gateway::start_with(&[("PROD_CODE_EDITOR_SERVERS", "off")]);
+    // here it is asked to, whatever the node has. On rust-analyzer until ridx completes after
+    // `self.` (https://github.com/alex09x/rust-intelligence/issues/3).
+    let gateway = Gateway::start_with(&[
+        ("PROD_CODE_EDITOR_SERVERS", "off"),
+        ("PROD_CODE_RUST_SERVER", "rust-analyzer"),
+    ]);
     let checkout = tempfile::tempdir().expect("checkout");
     let root = std::fs::canonicalize(checkout.path()).expect("canonical");
     std::fs::write(
@@ -2682,7 +2700,8 @@ async fn an_editor_gets_rust_analyzer_itself_on_the_node() {
         eprintln!("skipping: rust-analyzer is not installed (build nodes have it)");
         return;
     }
-    let gateway = Gateway::start();
+    // rust-analyzer is the gateway's Rust server only when chosen; ridx is the default.
+    let gateway = Gateway::start_with(&[("PROD_CODE_RUST_SERVER", "rust-analyzer")]);
     let checkout = tempfile::tempdir().expect("checkout");
     let root = std::fs::canonicalize(checkout.path()).expect("canonical");
     std::fs::write(
@@ -4030,6 +4049,7 @@ async fn oversized_and_malformed_wire_positions_never_select_another_token() {
         &root,
         json!({"rootUri": prod_code_protocol::path::file_uri(&root), "capabilities": {}}),
         None,
+        None,
     )
     .await;
     assert!(initialized.get("error").is_none(), "{initialized}");
@@ -4222,5 +4242,74 @@ async fn test_gateway_http_health_probe() {
     assert!(
         resp_str2.contains("\"error\": \"protocol_mismatch\""),
         "expected protocol mismatch error: {resp_str2}"
+    );
+}
+
+/// A Rust workspace whose `prod-code.toml` forbids build scripts gets no editor server of its
+/// own, neither ridx (its index build runs them) nor the rust-analyzer binary (build scripts and
+/// check-on-save on by default): the in-process engine answers its editor. The policy counts at
+/// the checkout root and at a nested project's root.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_editor_on_a_workspace_forbidding_build_scripts_runs_no_server_of_its_own() {
+    let gateway = Gateway::start();
+    let cargo = "[package]\nname = \"guarded\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n";
+    let forbid = "[rust]\nbuild_scripts = false\n";
+
+    // At the checkout root.
+    let checkout = tempfile::tempdir().expect("checkout");
+    let root = std::fs::canonicalize(checkout.path()).expect("canonical");
+    std::fs::write(root.join("Cargo.toml"), cargo).expect("Cargo.toml");
+    std::fs::write(root.join("prod-code.toml"), forbid).expect("prod-code.toml");
+    std::fs::create_dir_all(root.join("src")).expect("src");
+    std::fs::write(root.join("src/lib.rs"), "pub fn a() {}\n").expect("lib.rs");
+    commit_in(&root);
+    let (_editor, init) = EditorSession::open(gateway.addr, &root).await;
+    assert_eq!(init["result"]["serverInfo"]["name"], "prod-code", "{init}");
+
+    // In a nested project: its own prod-code.toml forbids them, the checkout's does not.
+    let outer = tempfile::tempdir().expect("checkout");
+    let outer_root = std::fs::canonicalize(outer.path()).expect("canonical");
+    let nested = outer_root.join("tools/guarded");
+    std::fs::create_dir_all(nested.join("src")).expect("nested src");
+    std::fs::write(nested.join("Cargo.toml"), cargo).expect("nested Cargo.toml");
+    std::fs::write(nested.join("prod-code.toml"), forbid).expect("nested prod-code.toml");
+    std::fs::write(nested.join("src/lib.rs"), "pub fn a() {}\n").expect("nested lib.rs");
+    commit_in(&outer_root);
+    let root_uri = format!("file://{}", nested.display());
+    let (_nested_editor, nested_init) = EditorSession::open_for(
+        gateway.addr,
+        &outer_root,
+        serde_json::json!({ "rootUri": root_uri, "capabilities": {} }),
+        Some(prod_code_protocol::PURPOSE_EDITOR.to_string()),
+        Some("tools/guarded".to_string()),
+    )
+    .await;
+    assert_eq!(
+        nested_init["result"]["serverInfo"]["name"], "prod-code",
+        "{nested_init}"
+    );
+
+    // In a nested project without a prod-code.toml of its own, under a checkout whose
+    // prod-code.toml forbids them: the checkout's policy governs it.
+    let guarded = tempfile::tempdir().expect("checkout");
+    let guarded_root = std::fs::canonicalize(guarded.path()).expect("canonical");
+    std::fs::write(guarded_root.join("prod-code.toml"), forbid).expect("prod-code.toml");
+    let inner = guarded_root.join("crates/inner");
+    std::fs::create_dir_all(inner.join("src")).expect("inner src");
+    std::fs::write(inner.join("Cargo.toml"), cargo).expect("inner Cargo.toml");
+    std::fs::write(inner.join("src/lib.rs"), "pub fn a() {}\n").expect("inner lib.rs");
+    commit_in(&guarded_root);
+    let inner_uri = format!("file://{}", inner.display());
+    let (_inner_editor, inner_init) = EditorSession::open_for(
+        gateway.addr,
+        &guarded_root,
+        serde_json::json!({ "rootUri": inner_uri, "capabilities": {} }),
+        Some(prod_code_protocol::PURPOSE_EDITOR.to_string()),
+        Some("crates/inner".to_string()),
+    )
+    .await;
+    assert_eq!(
+        inner_init["result"]["serverInfo"]["name"], "prod-code",
+        "{inner_init}"
     );
 }

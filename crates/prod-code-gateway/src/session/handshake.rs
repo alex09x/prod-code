@@ -83,8 +83,14 @@ pub async fn handle_handshake(
     // on this node (#332); without one here, the shared engines answer it.
     // Its server is admitted like an engine (#1528): without room for one, the shared engines
     // answer it, with their own capacity handling.
+    // A Rust project that forbids build scripts, judged at the root its server would run in (a
+    // nested project's own prod-code.toml counts), is answered by the in-process engine.
+    let rust_policy_allows = engine != "rust"
+        || (crate::workspace::loader::rust::ridx_may_index(&server_workspace)
+            && crate::workspace::loader::rust::ridx_may_index(&engine_root));
     if req.purpose.as_deref() == Some(prod_code_protocol::PURPOSE_EDITOR)
         && editor_proxy::enabled()
+        && rust_policy_allows
         && let Some(command) = editor_proxy::server_command_for_workspace(engine, &server_workspace)
         && let Some(reservation) = state
             .workspace_manager

@@ -36,6 +36,9 @@ impl Gateway {
             .env("PROD_CODE_STORAGE", storage.path())
             .env("PROD_CODE_PEERS", "")
             .env("PROD_CODE_BIND", "127.0.0.1:0")
+            // On rust-analyzer until ridx's workspace/symbol lists the standard library, which
+            // the name-conflict check reads (https://github.com/alex09x/rust-intelligence/issues/6).
+            .env("PROD_CODE_RUST_SERVER", "rust-analyzer")
             .env_remove("RUST_LOG")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())

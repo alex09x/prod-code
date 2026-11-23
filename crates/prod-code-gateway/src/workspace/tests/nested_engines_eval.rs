@@ -144,3 +144,36 @@ async fn a_change_made_while_the_validation_engine_loads_reaches_it() {
         .collect();
     assert!(names.iter().any(|n| n == "two"), "{names:?}");
 }
+
+/// A warm Rust workspace loaded while build scripts were allowed is not reused once a
+/// prod-code.toml at its root or above it in the checkout turns them off: the next session
+/// reloads it under the new policy (onto the in-process engine, which honours it).
+#[test]
+fn a_warm_rust_workspace_is_not_reused_after_its_inherited_policy_forbids_build_scripts() {
+    let checkout = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(checkout.path().join(".git")).unwrap();
+    let nested = checkout.path().join("crates/inner");
+    std::fs::create_dir_all(&nested).unwrap();
+    let ws = crate::workspace::SharedWorkspace::new(
+        nested.clone(),
+        "rust".to_string(),
+        None,
+        None,
+        None,
+        None,
+    );
+    assert!(ws.reusable_for("rust"));
+    std::fs::write(
+        checkout.path().join("prod-code.toml"),
+        "[rust]\nbuild_scripts = false\n",
+    )
+    .unwrap();
+    assert!(
+        !ws.reusable_for("rust"),
+        "loaded with build scripts allowed, now forbidden from the checkout"
+    );
+    // Loaded under the prohibition, it stays reusable while the prohibition holds.
+    let guarded =
+        crate::workspace::SharedWorkspace::new(nested, "rust".to_string(), None, None, None, None);
+    assert!(guarded.reusable_for("rust"));
+}

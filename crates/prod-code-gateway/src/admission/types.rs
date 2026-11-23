@@ -32,7 +32,7 @@ pub type MemoryProbe = Arc<dyn Fn() -> Option<(u64, u64)> + Send + Sync>;
 /// servers run as their own processes and are smaller. Rust through Rust Intelligence is such a
 /// server: `ridx lsp` keeps an index on disk and measured 72–917 MB.
 pub fn default_reserve(engine: &str) -> u64 {
-    reserve_for(engine, prod_code_engine_generic::RustServer::from_env())
+    reserve_for(engine, prod_code_engine_generic::RustServer::configured())
 }
 
 fn reserve_for(engine: &str, rust: prod_code_engine_generic::RustServer) -> u64 {

@@ -216,15 +216,25 @@ impl GenericLspEngine {
         // A question answered from the index waits until the server has built it; one still
         // not built when the wait ends is answered with a note of how far it got (#391).
         let busy = if needs_index(method) {
-            let busy = self.readiness.wait(self.config.index_wait).await;
-            // Rust Intelligence ends its progress for a failed build as well: ready, it
-            // answers only when `ridx/status` shows every root indexed.
-            if busy.is_none() {
+            if self.config.is_ridx() {
+                // Rust Intelligence's answer is final only when `ridx/status` proves its index
+                // covers every reported change; otherwise it is refused. Its progress does not
+                // decide it (`end` comes for a failed build too, and a rebuild longer than the
+                // wait must not let an older index answer), so it is not waited on: the status
+                // is, under the one index-wait deadline.
                 self.ridx_index_gate()
                     .await
                     .with_context(|| format!("'{method}' is not asked"))?;
+                None
+            } else {
+                let busy = self.readiness.wait(self.config.index_wait).await;
+                if busy.is_none() {
+                    self.ridx_index_gate()
+                        .await
+                        .with_context(|| format!("'{method}' is not asked"))?;
+                }
+                busy
             }
-            busy
         } else {
             None
         };

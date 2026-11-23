@@ -37,7 +37,8 @@ async fn main() {
         eprintln!(
             "\n💡 If this is an unexpected error or a bug in prod-code, please report it:\n\
              - Via CLI: prod-code report-issue --title \"...\" --body \"...\" (automatically sanitizes hostnames, LAN addresses, and home paths)\n\
-             - On GitHub: https://github.com/alex09x/prod-code/issues (manually remove hostnames, LAN addresses, home paths, and credentials before posting)"
+             - On GitHub: https://github.com/alex09x/prod-code/issues (manually remove hostnames, LAN addresses, home paths, and credentials before posting)\n\
+             - A Rust answer that misses or gets wrong what is in the code comes from Rust Intelligence: also report it at https://github.com/alex09x/rust-intelligence/issues with the command, what came back, what you expected and a minimal reproduction"
         );
         std::process::exit(1);
     }

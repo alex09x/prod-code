@@ -98,19 +98,73 @@ impl ProdCodeConfig {
     /// The configuration file name looked up at the workspace root.
     pub const FILE_NAME: &'static str = "prod-code.toml";
 
-    /// Reads `<root>/prod-code.toml`; a missing file is the default configuration and a
-    /// malformed one is reported and ignored.
+    /// Reads the `prod-code.toml` that governs `root`: its own, or for a nested project without
+    /// one, the nearest one above it within the checkout (up to the directory holding `.git`).
+    /// No file is the default configuration; a malformed one is reported and ignored.
+    ///
+    /// Running the workspace's code is decided apart from the other options: `build_scripts`
+    /// is off when any `prod-code.toml` from `root` up to the checkout's top turns it off, or
+    /// cannot be read. A nested file that sets something else, or nothing, does not weaken a
+    /// checkout's prohibition.
     pub fn load(root: &Path) -> Self {
-        let path = root.join(Self::FILE_NAME);
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            return Self::default();
+        let files = Self::files_up_to_checkout(root);
+        let mut config = match files.first() {
+            None => Self::default(),
+            Some(path) => match std::fs::read_to_string(path)
+                .map_err(|e| e.to_string())
+                .and_then(|text| toml::from_str::<Self>(&text).map_err(|e| e.to_string()))
+            {
+                Ok(config) => config,
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "prod-code.toml ignored");
+                    Self::default()
+                }
+            },
         };
-        match toml::from_str::<Self>(&text) {
-            Ok(config) => config,
-            Err(e) => {
-                tracing::warn!(path = %path.display(), error = %e, "prod-code.toml ignored");
-                Self::default()
+        if files.iter().any(|path| Self::forbids_build_scripts(path)) {
+            config.rust.build_scripts = false;
+        }
+        config
+    }
+
+    /// Every `prod-code.toml` at or above `root`, nearest first, not past the checkout's top
+    /// (the first directory holding `.git`).
+    fn files_up_to_checkout(root: &Path) -> Vec<std::path::PathBuf> {
+        let mut files = Vec::new();
+        for dir in root.ancestors() {
+            let path = dir.join(Self::FILE_NAME);
+            if path.is_file() {
+                files.push(path);
             }
+            if dir.join(".git").exists() {
+                break;
+            }
+        }
+        files
+    }
+
+    /// Whether the file at `path` turns build scripts off, or cannot be read and so cannot
+    /// be shown to allow them.
+    fn forbids_build_scripts(path: &Path) -> bool {
+        let parsed = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| text.parse::<toml::Table>().ok());
+        match parsed {
+            None => {
+                tracing::warn!(path = %path.display(), "unreadable prod-code.toml: build scripts stay off");
+                true
+            }
+            // Absent is no prohibition; `false`, or a value that is not a boolean
+            // (`"false"`), is: a policy that cannot be read as allowing them does not.
+            Some(table) => match table.get("rust").map(|rust| rust.get("build_scripts")) {
+                None | Some(None) => false,
+                Some(Some(value)) => {
+                    if value.as_bool().is_none() {
+                        tracing::warn!(path = %path.display(), "[rust] build_scripts is not a boolean: build scripts stay off");
+                    }
+                    value.as_bool() != Some(true)
+                }
+            },
         }
     }
 

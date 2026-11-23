@@ -90,6 +90,15 @@ where
     .await
 }
 
+/// Whether `command` starts a Rust server that runs the workspace's build scripts and proc
+/// macros: Rust Intelligence's index build, or the rust-analyzer binary with its defaults.
+pub(crate) fn runs_build_scripts(command: &ServerCommand) -> bool {
+    std::path::Path::new(&command.program)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n == "ridx" || n == "rust-analyzer")
+}
+
 /// Runs an editor's session with specific [`EditorProxyOptions`].
 pub async fn run_with_options<S>(
     framed: Framed<S, ProdCodeCodec>,
@@ -109,6 +118,29 @@ where
     new_parts.read_buf = parts.read_buf;
     new_parts.write_buf = parts.write_buf;
     let framed = Framed::from_parts(new_parts);
+
+    // Registered before its server starts, so a sync that changes the workspace's policy from
+    // here on retires it; and a Rust server is started only if the policy, read after that
+    // registration, still lets the workspace's build scripts run (ridx and the rust-analyzer
+    // binary both run them). Otherwise the session ends, and its reconnect is answered by the
+    // in-process engine, which honours the prohibition.
+    let (to_server_tx, to_server_rx) = rapidfire::mpsc::bounded(CHANNEL_CAPACITY);
+    let mut registration = servers.register(
+        root.to_path_buf(),
+        to_server_tx.clone(),
+        options.write_budget,
+    );
+    if runs_build_scripts(&command)
+        && !prod_code_engine_rust::ProdCodeConfig::load(root)
+            .rust
+            .build_scripts
+    {
+        tracing::info!(session_id, root = %root.display(),
+            "✏️ [EDITOR] build scripts are forbidden here now; no Rust server is started");
+        anyhow::bail!(
+            "this workspace's prod-code.toml forbids build scripts, which this Rust server would run; reconnect to be served by the in-process engine"
+        );
+    }
 
     let mut child = OwnedChild::spawn(&command, root)?;
     let stdin = child
@@ -131,12 +163,6 @@ where
     let mut stderr_task = spawn_stderr_reader(stderr, session_id);
     let _stderr_guard = TaskAbortGuard::new(&stderr_task);
 
-    let (to_server_tx, to_server_rx) = rapidfire::mpsc::bounded(CHANNEL_CAPACITY);
-    let mut registration = servers.register(
-        root.to_path_buf(),
-        to_server_tx.clone(),
-        options.write_budget,
-    );
     let mut writer_task = tokio::spawn(write_server_frames(stdin, to_server_rx));
     let _writer_guard = TaskAbortGuard::new(&writer_task);
 

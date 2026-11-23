@@ -140,10 +140,72 @@ pub(crate) async fn load_as_leader(
 
     tracing::info!(workspace = ?workspace_root, engine, "Leader starting workspace load");
 
-    let ridx = engine == "rust"
-        && prod_code_engine_generic::RustServer::from_env()
-            == prod_code_engine_generic::RustServer::Ridx;
-    let (rust_engine, go_engine, generic_engine, backend) = if ridx {
+    // The engine is chosen under one snapshot of the build-script policy, and published only
+    // if the policy still reads the same once it has started: a prod-code.toml synced during
+    // the start would otherwise leave ridx running under a workspace recorded as protected.
+    let policy = |root: &Path| {
+        engine != "rust"
+            || prod_code_engine_rust::ProdCodeConfig::load(root)
+                .rust
+                .build_scripts
+    };
+    let mut attempts = 0;
+    let (engines, build_scripts_allowed) = loop {
+        let allowed = policy(workspace_root);
+        let engines = start_engines(manager, workspace_root, engine, allowed).await?;
+        if policy(workspace_root) == allowed {
+            break (engines, allowed);
+        }
+        attempts += 1;
+        drop(engines);
+        if attempts >= 3 {
+            anyhow::bail!(
+                "the workspace's build-script policy (prod-code.toml) kept changing while its engine started"
+            );
+        }
+        tracing::warn!(workspace = ?workspace_root,
+            "the build-script policy changed while the engine started; starting it again under the new one");
+    };
+    let (rust_engine, go_engine, generic_engine, backend) = engines;
+
+    let mut workspace = SharedWorkspace::new(
+        workspace_root.to_path_buf(),
+        engine.to_string(),
+        rust_engine,
+        go_engine,
+        generic_engine,
+        backend,
+    );
+    workspace.build_scripts_allowed = build_scripts_allowed;
+    workspace.engine_load_semaphore = Arc::clone(&manager.load_semaphore);
+    let ws = Arc::new(workspace);
+    Ok((ws, reservation))
+}
+
+/// The engines a workspace of `engine` answers from, for a Rust workspace under the given
+/// build-script policy: Rust Intelligence (the default) only where build scripts may run.
+type Engines = (
+    Option<Arc<tokio::sync::Mutex<prod_code_engine_rust::RustEngine>>>,
+    Option<Arc<prod_code_engine_go::GoEngine>>,
+    Option<Arc<prod_code_engine_generic::GenericLspEngine>>,
+    Option<Arc<crate::backend::BackendWorker>>,
+);
+
+async fn start_engines(
+    manager: &Arc<WorkspaceManager>,
+    workspace_root: &Path,
+    engine: &str,
+    build_scripts_allowed: bool,
+) -> Result<Engines> {
+    // The Rust server the gateway was started with (`--rust-server`, ridx by default).
+    let rust_server = prod_code_engine_generic::RustServer::configured();
+    let wants_ridx = engine == "rust" && rust_server == prod_code_engine_generic::RustServer::Ridx;
+    if wants_ridx && !build_scripts_allowed {
+        tracing::info!(workspace = ?workspace_root,
+            "[rust] build_scripts = false: Rust Intelligence would run them, so this workspace is served by the in-process engine");
+    }
+    let ridx = wants_ridx && build_scripts_allowed;
+    Ok(if ridx {
         // Rust Intelligence is an ordinary language server: the generic engine drives it. No
         // fallback: a ridx that does not start fails the load rather than handing the session
         // to rust-analyzer behind the selection's back.
@@ -169,17 +231,5 @@ pub(crate) async fn load_as_leader(
         // no engine, by design. A configured server that fails to start fails above (#1427).
         let be = backend::load_backend_fallback(workspace_root, engine).await;
         (None, None, None, be)
-    };
-
-    let mut workspace = SharedWorkspace::new(
-        workspace_root.to_path_buf(),
-        engine.to_string(),
-        rust_engine,
-        go_engine,
-        generic_engine,
-        backend,
-    );
-    workspace.engine_load_semaphore = Arc::clone(&manager.load_semaphore);
-    let ws = Arc::new(workspace);
-    Ok((ws, reservation))
+    })
 }

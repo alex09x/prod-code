@@ -55,7 +55,23 @@ if ! test -x "$tools/python/bin/ruff" || ! "$tools/python/bin/ruff" --version | 
     "$tools/python/bin/pip" install --disable-pip-version-check ruff==0.16.8
 fi
 
+# Rust Intelligence, the gateway's default Rust server: ridx and ridx-driver from a pinned commit,
+# built with the toolchain the driver runs inside (it is needed at run time too, so it is
+# installed on every run; the binaries are cached with the other tools).
+ridx_rev=7c3d18344c97a07957ee1660b340d8c4caee0e73
+rustup toolchain install 1.98.1 --profile minimal --component rustc-dev --component rust-src
+if ! test -x "$tools/bin/ridx-driver" || ! "$tools/bin/ridx" --version | grep -Fq "commit: $ridx_rev"; then
+    ridx_git=https://github.com/alex09x/rust-intelligence
+    CARGO_TARGET_DIR="$RUNNER_TEMP/ridx-target" cargo +1.98.1 install --locked --force \
+        --root "$tools" --git "$ridx_git" --rev "$ridx_rev" ridx
+    RUSTC_BOOTSTRAP=1 RUSTFLAGS="-C prefer-dynamic" CARGO_TARGET_DIR="$RUNNER_TEMP/ridx-target" \
+        cargo +1.98.1 install --locked --force --root "$tools" --git "$ridx_git" --rev "$ridx_rev" ridx-driver
+    rm -rf "$RUNNER_TEMP/ridx-target"
+fi
+
 printf '%s\n' "$go_bin" "$tools/bin" "$tools/node_modules/.bin" "$tools/python/bin" >> "$GITHUB_PATH"
+"$tools/bin/ridx" --version
+"$tools/bin/ridx-driver" --version
 "$tools/bin/sccache" --version
 "$go_bin/gopls" version
 "$tools/node_modules/.bin/basedpyright" --version

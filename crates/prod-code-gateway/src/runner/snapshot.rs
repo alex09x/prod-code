@@ -277,6 +277,8 @@ async fn refresh_restored_engines(
         crate::sync::base_updates::BASE_UPDATE_WAIT,
     )
     .await;
+    // Restored bytes are news to the servers that read the tree themselves, as well.
+    super::compiler_env::notify_language_servers(manager, workspace, files).await;
 }
 
 /// Files that differ between `before` and the tree now: new/changed ones with content,

@@ -494,6 +494,7 @@ instance = "gateway-custom-1"
         bind: "0.0.0.0:9400".parse().unwrap(),
         socket_path: None,
         storage: std::path::PathBuf::from("/srv/prod-code/workspaces"),
+        rust_server: prod_code_engine_generic::RustServer::RustAnalyzer,
         idle_evict_secs: 1800,
         engine_reserve_mib: 0,
         no_admission: false,

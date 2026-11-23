@@ -25,6 +25,8 @@ pub mod registry;
 #[cfg(test)]
 mod lsp_secret_spawn;
 #[cfg(test)]
+mod policy_spawn_tests;
+#[cfg(test)]
 mod tests;
 
 pub use command::{
