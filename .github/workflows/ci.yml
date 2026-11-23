@@ -227,6 +227,9 @@ jobs:
           key: test-language-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ci/provision-test-tools.sh') }}
       - name: Provision real-server test prerequisites
         if: matrix.kind != 'doc' && matrix.package != 'prod-code-protocol'
+        # 32–186 s per shard in the v0.3.63 run, longer on a cold cache that builds ridx from
+        # source; a hang fails here instead of holding the shard for the job's whole time limit.
+        timeout-minutes: 40
         run: bash scripts/ci/provision-test-tools.sh
       - name: Run existing tests in this shard
         env:
