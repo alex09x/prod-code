@@ -8,6 +8,7 @@
 - **A File Given to Disambiguate a Symbol Must Hold It** (#2071): `code_definition {symbol, path}` and every symbol-addressed tool refuse a symbol the named file does not have, and list where it was found, instead of answering with a same-named local of an unrelated file. A directory still only says where to look.
 - **`code_impact` Reconnects a Lost Session** (#2076): a caller query whose connection the gateway closed is asked once more on a new session, instead of failing that query and every later one of its language.
 - **Errors From the Language Servers Keep Their Causes**: the gateway answered a failed request with only its outermost context, such as `'textDocument/definition' is not asked`; the message now carries the whole chain, such as why Rust Intelligence's index refused the question.
+- **`status` Names the Rust Server That Answers**: the engine list shows `rust (ridx)` on a gateway that serves Rust through Rust Intelligence, and `rust (ra_ap_ide)` only under `--rust-server rust-analyzer`. Peers still read only the first word.
 
 ## v0.3.63 — 2026-11-23
 

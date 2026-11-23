@@ -67,8 +67,32 @@ pub(crate) fn store_in(cache: &EngineCache, expires_at: Instant, engines: Vec<St
     }
 }
 
+/// The Rust entry of the engine list. Peers read only its first word; the rest tells a person
+/// which server answers Rust: `status` said `ra_ap_ide` on nodes that ran ridx.
+fn rust_engine_label(server: prod_code_engine_generic::RustServer) -> &'static str {
+    match server {
+        prod_code_engine_generic::RustServer::Ridx => "rust (ridx)",
+        prod_code_engine_generic::RustServer::RustAnalyzer => "rust (ra_ap_ide)",
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn the_rust_label_names_the_configured_server_and_keeps_the_engine_word() {
+    use prod_code_engine_generic::RustServer;
+    assert_eq!(rust_engine_label(RustServer::Ridx), "rust (ridx)");
+    assert_eq!(
+        rust_engine_label(RustServer::RustAnalyzer),
+        "rust (ra_ap_ide)"
+    );
+    for server in [RustServer::Ridx, RustServer::RustAnalyzer] {
+        assert_eq!(rust_engine_label(server).split(' ').next(), Some("rust"));
+    }
+}
+
 pub(crate) fn available_engines() -> Vec<String> {
-    let mut engines = vec!["rust (ra_ap_ide)".to_string()];
+    let rust = rust_engine_label(prod_code_engine_generic::RustServer::configured());
+    let mut engines = vec![rust.to_string()];
     // gopls is useless without the go tool it drives ("no views" for every file).
     if prod_code_engine_generic::which_bin("gopls").is_ok()
         && prod_code_engine_generic::which_bin("go").is_ok()
