@@ -80,6 +80,20 @@ pub(crate) enum Incoming {
     Failed(String),
 }
 
+/// Whether a failed query lost its connection to the gateway, rather than being answered with an
+/// error: the session is dead, and a new one may still answer (#2076).
+pub(crate) fn lost_connection(error: &str) -> bool {
+    [
+        "frame decode error",
+        "gateway closed the session",
+        "Broken pipe",
+        "Connection reset",
+        "connection reset",
+    ]
+    .iter()
+    .any(|sign| error.contains(sign))
+}
+
 /// The functions that call `sym`, each with whether it is a test (the analyzer's `isTest`, the
 /// language's naming conventions, or a marker in the source).
 pub(crate) async fn incoming_calls(

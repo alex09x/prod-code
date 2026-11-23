@@ -246,8 +246,16 @@ pub async fn dispatch_exec(cmd: Commands, cx: &DispatchContext<'_>) -> Result<()
             parallel,
             apply,
             ram,
+            tail_bytes,
             command,
-        } => run_shadow_cli(cx.remote, spec, timeout_secs, parallel, apply, ram, command).await,
+        } => {
+            let limits = crate::commands::exec::ShadowLimits {
+                timeout_secs,
+                parallel,
+                tail_bytes,
+            };
+            run_shadow_cli(cx.remote, spec, limits, apply, ram, command).await
+        }
         Commands::Bench {
             workspaces,
             concurrency,

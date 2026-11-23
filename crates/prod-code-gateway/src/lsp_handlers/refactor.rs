@@ -96,7 +96,7 @@ pub(crate) fn lsp_safe_delete(
                 serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32602, "message": refused } })
             }
             Err(e) => {
-                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": e.to_string() } })
+                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": format!("{e:#}") } })
             }
         };
         let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
@@ -194,7 +194,7 @@ pub(crate) fn lsp_structural_replace(
             }
             Err(e) => {
                 tracing::warn!(req = req_num, session = session_id, error = %e, "codemod failed");
-                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": e.to_string() } })
+                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": format!("{e:#}") } })
             }
         };
         let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
@@ -276,7 +276,7 @@ pub(crate) fn lsp_rename(
             }
             Err(e) => {
                 tracing::warn!(req = req_num, session = session_id, error = %e, "rename failed");
-                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": e.to_string() } })
+                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": format!("{e:#}") } })
             }
         };
         let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
@@ -370,7 +370,7 @@ pub(crate) fn lsp_assists(
             }
             Err(e) => {
                 tracing::warn!(req = req_num, session = session_id, error = %e, "assist failed");
-                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": e.to_string() } })
+                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": format!("{e:#}") } })
             }
         };
         let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());

@@ -281,6 +281,20 @@ pub(crate) async fn resolve_symbol_ties(
             (score, hit)
         })
         .collect();
+    // A file given to disambiguate must hold a candidate: a re-export there counts, and leads
+    // to its definition below. Only ranking by the file answered with a same-named local of
+    // an unrelated test when the file had no such symbol (#2071).
+    if let Some(hint) = hint.filter(|h| super::ambiguity::names_a_file(h))
+        && !scored
+            .iter()
+            .any(|(_, hit)| super::ambiguity::in_hinted_file(root, hint, hit))
+    {
+        let hits: Vec<SymbolHit> = scored.iter().map(|(_, hit)| hit.clone()).collect();
+        anyhow::bail!(
+            "{}",
+            super::ambiguity::not_in_hint_message(root, symbol, hint, &hits)
+        );
+    }
     // A re-export (`pub use sync::scan;`) is listed by the index next to the definition it
     // names. It is the same symbol, not a second candidate, and the answer is the definition.
     // It leaves before the best score is taken, so a path hint that only the re-export's file

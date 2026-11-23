@@ -30,7 +30,7 @@ impl<'a> SessionPool<'a> {
         }
     }
 
-    pub(crate) async fn session_for_file(&mut self, file: &Path) -> Result<&mut LspSession> {
+    fn key_for(&self, file: &Path) -> String {
         let (subpath, mut engine) = crate::sync::engine_project(self.root, file);
         if let Some(own) = crate::sync::engine_for_file(file)
             && engine == crate::sync::expected_engine(self.root)
@@ -38,11 +38,22 @@ impl<'a> SessionPool<'a> {
         {
             engine = Some(own);
         }
-        let key = format!(
+        format!(
             "{}|{}",
             subpath.as_deref().unwrap_or(""),
             engine.unwrap_or("generic")
-        );
+        )
+    }
+
+    /// Drops the session that serves `file`, so the next query opens a new one. A session the
+    /// gateway closed failed every later query of its language (#2076).
+    pub(crate) fn forget_session_for_file(&mut self, file: &Path) {
+        let key = self.key_for(file);
+        self.sessions.remove(&key);
+    }
+
+    pub(crate) async fn session_for_file(&mut self, file: &Path) -> Result<&mut LspSession> {
+        let key = self.key_for(file);
         if !self.sessions.contains_key(&key) {
             let session = LspSession::open(self.remote, self.root, Some(file)).await?;
             self.sessions.insert(key.clone(), session);

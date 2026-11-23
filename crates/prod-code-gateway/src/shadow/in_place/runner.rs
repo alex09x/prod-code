@@ -27,6 +27,25 @@ pub async fn run_in_place(
     let Some(_turn) = WorkspaceTurn::wait(&job.workspace, &mut cancel).await else {
         return failed(&job.name, "cancelled: the client left".to_string());
     };
+    // A sync of the same copy, from this client or another, rewrote the hypothesis's files
+    // while its command ran, and restoring them then refused: "file changed while the
+    // hypothesis ran" (#2068). Syncs wait for the hypothesis to put the copy back.
+    let sync = crate::sync::lock_workspace_sync(
+        &job.workspace,
+        "in-place shadow run",
+        crate::sync::SYNC_LOCK_REPORT_EVERY,
+    );
+    let _sync = {
+        let cancelled = async {
+            if cancel.wait_for(|left| *left).await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        };
+        tokio::select! {
+            guard = sync => guard,
+            () = cancelled => return failed(&job.name, "cancelled: the client left".to_string()),
+        }
+    };
     let paths = match check_files(&job.workspace, &job.files) {
         Ok(paths) => paths,
         Err(why) => return failed(&job.name, format!("invalid hypothesis: {why}")),

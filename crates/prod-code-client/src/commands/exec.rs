@@ -205,11 +205,26 @@ pub async fn run_verify(
     Ok(())
 }
 
+/// How long, how many at once, and how much of each output `shadow-run` shows.
+pub struct ShadowLimits {
+    pub timeout_secs: u64,
+    pub parallel: usize,
+    /// Bytes printed from the end of each output; only the last 4000 were, whatever the
+    /// command printed before them (#2067).
+    pub tail_bytes: usize,
+}
+
+impl ShadowLimits {
+    /// What the node keeps of each output: at least 64 KiB, and all that is printed.
+    pub fn kept_bytes(&self) -> usize {
+        self.tail_bytes.max(64 * 1024)
+    }
+}
+
 pub async fn run_shadow_cli(
     remote: SocketAddr,
     spec: PathBuf,
-    timeout_secs: u64,
-    parallel: usize,
+    limits: ShadowLimits,
     apply: bool,
     ram: bool,
     command: Vec<String>,
@@ -235,9 +250,9 @@ pub async fn run_shadow_cli(
         &specs,
         command.clone(),
         vec![("CARGO_TERM_COLOR".to_string(), "never".to_string())],
-        timeout_secs,
-        parallel,
-        64 * 1024,
+        limits.timeout_secs,
+        limits.parallel,
+        limits.kept_bytes(),
         ram,
     )
     .await?;
@@ -247,7 +262,12 @@ pub async fn run_shadow_cli(
     };
     println!(
         "{}",
-        prod_code_mcp::shadow::render_report(&outcome, &command, applied.as_deref(), 4000)
+        prod_code_mcp::shadow::render_report(
+            &outcome,
+            &command,
+            applied.as_deref(),
+            limits.tail_bytes
+        )
     );
     if outcome.winner.is_none() {
         std::process::exit(1);

@@ -239,7 +239,7 @@ pub fn intercept_assists_for_managed(
                     serde_json::json!({
                         "jsonrpc": "2.0",
                         "id": r_id,
-                        "error": { "code": -32602, "message": err.to_string() }
+                        "error": { "code": -32602, "message": format!("{err:#}") }
                     })
                 }
             };

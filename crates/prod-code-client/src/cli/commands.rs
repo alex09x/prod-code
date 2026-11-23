@@ -1495,9 +1495,15 @@ pub enum Commands {
         /// Write the winning hypothesis into the checkout.
         #[arg(long, default_value_t = false)]
         apply: bool,
-        /// Run hypotheses in a lightweight RAM-backed (/dev/shm) in-memory overlay shadow root (Roadmap 7.4).
+        /// Run hypotheses in a lightweight RAM-backed (/dev/shm) in-memory overlay shadow root
+        /// (Roadmap 7.4). Refused on a node that cannot mount overlays, instead of running in
+        /// the shared workspace copy.
         #[arg(long, alias = "in-memory", default_value_t = false)]
         ram: bool,
+        /// Print this many bytes from the end of each hypothesis's output (the node keeps at
+        /// least 64 KiB, or this many if more).
+        #[arg(long, default_value_t = 4000)]
+        tail_bytes: usize,
         /// Command and arguments (put `--` before them).
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
