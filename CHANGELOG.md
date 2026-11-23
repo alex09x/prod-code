@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **`status` Names the Rust Server That Answers**: the engine list shows `rust (ridx)` on a gateway that serves Rust through Rust Intelligence, and `rust (ra_ap_ide)` only under `--rust-server rust-analyzer`. Peers still read only the first word.
+
 ## v0.3.63 — 2026-11-23
 
 ### Changed
