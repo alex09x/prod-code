@@ -15,14 +15,19 @@ bash "$(dirname "$0")/configure-test-profile.sh"
 if test -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns; then
     sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 fi
-unshare --user --map-root-user true
+timeout 60 unshare --user --map-root-user true
 
+# Every network step is bounded and says what it is doing: an apt mirror that stopped answering
+# held three shards silent for the job's whole 90 minutes, after the line above.
+apt_options=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
+    -o DPkg::Lock::Timeout=120)
 packages=()
 command -v rg >/dev/null 2>&1 || packages+=(ripgrep)
 command -v clangd >/dev/null 2>&1 || packages+=(clangd)
 if ((${#packages[@]})); then
-    sudo apt-get update -qq
-    sudo apt-get install -y --no-install-recommends "${packages[@]}"
+    echo "installing ${packages[*]} with apt"
+    sudo timeout 600 apt-get "${apt_options[@]}" update
+    sudo timeout 600 apt-get "${apt_options[@]}" install -y --no-install-recommends "${packages[@]}"
 fi
 
 export GOTOOLCHAIN=go1.27.1
