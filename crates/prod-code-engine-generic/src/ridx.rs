@@ -51,13 +51,22 @@ pub fn declares_fresh_safe_delete(capabilities: &Value) -> bool {
     level(capabilities, "/experimental/ridx/methods/ridx~1safeDelete") >= 2
 }
 
-/// Why an index answer may not cover the latest saved changes: a root still being rebuilt.
+/// Why an index answer may not cover the latest saved changes: a root still being rebuilt, or
+/// one with changes reported to ridx that its loaded index does not cover yet
+/// (`pendingChanges`, set as soon as ridx is told of a change, before a rebuild starts).
 pub fn index_building(status: &Value) -> Option<String> {
     status.get("roots")?.as_array()?.iter().find_map(|root| {
-        (root.get("building").and_then(Value::as_bool) == Some(true)).then(|| {
-            let name = root.get("root").and_then(Value::as_str).unwrap_or("?");
-            format!("the ridx index of {name} is being rebuilt")
-        })
+        let name = root.get("root").and_then(Value::as_str).unwrap_or("?");
+        let flag = |key: &str| root.get(key).and_then(Value::as_bool) == Some(true);
+        if flag("building") {
+            Some(format!("the ridx index of {name} is being rebuilt"))
+        } else if flag("pendingChanges") {
+            Some(format!(
+                "the ridx index of {name} does not cover the latest changes yet"
+            ))
+        } else {
+            None
+        }
     })
 }
 
@@ -280,13 +289,30 @@ impl GenericLspEngine {
     /// shows a root whose index failed or is not built. The progress `end` is sent for a failed
     /// build too, and an older index may still answer, so the end alone does not make an index
     /// answer final.
+    ///
+    /// A root being rebuilt, or with reported changes not indexed yet, is waited for (up to the
+    /// index wait): a question asked right after a sync or a command wrote a file must not be
+    /// answered from the index of the files before it.
     pub(crate) async fn ridx_index_gate(&self) -> Result<()> {
         if !self.caps_satisfy(declares_status).await {
             return Ok(());
         }
-        match index_failure(&self.ridx_status().await?) {
-            Some(reason) => Err(anyhow!("{reason}; its index answers are not final")),
-            None => Ok(()),
+        let deadline = tokio::time::Instant::now() + self.config.index_wait;
+        loop {
+            let status = self.ridx_status().await?;
+            if let Some(reason) = index_failure(&status) {
+                return Err(anyhow!("{reason}; its index answers are not final"));
+            }
+            let Some(behind) = index_building(&status) else {
+                return Ok(());
+            };
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "{behind} after {}s; ask again once it is indexed",
+                    self.config.index_wait.as_secs()
+                ));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     }
 }

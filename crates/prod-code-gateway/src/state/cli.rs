@@ -38,6 +38,16 @@ pub struct ServerCli {
     )]
     pub storage: PathBuf,
 
+    /// The Rust server: `ridx` (Rust Intelligence, the default) or `rust-analyzer` (the
+    /// in-process engine). ridx and ridx-driver are found on PATH, ~/.local/bin or ~/.cargo/bin.
+    #[arg(
+        long,
+        env = "PROD_CODE_RUST_SERVER",
+        default_value = "ridx",
+        value_parser = prod_code_engine_generic::RustServer::parse
+    )]
+    pub rust_server: prod_code_engine_generic::RustServer,
+
     /// Unload a workspace's engine after this many seconds without a session (0 disables).
     #[arg(long, env = "PROD_CODE_IDLE_EVICT_SECS", default_value_t = 1800)]
     pub idle_evict_secs: u64,

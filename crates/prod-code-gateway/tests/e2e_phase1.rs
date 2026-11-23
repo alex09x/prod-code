@@ -286,6 +286,7 @@ async fn unix_socket_local_transport_and_negotiated_capabilities_e2e() {
         bind: "127.0.0.1:0".parse().unwrap(),
         socket_path: Some(socket_path.clone()),
         storage,
+        rust_server: prod_code_engine_generic::RustServer::RustAnalyzer,
         idle_evict_secs: 1800,
         engine_reserve_mib: 0,
         no_admission: false,

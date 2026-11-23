@@ -493,7 +493,9 @@ async fn real_checkout_scenario() {
 
     // An unused import is reported, as rustc reports it and `-D warnings` rejects it, although
     // rust-analyzer computes no diagnostic for it (#134).
-    let with_import = format!("use std::collections::HashMap;\n{LIB}");
+    // After the crate's inner doc comment: before it, rustc rejects the comment (E0753).
+    let (doc, rest) = LIB.split_once('\n').expect("LIB starts with its doc line");
+    let with_import = format!("{doc}\nuse std::collections::HashMap;\n{rest}");
     let validated = text_of(
         &tool(
             addr,
@@ -504,8 +506,11 @@ async fn real_checkout_scenario() {
         .await,
     );
     assert!(
-        validated.contains("unused_imports") && validated.contains(":1:1"),
-        "the unused import is reported: {validated}"
+        // Its line; the column is the `use` (rust-analyzer) or its path (rustc, ridx).
+        validated.contains("unused_imports")
+            && validated.contains("src/lib.rs:2:")
+            && validated.contains("0 error"),
+        "the unused import is reported, and nothing else: {validated}"
     );
 
     // A proposed edit is judged before anything is written.
@@ -802,7 +807,9 @@ async fn real_checkout_scenario() {
 /// become a hover at byte zero or let a forced refactoring touch the checkout.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_gateway_refuses_invalid_native_positions_without_writing() {
-    let gateway = Gateway::start();
+    // On rust-analyzer until ridx refuses a position past the end of a document
+    // (https://github.com/alex09x/rust-intelligence/issues/2).
+    let gateway = Gateway::start_with(&[("PROD_CODE_RUST_SERVER", "rust-analyzer")]);
     let checkout = Checkout::new();
     let (addr, root) = (gateway.addr, checkout.root());
     fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
@@ -1550,7 +1557,9 @@ async fn the_gateway_applies_and_refuses_changes() {
 /// answer questions.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_gateway_runs_commands_and_hypotheses() {
-    let gateway = Gateway::start();
+    // On rust-analyzer until ridx's status says when the index is behind a file a command
+    // wrote (https://github.com/alex09x/rust-intelligence/issues/5).
+    let gateway = Gateway::start_with(&[("PROD_CODE_RUST_SERVER", "rust-analyzer")]);
     let checkout = Checkout::new();
     let (addr, root) = (gateway.addr, checkout.root());
 
@@ -1684,7 +1693,10 @@ async fn the_gateway_runs_commands_and_hypotheses() {
 /// engine is looking at.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn validation_runs_on_its_own_engine_and_sees_every_change() {
-    let gateway = Gateway::start();
+    // On rust-analyzer until ridx's compiler diagnostics carry rustc's label (expected/found,
+    // https://github.com/alex09x/rust-intelligence/issues/4) and its status says when the index
+    // is behind a reported change (https://github.com/alex09x/rust-intelligence/issues/5).
+    let gateway = Gateway::start_with(&[("PROD_CODE_RUST_SERVER", "rust-analyzer")]);
     let checkout = Checkout::new();
     let (addr, root) = (gateway.addr, checkout.root());
     let proposal = format!("{LIB}\npub fn label() -> String {{\n    store::fresh()\n}}\n");
@@ -2413,8 +2425,12 @@ pub fn run() -> u32 {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_editor_session_gets_what_an_editor_needs_for_rust() {
     // The in-memory engine answers an editor only where the node has no rust-analyzer for it;
-    // here it is asked to, whatever the node has.
-    let gateway = Gateway::start_with(&[("PROD_CODE_EDITOR_SERVERS", "off")]);
+    // here it is asked to, whatever the node has. On rust-analyzer until ridx completes after
+    // `self.` (https://github.com/alex09x/rust-intelligence/issues/3).
+    let gateway = Gateway::start_with(&[
+        ("PROD_CODE_EDITOR_SERVERS", "off"),
+        ("PROD_CODE_RUST_SERVER", "rust-analyzer"),
+    ]);
     let checkout = tempfile::tempdir().expect("checkout");
     let root = std::fs::canonicalize(checkout.path()).expect("canonical");
     std::fs::write(
@@ -2682,7 +2698,8 @@ async fn an_editor_gets_rust_analyzer_itself_on_the_node() {
         eprintln!("skipping: rust-analyzer is not installed (build nodes have it)");
         return;
     }
-    let gateway = Gateway::start();
+    // rust-analyzer is the gateway's Rust server only when chosen; ridx is the default.
+    let gateway = Gateway::start_with(&[("PROD_CODE_RUST_SERVER", "rust-analyzer")]);
     let checkout = tempfile::tempdir().expect("checkout");
     let root = std::fs::canonicalize(checkout.path()).expect("canonical");
     std::fs::write(

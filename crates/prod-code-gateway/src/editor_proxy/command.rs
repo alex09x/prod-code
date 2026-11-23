@@ -85,13 +85,11 @@ pub fn server_command_for_workspace(engine: &str, workspace_root: &Path) -> Opti
 fn server_command_inner(engine: &str, workspace_root: Option<&Path>) -> Option<ServerCommand> {
     use prod_code_engine_generic::GenericLspConfig;
     let from = |config: GenericLspConfig| ServerCommand::from_generic(engine, config);
+    // Editors get the Rust server the gateway was started with (`--rust-server`).
+    let ridx = prod_code_engine_generic::RustServer::configured()
+        == prod_code_engine_generic::RustServer::Ridx;
     let command = match engine {
-        "rust"
-            if prod_code_engine_generic::RustServer::from_env()
-                == prod_code_engine_generic::RustServer::Ridx =>
-        {
-            from(GenericLspConfig::for_rust_ridx())
-        }
+        "rust" if ridx => from(GenericLspConfig::for_rust_ridx()),
         "rust" => ServerCommand {
             program: "rust-analyzer".to_string(),
             args: Vec::new(),

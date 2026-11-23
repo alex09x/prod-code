@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+- **Rust Intelligence Is the Gateway's Rust Server** (#2074): Rust is served from `ridx lsp` by default, for the tools and for editors. `--rust-server rust-analyzer` (or `PROD_CODE_RUST_SERVER=rust-analyzer`) brings back the in-process rust-analyzer engine. `ridx` and `ridx-driver` are found on `PATH`, in `~/.local/bin` or in `~/.cargo/bin`, and the index build gets `~/.cargo/bin` on its `PATH`, so a gateway started by a service manager finds them. Install them with Rust 1.98.1 (`rustc-dev`, `rust-src`): `cargo +1.98.1 install --root ~/.local ridx` and `RUSTC_BOOTSTRAP=1 RUSTFLAGS="-C prefer-dynamic" cargo +1.98.1 install --root ~/.local ridx-driver`. Safe delete needs ridx's safeDelete version 2, and edit validation its compiler-backed pulls. ridx 0.3.11 has neither, so use its main branch until 0.3.12.
+- **Rust Answers That Miss Something Are Reported to Rust Intelligence Too**: the agent instructions and the error hints of the MCP server and the CLI name https://github.com/alex09x/rust-intelligence/issues for a Rust answer that misses or gets wrong what is in the code.
+
 ### Fixed
 - **Rust Tools on Rust Intelligence** (#2072):
   - `prodCode/assists` and `prodCode/applyAssist` take a server's own `data.id` as the assist id, with no index, so `inline_local_variable` matches ridx's action.

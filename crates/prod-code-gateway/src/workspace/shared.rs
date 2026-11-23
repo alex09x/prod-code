@@ -269,6 +269,16 @@ impl SharedWorkspace {
                 return true;
             }
         }
+        // Rust Intelligence follows manifest changes itself: it is told of them as of any synced
+        // file and reindexes. Its own index build writes `Cargo.lock`, which would otherwise
+        // read as a changed manifest and reload the workspace on the next session.
+        if self
+            .generic_engine
+            .as_ref()
+            .is_some_and(|engine| engine.config.is_ridx())
+        {
+            return false;
+        }
         for (path, recorded_mtime) in &self.manifest_mtimes {
             let current = std::fs::metadata(path).and_then(|m| m.modified()).ok();
             if current != *recorded_mtime {

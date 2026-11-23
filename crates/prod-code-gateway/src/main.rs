@@ -81,6 +81,9 @@ async fn serve(arena_limit_applied: Option<bool>) -> Result<()> {
         None => {}
     }
     let cli = ServerCli::parse_with_config()?;
+    // The Rust server is the gateway's choice, made once: ridx unless told otherwise.
+    cli.rust_server.configure();
+    tracing::info!(rust_server = ?cli.rust_server, "Rust server");
     prod_code_gateway::run(cli).await
 }
 

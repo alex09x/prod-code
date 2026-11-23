@@ -32,6 +32,7 @@ fn test_effective_prune_timeouts() {
         bind: "0.0.0.0:9400".parse().unwrap(),
         socket_path: None,
         storage: PathBuf::from("/tmp/storage"),
+        rust_server: prod_code_engine_generic::RustServer::RustAnalyzer,
         idle_evict_secs: 1800,
         engine_reserve_mib: 0,
         no_admission: false,

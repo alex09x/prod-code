@@ -11,6 +11,24 @@
 use super::*;
 use crate::state::config::{GatewayConfigFile, PrometheusConfig};
 
+/// The gateway serves Rust from Rust Intelligence unless started with `--rust-server
+/// rust-analyzer`; any other name is refused at startup.
+#[test]
+fn the_rust_server_defaults_to_ridx() {
+    use prod_code_engine_generic::RustServer;
+    assert_eq!(
+        ServerCli::try_parse_from(["gateway"]).unwrap().rust_server,
+        RustServer::Ridx
+    );
+    assert_eq!(
+        ServerCli::try_parse_from(["gateway", "--rust-server", "rust-analyzer"])
+            .unwrap()
+            .rust_server,
+        RustServer::RustAnalyzer
+    );
+    assert!(ServerCli::try_parse_from(["gateway", "--rust-server", "ra"]).is_err());
+}
+
 #[test]
 fn server_configuration_populates_defaults_and_preserves_explicit_values() {
     crate::test_cache_support::isolated!();

@@ -63,7 +63,9 @@ pub async fn on_client_message(
                         val.get("params").unwrap_or(&serde_json::Value::Null),
                     );
                 }
-                if view.workspace.rust_engine.is_some()
+                // Rust positions are checked whichever server answers Rust (the in-process
+                // engine or Rust Intelligence): an invalid one is refused, not answered empty.
+                if (view.workspace.rust_engine.is_some() || view.workspace.engine == "rust")
                     && let Err(reason) = native_position_params(method, val.get("params"))
                 {
                     if let (Some(method), Some(id)) =

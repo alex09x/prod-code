@@ -277,6 +277,24 @@ async fn refresh_restored_engines(
         crate::sync::base_updates::BASE_UPDATE_WAIT,
     )
     .await;
+    // The language servers that read the tree themselves (Rust Intelligence, gopls, the
+    // generic ones) are told what the command wrote, as a sync tells them, or they go on
+    // answering from the files as they were before it.
+    let watched: Vec<(std::path::PathBuf, crate::workspace::types::WatchedChange)> = files
+        .iter()
+        .map(|file| {
+            let change = if file.content.is_some() {
+                crate::workspace::types::WatchedChange::Changed
+            } else {
+                crate::workspace::types::WatchedChange::Deleted
+            };
+            (workspace.join(&file.relative_path), change)
+        })
+        .collect();
+    for loaded in manager.loaded_under(workspace).await {
+        loaded.notify_watched_files(&watched).await;
+    }
+    manager.editor_servers.notify(&watched).await;
 }
 
 /// Files that differ between `before` and the tree now: new/changed ones with content,
