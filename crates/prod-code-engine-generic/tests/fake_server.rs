@@ -3486,7 +3486,7 @@ async fn a_ridx_without_compiler_backed_pulls_is_refused_for_validation() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_ridx_index_makes_index_questions_fail_rather_than_answer_empty() {
     let (dir, script) = workspace();
-    let mut c = ridx_config(&script, serde_json::json!({ "ridx/status": 1 }));
+    let mut c = ridx_config(&script, serde_json::json!({ "ridx/status": 2 }));
     c.env.insert(
         "FAKE_RIDX_STATUS".to_string(),
         serde_json::json!({ "roots": [{ "root": "/w", "indexed": false,
@@ -3508,7 +3508,7 @@ async fn a_failed_ridx_index_makes_index_questions_fail_rather_than_answer_empty
 
     let indexed = GenericLspEngine::spawn(
         dir.path(),
-        ridx_config(&script, serde_json::json!({ "ridx/status": 1 })),
+        ridx_config(&script, serde_json::json!({ "ridx/status": 2 })),
     )
     .await
     .expect("the fake server starts");
@@ -3646,4 +3646,54 @@ async fn a_ridx_deletion_needs_a_fresh_index() {
         edit["changes"].get("file:///w/src/util.rs").is_some(),
         "{edit}"
     );
+}
+
+/// An index question waits while ridx says its index does not cover the latest reported change
+/// (`pendingChanges`), and is refused once the wait runs out; a ridx without that report
+/// (`ridx/status` 1) is refused at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_index_question_waits_for_pending_changes_and_needs_their_report() {
+    let (dir, script) = workspace();
+    let mut pending = ridx_config(&script, serde_json::json!({ "ridx/status": 2 }));
+    pending.index_wait = Duration::from_millis(800);
+    pending.env.insert(
+        "FAKE_RIDX_STATUS".to_string(),
+        serde_json::json!({ "roots": [{ "root": "/w", "indexed": true, "error": null,
+            "building": false, "pendingChanges": true }] })
+        .to_string(),
+    );
+    let engine = GenericLspEngine::spawn(dir.path(), pending)
+        .await
+        .expect("the fake server starts");
+    let started = std::time::Instant::now();
+    let err = engine
+        .send_request(
+            "workspace/symbol",
+            serde_json::json!({ "query": "indexed" }),
+        )
+        .await
+        .expect_err("not answered from an index behind a change");
+    assert!(
+        started.elapsed() >= Duration::from_millis(700),
+        "it waited first"
+    );
+    assert!(
+        format!("{err:#}").contains("does not cover the latest changes"),
+        "{err:#}"
+    );
+
+    let v1 = GenericLspEngine::spawn(
+        dir.path(),
+        ridx_config(&script, serde_json::json!({ "ridx/status": 1 })),
+    )
+    .await
+    .expect("the fake server starts");
+    let err = v1
+        .send_request(
+            "workspace/symbol",
+            serde_json::json!({ "query": "indexed" }),
+        )
+        .await
+        .expect_err("refused");
+    assert!(format!("{err:#}").contains("ridx/status 2"), "{err:#}");
 }

@@ -58,7 +58,7 @@ fi
 # Rust Intelligence, the gateway's default Rust server: ridx and ridx-driver from a pinned commit,
 # built with the toolchain the driver runs inside (it is needed at run time too, so it is
 # installed on every run; the binaries are cached with the other tools).
-ridx_rev=c282634840f79b29e48225229fef19f9f3036213
+ridx_rev=7c3d18344c97a07957ee1660b340d8c4caee0e73
 rustup toolchain install 1.98.1 --profile minimal --component rustc-dev --component rust-src
 if ! test -x "$tools/bin/ridx-driver" || ! "$tools/bin/ridx" --version | grep -Fq "commit: $ridx_rev"; then
     ridx_git=https://github.com/alex09x/rust-intelligence

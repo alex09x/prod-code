@@ -1557,9 +1557,9 @@ async fn the_gateway_applies_and_refuses_changes() {
 /// answer questions.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_gateway_runs_commands_and_hypotheses() {
-    // On rust-analyzer until ridx's status says when the index is behind a file a command
-    // wrote (https://github.com/alex09x/rust-intelligence/issues/5).
-    let gateway = Gateway::start_with(&[("PROD_CODE_RUST_SERVER", "rust-analyzer")]);
+    // The default Rust server: what a command writes reaches it, and an index question waits
+    // until its index covers the change (rust-intelligence#5).
+    let gateway = Gateway::start();
     let checkout = Checkout::new();
     let (addr, root) = (gateway.addr, checkout.root());
 

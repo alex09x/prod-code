@@ -40,6 +40,12 @@ pub fn declares_status(capabilities: &Value) -> bool {
     level(capabilities, "/experimental/ridx/methods/ridx~1status") >= 1
 }
 
+/// Version 2 of `ridx/status`: each root says `pendingChanges` from the moment a save or a
+/// watched-file change is recorded until an index that read it is loaded.
+pub fn declares_pending_changes(capabilities: &Value) -> bool {
+    level(capabilities, "/experimental/ridx/methods/ridx~1status") >= 2
+}
+
 /// `capabilities.experimental.ridx.methods["ridx/safeDelete"]`: the method exists.
 pub fn declares_safe_delete(capabilities: &Value) -> bool {
     level(capabilities, "/experimental/ridx/methods/ridx~1safeDelete") >= 1
@@ -295,7 +301,22 @@ impl GenericLspEngine {
     /// answered from the index of the files before it.
     pub(crate) async fn ridx_index_gate(&self) -> Result<()> {
         if !self.caps_satisfy(declares_status).await {
+            // A server configured as ridx that declares no status at all (0.3.8) cannot say
+            // whether its index is current either.
+            if self.config.is_ridx() {
+                anyhow::bail!(
+                    "this ridx does not report whether its index covers the latest changes \
+                     (ridx/status 2); upgrade Rust Intelligence"
+                );
+            }
             return Ok(());
+        }
+        if !self.caps_satisfy(declares_pending_changes).await {
+            anyhow::bail!(
+                "this ridx does not report whether its index covers the latest changes \
+                 (ridx/status 2), so an answer could come from files as they were before; \
+                 upgrade Rust Intelligence"
+            );
         }
         let deadline = tokio::time::Instant::now() + self.config.index_wait;
         loop {
