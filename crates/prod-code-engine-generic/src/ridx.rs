@@ -172,6 +172,12 @@ pub fn index_failure(status: &Value) -> Option<String> {
     };
     roots.iter().find_map(|root| {
         let name = root.get("root").and_then(Value::as_str).unwrap_or("?");
+        // The error is the last finished run's, kept while a new run builds and after a change
+        // it has not started on: that run is being replaced, and [`index_building`] waits.
+        let flag = |key: &str| root.get(key).and_then(Value::as_bool) == Some(true);
+        if flag("building") || flag("pendingChanges") {
+            return None;
+        }
         root.get("error")
             .and_then(Value::as_str)
             .map(|error| format!("the ridx index of {name} failed: {error}"))
@@ -477,5 +483,24 @@ mod tests {
         assert!(index_building(&json!({"roots": []})).is_some());
         assert_eq!(index_building(&ok), None);
         assert!(index_failure(&json!({})).is_some());
+    }
+
+    /// ridx keeps the last finished run's `error` while a new run builds, and after a change it
+    /// has not started on: that error belongs to a run already being replaced, and is waited
+    /// for. Refusing on it at once answered "is not asked" right after an edit fixed the build.
+    #[test]
+    fn an_error_of_a_run_being_replaced_is_waited_for() {
+        for flag in ["building", "pendingChanges"] {
+            let status = json!({"roots": [{
+                "root": "/w", "indexed": true, "error": "mismatched types", flag: true
+            }]});
+            assert_eq!(index_failure(&status), None, "{flag}");
+            assert!(index_building(&status).is_some(), "{flag}");
+        }
+        let settled = json!({"roots": [{
+            "root": "/w", "indexed": true, "error": "mismatched types",
+            "building": false, "pendingChanges": false
+        }]});
+        assert!(index_failure(&settled).is_some());
     }
 }
