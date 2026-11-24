@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## v0.3.65 — 2026-11-23
+
 ### Changed
 - **Rust Intelligence 0.3.13**: 0.3.12 is the first release with everything the gateway needs: `minVersion` pulls, `ridx/status` 2, `ridx/safeDelete` 2, `ridx/syntaxTree`, `ridx/expandMacro`. A git build of its main branch is no longer needed. Install it from the release archive into `~/.local/bin` (the binaries are `ridx` and `ridx-driver`; the driver still needs Rust 1.98.1 with `rustc-dev`, whose sysroot ridx gives it), or with `cargo +1.98.1 install ridx` and `RUSTC_BOOTSTRAP=1 RUSTFLAGS="-C prefer-dynamic" cargo +1.98.1 install ridx-driver`. CI installs the checksummed release archive instead of building ridx from a pinned commit.
 0.3.13 also completes a name not yet imported, with its `use` (rust-intelligence#8).
