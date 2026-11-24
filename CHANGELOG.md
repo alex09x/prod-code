@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+- **Rust Intelligence 0.3.12**: the first release with everything the gateway needs: `minVersion` pulls, `ridx/status` 2, `ridx/safeDelete` 2, `ridx/syntaxTree`, `ridx/expandMacro`. A git build of its main branch is no longer needed. Install it from the release archive into `~/.local/bin` (the binaries are `ridx` and `ridx-driver`; the driver still needs Rust 1.98.1 with `rustc-dev`, whose sysroot ridx gives it), or with `cargo +1.98.1 install ridx` and `RUSTC_BOOTSTRAP=1 RUSTFLAGS="-C prefer-dynamic" cargo +1.98.1 install ridx-driver`. CI installs the checksummed release archive instead of building ridx from a pinned commit.
+- The live tests for invalid positions (rust-intelligence#2), edit validation (#4, #5) and the builder's name-conflict check (#6) run on Rust Intelligence again. The editor test stays on rust-analyzer until a name not yet imported is completed with its `use` (rust-intelligence#8).
+
+### Fixed
+- **Safe Delete Says What a Rust Intelligence Refusal Means**: a refusal whose code alone does not say what to do (`unlocatedUses`, new in 0.3.12: the index holds a use it cannot place; `staleIndex`, `unsavedUses`, `externallyUsed`, `containsImpl`) is followed by what it means and what to do.
+
 ## v0.3.64 — 2026-11-23
 
 ### Fixed

@@ -83,8 +83,32 @@ pub fn index_building(status: &Value) -> Option<String> {
     })
 }
 
+/// What a `ridx/safeDelete` refusal whose code alone does not say what to do means, and what to
+/// do about it.
+fn refusal_explained(reason: &str) -> Option<&'static str> {
+    Some(match reason {
+        "unlocatedUses" => {
+            "the index holds a use of the item whose file it cannot place, so the item may \
+             still be used; find it with code_references or a text search, or rebuild the \
+             index (remove target/ridx) and try again"
+        }
+        "staleIndex" => {
+            "the index does not cover the current sources yet (a saved change, a file it did \
+             not read, or another cfg); try again once it is reindexed"
+        }
+        "unsavedUses" => "another open buffer has unsaved edits; save them and try again",
+        "externallyUsed" => {
+            "the item is exported to the linker or is a proc macro, so code outside the \
+             workspace may use it"
+        }
+        "containsImpl" => "the module holds an impl that code elsewhere may need",
+        _ => return None,
+    })
+}
+
 /// The edit of a `ridx/safeDelete` answer, or why nothing may be deleted: the refusal's reason
-/// (`used`, `traitItem`, `moduleFile`, `notAnItem`, `unknownSymbol`) with the uses left.
+/// (`used`, `traitItem`, `moduleFile`, `notAnItem`, `unknownSymbol`, `unlocatedUses`, ...) with
+/// the uses left, and what a reason whose code alone says too little means.
 pub fn safe_delete_outcome(answer: &Value) -> Result<Value> {
     if let Some(err) = answer.get("error") {
         anyhow::bail!(
@@ -120,11 +144,15 @@ pub fn safe_delete_outcome(answer: &Value) -> Result<Value> {
                     .collect()
             })
             .unwrap_or_default();
+        let why = refusal_explained(reason)
+            .map(|why| format!(": {why}"))
+            .unwrap_or_default();
         if uses.is_empty() {
-            anyhow::bail!("not deleted ({reason})");
+            anyhow::bail!("not deleted ({reason}){why}");
         }
+        let then = if why.is_empty() { ":" } else { ";" };
         anyhow::bail!(
-            "not deleted ({reason}): {} use(s) left: {}",
+            "not deleted ({reason}){why}{then} {} use(s) left: {}",
             uses.len(),
             uses.join(", ")
         );
@@ -435,6 +463,12 @@ mod tests {
             format!("{}", safe_delete_outcome(&trait_item).unwrap_err()),
             "not deleted (traitItem)"
         );
+        // 0.3.12: a use the index holds but cannot place keeps the item, with what to do.
+        let unlocated =
+            json!({"result": {"refused": true, "reason": "unlocatedUses", "remainingUses": []}});
+        let text = format!("{}", safe_delete_outcome(&unlocated).unwrap_err());
+        assert!(text.starts_with("not deleted (unlocatedUses): "), "{text}");
+        assert!(text.contains("code_references"), "{text}");
         for odd in [
             json!({"result": {}}),
             json!({"result": null}),

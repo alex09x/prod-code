@@ -807,9 +807,9 @@ async fn real_checkout_scenario() {
 /// become a hover at byte zero or let a forced refactoring touch the checkout.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_gateway_refuses_invalid_native_positions_without_writing() {
-    // On rust-analyzer until ridx refuses a position past the end of a document
+    // Rust Intelligence refuses a position past the end of a document since 0.3.12
     // (https://github.com/alex09x/rust-intelligence/issues/2).
-    let gateway = Gateway::start_with(&[("PROD_CODE_RUST_SERVER", "rust-analyzer")]);
+    let gateway = Gateway::start_with(&[]);
     let checkout = Checkout::new();
     let (addr, root) = (gateway.addr, checkout.root());
     fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
@@ -844,10 +844,12 @@ async fn the_gateway_refuses_invalid_native_positions_without_writing() {
     )
     .await
     .expect_err("an invalid hover position is a gateway error");
-    assert!(
-        format!("{hover:#}").contains("Invalid position 999999:1"),
-        "{hover:#}"
-    );
+    // rust-analyzer's engine names the position 1-based as asked, Rust Intelligence 0-based as
+    // the protocol carries it.
+    let names_it = |text: &str| {
+        text.contains("Invalid position 999999:1") || text.contains("Invalid position 999998:0")
+    };
+    assert!(names_it(&format!("{hover:#}")), "{hover:#}");
 
     for method in ["textDocument/definition", "textDocument/references"] {
         let error = prod_code_mcp::tools::execute_lsp_query(
@@ -855,10 +857,7 @@ async fn the_gateway_refuses_invalid_native_positions_without_writing() {
             serde_json::json!({"textDocument": {"uri": prod_code_protocol::path::file_uri(&checkout.path("src/lib.rs"))},
                 "position": {"line": 999998, "character": 0}}),
         ).await.expect_err("a native query error cannot become an empty successful result");
-        assert!(
-            format!("{error:#}").contains("Invalid position 999999:1"),
-            "{error:#}"
-        );
+        assert!(names_it(&format!("{error:#}")), "{error:#}");
     }
 
     let deletion = prod_code_mcp::tools::execute_tool(
@@ -877,7 +876,7 @@ async fn the_gateway_refuses_invalid_native_positions_without_writing() {
     let refused = text_of(&deletion);
     assert!(deletion.is_error, "the mutation is refused: {refused}");
     assert!(
-        refused.contains("Invalid position 999999:1"),
+        names_it(&refused),
         "the refusal names the invalid coordinate: {refused}"
     );
     assert_eq!(
@@ -1693,10 +1692,11 @@ async fn the_gateway_runs_commands_and_hypotheses() {
 /// engine is looking at.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn validation_runs_on_its_own_engine_and_sees_every_change() {
-    // On rust-analyzer until ridx's compiler diagnostics carry rustc's label (expected/found,
+    // Rust Intelligence's compiler diagnostics carry rustc's label (expected/found,
     // https://github.com/alex09x/rust-intelligence/issues/4) and its status says when the index
-    // is behind a reported change (https://github.com/alex09x/rust-intelligence/issues/5).
-    let gateway = Gateway::start_with(&[("PROD_CODE_RUST_SERVER", "rust-analyzer")]);
+    // is behind a reported change (https://github.com/alex09x/rust-intelligence/issues/5),
+    // both since 0.3.12.
+    let gateway = Gateway::start_with(&[]);
     let checkout = Checkout::new();
     let (addr, root) = (gateway.addr, checkout.root());
     let proposal = format!("{LIB}\npub fn label() -> String {{\n    store::fresh()\n}}\n");
@@ -2427,8 +2427,10 @@ pub fn run() -> u32 {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_editor_session_gets_what_an_editor_needs_for_rust() {
     // The in-memory engine answers an editor only where the node has no rust-analyzer for it;
-    // here it is asked to, whatever the node has. On rust-analyzer until ridx completes after
-    // `self.` (https://github.com/alex09x/rust-intelligence/issues/3).
+    // here it is asked to, whatever the node has. Rust Intelligence completes after `self.`
+    // since 0.3.12 (https://github.com/alex09x/rust-intelligence/issues/3); on rust-analyzer
+    // until it completes a name not yet imported, with its `use`
+    // (https://github.com/alex09x/rust-intelligence/issues/8).
     let gateway = Gateway::start_with(&[
         ("PROD_CODE_EDITOR_SERVERS", "off"),
         ("PROD_CODE_RUST_SERVER", "rust-analyzer"),
@@ -2471,19 +2473,19 @@ async fn an_editor_session_gets_what_an_editor_needs_for_rust() {
         .iter()
         .filter_map(|item| item["label"].as_str())
         .collect();
-    // rust-analyzer labels a method with its parentheses: `add(…)`.
+    // rust-analyzer labels a method with its parentheses (`add(…)`), Rust Intelligence by its
+    // name (`add`).
+    let is_add = |l: &str| l == "add" || l.starts_with("add(");
     assert!(
-        labels.iter().any(|l| l.starts_with("add(")) && labels.contains(&"total"),
+        labels.iter().any(|l| is_add(l)) && labels.contains(&"total"),
         "the method and the field are offered: {labels:?}"
     );
     let add = completion["result"]["items"]
         .as_array()
         .and_then(|items| {
-            items.iter().find(|item| {
-                item["label"]
-                    .as_str()
-                    .is_some_and(|l| l.starts_with("add("))
-            })
+            items
+                .iter()
+                .find(|item| item["label"].as_str().is_some_and(is_add))
         })
         .cloned()
         .expect("add");
