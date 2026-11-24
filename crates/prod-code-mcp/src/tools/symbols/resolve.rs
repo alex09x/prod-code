@@ -281,10 +281,13 @@ pub(crate) async fn resolve_symbol_ties(
             (score, hit)
         })
         .collect();
-    // A file given to disambiguate must hold a candidate: a re-export there counts, and leads
-    // to its definition below. Only ranking by the file answered with a same-named local of
-    // an unrelated test when the file had no such symbol (#2071).
-    if let Some(hint) = hint.filter(|h| super::ambiguity::names_a_file(h))
+    // A file given to disambiguate a bare name must hold a candidate: a re-export there counts,
+    // and leads to its definition below. Only ranking by the file answered with a same-named
+    // local of an unrelated test when the file had no such symbol (#2071). A qualified name
+    // says where it is itself; its file is the one the path is read from (`self::fallback::cap`
+    // from `src/pricing.rs`), and the full owner path wins over it.
+    if qualifier.is_none()
+        && let Some(hint) = hint.filter(|h| super::ambiguity::names_a_file(h))
         && !scored
             .iter()
             .any(|(_, hit)| super::ambiguity::in_hinted_file(root, hint, hit))
