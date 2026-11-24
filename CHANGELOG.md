@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## v0.3.64 — 2026-11-23
+
 ### Fixed
 - **Shadow Runs Never Share the Workspace Copy With a Sync** (#2068): an in-place hypothesis holds the workspace's sync lock while it writes, runs and restores, so a concurrent `shadow-run` or edit sync waits instead of rewriting its files ("file changed while the hypothesis ran; not restored"). `--ram` on a node that cannot mount overlay shadows is refused with the reason, instead of silently running in place. A node whose AppArmor blocked unprivileged user namespaces ran every shadow in place; enable them with `kernel.apparmor_restrict_unprivileged_userns=0`.
 - **`shadow-run --tail-bytes`** (#2067): the CLI prints as much of each failed hypothesis's output as asked (default 4000 bytes), and the node keeps at least that much.
