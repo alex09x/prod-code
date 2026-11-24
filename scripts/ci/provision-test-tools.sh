@@ -63,9 +63,9 @@ fi
 # Rust Intelligence, the gateway's default Rust server: the released ridx and ridx-driver. The
 # driver links the toolchain's rustc_driver, so Rust 1.98.1 with rustc-dev is needed at run
 # time too (ridx gives the driver that sysroot); the binaries are cached with the other tools.
-ridx_version=0.3.12
+ridx_version=0.3.13
 ridx_archive=ridx-x86_64-unknown-linux-gnu
-ridx_sha256=1933242c24313cf23d4e506c03cff287e5e3f81115a44a4938ae52c9b97b00d4
+ridx_sha256=8424ae5f74971b6cf58bf8566780d0817d160f13d592636f1128dff971ce283c
 rustup toolchain install 1.98.1 --profile minimal --component rustc-dev --component rust-src
 if ! test -x "$tools/bin/ridx-driver" || ! "$tools/bin/ridx" --version | grep -Fq "ridx $ridx_version "; then
     archive="$RUNNER_TEMP/$ridx_archive.tar.gz"

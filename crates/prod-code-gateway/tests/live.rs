@@ -2428,13 +2428,10 @@ pub fn run() -> u32 {
 async fn an_editor_session_gets_what_an_editor_needs_for_rust() {
     // The in-memory engine answers an editor only where the node has no rust-analyzer for it;
     // here it is asked to, whatever the node has. Rust Intelligence completes after `self.`
-    // since 0.3.12 (https://github.com/alex09x/rust-intelligence/issues/3); on rust-analyzer
-    // until it completes a name not yet imported, with its `use`
+    // since 0.3.12 (https://github.com/alex09x/rust-intelligence/issues/3), and a name not yet
+    // imported with its `use` since 0.3.13
     // (https://github.com/alex09x/rust-intelligence/issues/8).
-    let gateway = Gateway::start_with(&[
-        ("PROD_CODE_EDITOR_SERVERS", "off"),
-        ("PROD_CODE_RUST_SERVER", "rust-analyzer"),
-    ]);
+    let gateway = Gateway::start_with(&[("PROD_CODE_EDITOR_SERVERS", "off")]);
     let checkout = tempfile::tempdir().expect("checkout");
     let root = std::fs::canonicalize(checkout.path()).expect("canonical");
     std::fs::write(
@@ -2548,14 +2545,22 @@ async fn an_editor_session_gets_what_an_editor_needs_for_rust() {
     let signature = &help["result"]["signatures"][0];
     let label = signature["label"].as_str().unwrap_or_default();
     assert!(label.contains("fn add"), "{help}");
+    // The protocol allows the parameter's label as offsets into the signature (rust-analyzer) or
+    // as its text (Rust Intelligence).
     let span = &signature["parameters"][0]["label"];
-    let (start, end) = (
-        span[0].as_u64().expect("start") as usize,
-        span[1].as_u64().expect("end") as usize,
-    );
+    let parameter = match span.as_str() {
+        Some(text) => text,
+        None => {
+            let (start, end) = (
+                span[0].as_u64().expect("start") as usize,
+                span[1].as_u64().expect("end") as usize,
+            );
+            &label[start..end]
+        }
+    };
     assert!(
-        label[start..end].contains("amount"),
-        "the parameter's offsets point at it: {help}"
+        parameter.contains("amount") && label.contains(parameter),
+        "the parameter's label is in the signature: {help}"
     );
 
     // The literal argument gets its parameter's name.
@@ -2650,14 +2655,18 @@ async fn an_editor_session_gets_what_an_editor_needs_for_rust() {
         diagnostics = editor.diagnostics(&uri, seen).await;
     }
 
-    // Folding ranges are not advertised; asked anyway, they are refused, not left hanging.
+    // Folding ranges: refused where the engine has none (rust-analyzer's in-memory engine),
+    // answered where it has (Rust Intelligence), never left hanging.
     let folding = editor
         .request(
             "textDocument/foldingRange",
             serde_json::json!({ "textDocument": doc }),
         )
         .await;
-    assert_eq!(folding["error"]["code"], -32601, "{folding}");
+    assert!(
+        folding["error"]["code"] == -32601 || folding["result"].is_array(),
+        "{folding}"
+    );
 
     // Closed without saving, the broken text is gone: the error it published is replaced by
     // the diagnostics of the file on disk, which has none (#1515).
