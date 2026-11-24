@@ -492,14 +492,28 @@ async fn handle_client(
                         results: req
                             .hypotheses
                             .into_iter()
-                            .map(|hypothesis| ShadowHypothesisResult {
-                                name: hypothesis.name,
-                                exit_code: Some(0),
-                                duration_ms: 15,
-                                timed_out: false,
-                                error: None,
-                                output_tail: Some(b"all 5 tests passed\n".to_vec()),
-                                output_len: 19,
+                            .map(|hypothesis| {
+                                // `long` fails with a summary at the start of a long output,
+                                // and says how much of it the client asked the node to keep.
+                                let (exit_code, output) = if hypothesis.name == "long" {
+                                    let kept = req.tail_bytes;
+                                    let text = format!(
+                                        "SUMMARY-START kept={kept}\n{}\nend\n",
+                                        "x".repeat(9000)
+                                    );
+                                    (1, text.into_bytes())
+                                } else {
+                                    (0, b"all 5 tests passed\n".to_vec())
+                                };
+                                ShadowHypothesisResult {
+                                    name: hypothesis.name,
+                                    exit_code: Some(exit_code),
+                                    duration_ms: 15,
+                                    timed_out: false,
+                                    error: None,
+                                    output_len: output.len() as u64,
+                                    output_tail: Some(output),
+                                }
                             })
                             .collect(),
                         error: None,
@@ -2266,6 +2280,43 @@ async fn cli_runs_shadow_hypotheses() {
     let text = stdout_of(&out);
     assert!(text.contains("h1") && text.contains("h2"), "{text}");
     assert!(!text.contains("hypo1"), "{text}");
+}
+
+/// #2067: `--tail-bytes` shows the start of a long failed output, which the fixed 4000-byte
+/// tail cut off, and asks the node to keep at least that much.
+#[tokio::test]
+async fn cli_shadow_run_shows_as_much_failed_output_as_asked() {
+    let ws = make_workspace();
+    let spec_path = ws.write(
+        "spec.json",
+        r#"{"hypotheses":[{"name":"long","edits":[{"path":"src/lib.rs","new_text":"pub fn b() {}\n"}]}]}"#,
+    );
+    let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+    let spec = spec_path.to_str().unwrap();
+
+    let short = run_cli(&ws, gw.addr, &["shadow-run", spec, "--", "cargo", "test"]).await;
+    assert!(!short.status.success());
+    let text = stdout_of(&short);
+    assert!(text.contains("end"), "{text}");
+    assert!(!text.contains("SUMMARY-START"), "{text}");
+
+    let long = run_cli(
+        &ws,
+        gw.addr,
+        &[
+            "shadow-run",
+            spec,
+            "--tail-bytes",
+            "100000",
+            "--",
+            "cargo",
+            "test",
+        ],
+    )
+    .await;
+    assert!(!long.status.success());
+    let text = stdout_of(&long);
+    assert!(text.contains("SUMMARY-START kept=100000"), "{text}");
 }
 
 #[tokio::test]

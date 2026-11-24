@@ -153,9 +153,19 @@ pub async fn analyze_with_budget(
         if let Some(first_session) = first_session {
             let mut answer =
                 incoming_calls(first_session, root, first_lang, first, Some(deadline)).await;
+            let mut reconnected = false;
             for _ in 0..COLD_RETRIES {
+                let mut wait = true;
                 match &answer {
                     Incoming::Callers(found) if !found.is_empty() => break,
+                    // A session the gateway closed is replaced and asked again at once (#2076).
+                    Incoming::Failed(error)
+                        if !reconnected && super::incoming::lost_connection(error) =>
+                    {
+                        session_pool.forget_session_for_file(&first_abs);
+                        reconnected = true;
+                        wait = false;
+                    }
                     // A request that failed, timed out or answered out of shape is not a cold
                     // index: asking again only spends the wait, and the failure is kept as the
                     // reason the analysis is incomplete (#1473).
@@ -172,7 +182,9 @@ pub async fn analyze_with_budget(
                     timed_out = true;
                     break;
                 }
-                tokio::time::sleep(COLD_WAIT.min(remaining)).await;
+                if wait {
+                    tokio::time::sleep(COLD_WAIT.min(remaining)).await;
+                }
                 let first_session = match within_deadline(
                     deadline,
                     session_pool.session_for_file(&first_abs),
@@ -239,22 +251,43 @@ pub async fn analyze_with_budget(
             }
             if let std::collections::hash_map::Entry::Vacant(slot) = cache.entry(key(&sym)) {
                 let sym_abs = root.join(&sym.file);
-                let incoming = match within_deadline(
-                    deadline,
-                    session_pool.session_for_file(&sym_abs),
-                )
-                .await
-                {
-                    Ok(Ok(sym_session)) => {
-                        let sym_lang = file_language(root, &sym.file).unwrap_or(&language);
-                        incoming_calls(sym_session, root, sym_lang, &sym, Some(deadline)).await
+                let sym_lang = file_language(root, &sym.file).unwrap_or(&language);
+                // A query whose connection the gateway closed is asked once more, on a new
+                // session; the closed one would fail every later query of its language (#2076).
+                let mut reconnected = false;
+                let incoming = loop {
+                    let incoming =
+                        match within_deadline(deadline, session_pool.session_for_file(&sym_abs))
+                            .await
+                        {
+                            Ok(Ok(sym_session)) => {
+                                incoming_calls(sym_session, root, sym_lang, &sym, Some(deadline))
+                                    .await
+                            }
+                            Ok(Err(e)) => Incoming::Failed(format!("{e:#}")),
+                            Err(_) => break None,
+                        };
+                    match &incoming {
+                        Incoming::Failed(error)
+                            if super::incoming::lost_connection(error) && !reconnected =>
+                        {
+                            session_pool.forget_session_for_file(&sym_abs);
+                            reconnected = true;
+                        }
+                        Incoming::Failed(error)
+                            if reconnected && super::incoming::lost_connection(error) =>
+                        {
+                            break Some(Incoming::Failed(format!(
+                                "{error} (also on a new connection)"
+                            )));
+                        }
+                        _ => break Some(incoming),
                     }
-                    Ok(Err(e)) => Incoming::Failed(format!("{e:#}")),
-                    Err(_) => {
-                        record_timeout(analysis_started, budget, &mut incomplete);
-                        timed_out = true;
-                        break;
-                    }
+                };
+                let Some(incoming) = incoming else {
+                    record_timeout(analysis_started, budget, &mut incomplete);
+                    timed_out = true;
+                    break;
                 };
                 slot.insert(incoming);
             }

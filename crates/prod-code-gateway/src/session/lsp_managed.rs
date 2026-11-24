@@ -142,7 +142,7 @@ pub async fn handle_go_lsp(
                         let err_resp = serde_json::json!({
                             "jsonrpc": "2.0",
                             "id": req_id,
-                            "error": { "code": -32603, "message": err.to_string() }
+                            "error": { "code": -32603, "message": format!("{err:#}") }
                         });
                         let _ = out_tx_task
                             .send(WireMessage::LspPayload(err_resp.to_string()))
@@ -197,7 +197,7 @@ pub async fn handle_generic_lsp(
                     resp
                 }
                 Err(err) => {
-                    serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "error": { "code": -32603, "message": err.to_string() } })
+                    serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "error": { "code": -32603, "message": format!("{err:#}") } })
                 }
             };
             let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
@@ -225,7 +225,7 @@ pub async fn handle_generic_lsp(
                     serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "result": { "kind": "full", "items": items } })
                 }
                 Err(err) => {
-                    serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "error": { "code": -32603, "message": err.to_string() } })
+                    serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "error": { "code": -32603, "message": format!("{err:#}") } })
                 }
             };
             let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
@@ -294,7 +294,7 @@ pub async fn handle_generic_lsp(
                     let err_resp = serde_json::json!({
                         "jsonrpc": "2.0",
                         "id": r_id,
-                        "error": { "code": -32603, "message": err.to_string() }
+                        "error": { "code": -32603, "message": format!("{err:#}") }
                     });
                     let _ = out_tx_task
                         .send(WireMessage::LspPayload(err_resp.to_string()))

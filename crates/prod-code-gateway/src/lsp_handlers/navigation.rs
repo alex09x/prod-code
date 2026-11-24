@@ -85,7 +85,7 @@ pub(crate) fn lsp_call_hierarchy(
             }
             Err(e) => {
                 tracing::warn!(req = req_num, session = session_id, method = %method_name, error = %e, "query failed");
-                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": e.to_string() } })
+                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": format!("{e:#}") } })
             }
         };
         let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
@@ -184,7 +184,7 @@ pub(crate) fn lsp_references(
             }
             Err(error) => serde_json::json!({
                 "jsonrpc": "2.0", "id": req_id,
-                "error": { "code": -32603, "message": error.to_string() }
+                "error": { "code": -32603, "message": format!("{error:#}") }
             }),
         };
         let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
@@ -283,7 +283,7 @@ pub(crate) fn lsp_definition(
             }
             Err(error) => serde_json::json!({
                 "jsonrpc": "2.0", "id": req_id,
-                "error": { "code": -32603, "message": error.to_string() }
+                "error": { "code": -32603, "message": format!("{error:#}") }
             }),
         };
         let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
@@ -386,7 +386,7 @@ pub(crate) fn lsp_hover(
             }),
             Err(error) => serde_json::json!({
                 "jsonrpc": "2.0", "id": req_id,
-                "error": { "code": -32603, "message": error.to_string() }
+                "error": { "code": -32603, "message": format!("{error:#}") }
             }),
         };
         let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());

@@ -37,6 +37,19 @@ fn default_parallel() -> usize {
 /// Handles a `ShadowRunRequest` on a client connection: runs every hypothesis (in parallel as
 /// overlays where the node supports them), answers pings meanwhile, kills everything if the
 /// client leaves, and finishes with one `ShadowRunResponse`.
+/// Why a request that asked for a RAM overlay is refused: a node that cannot mount overlays
+/// would run it in place, writing into the shared workspace copy. `--ram` silently did that
+/// (#2068). The variable `PROD_CODE_SHADOW_RAM` is a node default, not a request, and is not
+/// refused.
+pub(crate) fn ram_refusal(in_memory: bool, overlay_reason: Option<&str>) -> Option<String> {
+    let reason = overlay_reason.filter(|_| in_memory)?;
+    Some(format!(
+        "a RAM overlay was requested, but this node cannot mount overlay shadows ({reason}); \
+         a shadow run here would write into the shared workspace copy. Run it without --ram to \
+         accept in-place mode, or on another node"
+    ))
+}
+
 pub async fn run_shadow(
     state: &crate::ServerState,
     framed: &mut Framed<AnyStream, ProdCodeCodec>,
@@ -99,6 +112,12 @@ pub async fn run_shadow(
     let overlay_reason = tokio::task::spawn_blocking(overlay_unavailable)
         .await
         .unwrap_or(Some("overlay probe failed"));
+    if let Some(error) = ram_refusal(req.in_memory, overlay_reason) {
+        framed
+            .send(WireMessage::ShadowRunResponse(refuse(error)))
+            .await?;
+        return Ok(());
+    }
     let overlay = overlay_reason.is_none();
     let ram_requested = req.in_memory
         || std::env::var("PROD_CODE_SHADOW_RAM")

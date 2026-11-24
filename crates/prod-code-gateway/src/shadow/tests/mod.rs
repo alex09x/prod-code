@@ -14,6 +14,7 @@ pub(crate) mod fixtures;
 
 mod in_place_concurrency_eval;
 mod in_place_restore_eval;
+mod in_place_sync_eval;
 mod isolation_eval;
 mod overlay_exec;
 mod roots;
