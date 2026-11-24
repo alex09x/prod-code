@@ -17,6 +17,7 @@ pub mod platform;
 mod progress;
 pub mod runner;
 mod silence;
+mod system_libs;
 pub mod types;
 mod writeback;
 
@@ -34,4 +35,5 @@ pub use layout::layout_only;
 pub use platform::{platform_warning, subdir_of};
 pub use runner::{run_polyglot_remote, run_remote, run_remote_rooted};
 pub use silence::silent_timeout_hint;
+pub use system_libs::{missing_system_libraries, missing_system_libraries_hint};
 pub use types::{Executor, PolyglotRemoteOutcome, RemoteOutcome, TailBuffer};

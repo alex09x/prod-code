@@ -298,6 +298,8 @@ pub async fn run_exec(
     }
     let started = std::time::Instant::now();
     let mut printed = 0usize;
+    // The end of the output, read for a linker that could not find a system library (#2057).
+    let mut tail = prod_code_mcp::exec::TailBuffer::new(64 * 1024);
     let outcome = prod_code_mcp::exec::run_remote(
         remote,
         &root,
@@ -308,6 +310,7 @@ pub async fn run_exec(
         pull_changes,
         |is_stderr, data| {
             printed += data.len();
+            tail.push(data);
             if is_stderr {
                 let mut e = std::io::stderr().lock();
                 let _ = e.write_all(data);
@@ -356,6 +359,12 @@ pub async fn run_exec(
     }
     // The node that ran it, as the gateway confirmed on this command's connection (#1793).
     let ran_on = outcome.executor.render();
+    if exit.exit_code != Some(0)
+        && let Some(hint) =
+            prod_code_mcp::exec::missing_system_libraries_hint(&tail.text(), &ran_on)
+    {
+        eprintln!("[prod-code exec] {hint}");
+    }
     eprintln!(
         "[prod-code exec] {} in {:.1}s (server {:.1}s{}) on {ran_on}, copy {}{}",
         match (exit.timed_out, exit.exit_code) {

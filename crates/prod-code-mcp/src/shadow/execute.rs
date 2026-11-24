@@ -8,6 +8,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+use super::deadline::Deadline;
 use super::diff::unified_diff;
 use super::rank::{rank, test_counts};
 use super::types::{HypothesisOutcome, HypothesisSpec, ShadowOutcome};
@@ -34,14 +35,25 @@ pub(crate) async fn run_shadow_once(
 ) -> Result<ShadowOutcome> {
     anyhow::ensure!(!command.is_empty(), "empty command");
     anyhow::ensure!(!specs.is_empty(), "no hypotheses");
+    // One deadline for the whole run, connection and sync included: only the reply wait was
+    // bounded, so a sync of a large checkout ran minutes past `timeout_secs` (#2064).
+    let deadline = Deadline::new(timeout_secs, specs.len(), parallel);
     let identity: WorkspaceIdentity = workspace_identity(root);
     // A shadow run syncs and runs commands: the pin is confirmed before either (#1793).
-    let mut framed = crate::cluster::connect_gated(remote, root, "this shadow run")
+    let mut framed = deadline
+        .bound(
+            "connecting to the gateway",
+            crate::cluster::connect_gated(remote, root, "this shadow run"),
+        )
         .await?
         .framed;
-    push_workspace_sync(&mut framed, root, &identity, None)
-        .await
-        .context("pre-flight workspace sync failed")?;
+    deadline
+        .bound("syncing the workspace to the gateway", async {
+            push_workspace_sync(&mut framed, root, &identity, None)
+                .await
+                .context("pre-flight workspace sync failed")
+        })
+        .await?;
     let hypotheses = specs
         .iter()
         .map(|spec| ShadowHypothesis {
@@ -58,25 +70,27 @@ pub(crate) async fn run_shadow_once(
                 .collect(),
         })
         .collect();
-    framed
-        .send(WireMessage::ShadowRunRequest(ShadowRunRequest {
-            client_workspace_root: root.to_string_lossy().to_string(),
-            base_workspace_name: Some(identity.name.clone()),
-            hypotheses,
-            command: command.clone(),
-            env,
-            timeout_secs,
-            subdir: subdir.map(str::to_string),
-            parallel,
-            tail_bytes,
-            in_memory,
-            client_agent: Some(prod_code_protocol::detect_client_agent()),
-            client_host: Some(prod_code_protocol::client_host()),
-        }))
+    let request = framed.send(WireMessage::ShadowRunRequest(ShadowRunRequest {
+        client_workspace_root: root.to_string_lossy().to_string(),
+        base_workspace_name: Some(identity.name.clone()),
+        hypotheses,
+        command: command.clone(),
+        env,
+        timeout_secs,
+        subdir: subdir.map(str::to_string),
+        parallel,
+        tail_bytes,
+        in_memory,
+        client_agent: Some(prod_code_protocol::detect_client_agent()),
+        client_host: Some(prod_code_protocol::client_host()),
+    }));
+    deadline
+        .bound("sending the hypotheses", async {
+            request.await.map_err(anyhow::Error::from)
+        })
         .await?;
-    let budget = std::time::Duration::from_secs(timeout_secs.saturating_add(30));
     let response = loop {
-        match tokio::time::timeout(budget, framed.next()).await {
+        match tokio::time::timeout_at(deadline.at, framed.next()).await {
             Ok(Some(Ok(WireMessage::ShadowRunResponse(response)))) => {
                 let _ = framed
                     .send(WireMessage::Disconnect {
@@ -89,7 +103,7 @@ pub(crate) async fn run_shadow_once(
             Ok(Some(Ok(other))) => anyhow::bail!("unexpected message during shadow run: {other:?}"),
             Ok(Some(Err(e))) => anyhow::bail!("frame decode error during shadow run: {e}"),
             Ok(None) => anyhow::bail!("gateway closed the connection during the shadow run"),
-            Err(_) => anyhow::bail!("timed out waiting for shadow run response from gateway"),
+            Err(_) => return Err(deadline.expired("waiting for the gateway's result")),
         }
     };
     if let Some(error) = response.error {

@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## v0.3.66 — 2026-11-23
+
+### Fixed
+- **A Cancelled Swift Definition Falls Back to the File's Outline** (#2083): a warming `sourcekit-lsp` cancels `textDocument/definition`; a position on a declaration the file's own syntax outline lists is answered from it, labelled syntax-only with the analyzer's error, instead of failing. The local Swift outline selects only the declared name, so a position elsewhere on the line (a call in a one-line body) is no longer taken for the declaration.
+- **`code_shadow_run` Returns by Its Deadline** (#2064): connecting, the pre-flight sync and the wait for the result share one deadline, the command timeout for each wave of hypotheses plus 120 s. Only the wait was bounded, so a sync of a large checkout ran minutes past `timeout_secs`. The error names the stage it stopped in.
+- **`code_exec` Names a Node's Missing System Libraries** (#2057): a failed command whose linker or `pkg-config` could not find a system library (`-lxcb`, `xkbcommon`) is followed by the node that ran it, the missing libraries, and how to hold the workspace to a node that has them (`[cluster] pin` in `prod-code.toml`, `--pin-node`).
+
 ## v0.3.65 — 2026-11-23
 
 ### Changed

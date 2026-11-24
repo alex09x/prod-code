@@ -267,17 +267,26 @@ pub(crate) fn local_swift_outline_symbols(source: &str) -> serde_json::Value {
             if let Some(pos) = trimmed.find(kw)
                 && (pos == 0 || trimmed[..pos].ends_with(char::is_whitespace))
             {
-                let name = if kw == "init(" {
-                    "init".to_string()
+                let lead = line.len() - line.trim_start().len();
+                let (name, name_start) = if kw == "init(" {
+                    ("init".to_string(), lead + pos)
                 } else {
-                    trimmed[pos + kw.len()..]
+                    let rest = &trimmed[pos + kw.len()..];
+                    let skipped = rest.len() - rest.trim_start().len();
+                    let name: String = rest
                         .trim()
                         .chars()
                         .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
-                        .collect()
+                        .collect();
+                    (name, lead + pos + kw.len() + skipped)
                 };
                 if !name.is_empty() {
                     let line_u32 = idx as u32;
+                    // The selection is the declared name only, so a position elsewhere on the
+                    // line (a call in a one-line body) is not taken for the declaration (#2083).
+                    let utf16 = |bytes: usize| line[..bytes].encode_utf16().count() as u32;
+                    let name_from = utf16(name_start);
+                    let name_to = utf16(name_start + name.len());
                     items.push(serde_json::json!({
                         "name": name,
                         "kind": kind,
@@ -286,8 +295,8 @@ pub(crate) fn local_swift_outline_symbols(source: &str) -> serde_json::Value {
                             "end": { "line": line_u32, "character": line.len() as u32 }
                         },
                         "selectionRange": {
-                            "start": { "line": line_u32, "character": 0 },
-                            "end": { "line": line_u32, "character": line.len() as u32 }
+                            "start": { "line": line_u32, "character": name_from },
+                            "end": { "line": line_u32, "character": name_to }
                         }
                     }));
                 }
