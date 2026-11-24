@@ -13,6 +13,7 @@
 //! of the workspace; rank the outcomes and describe the winner as a unified diff against the
 //! checkout. Shared by the MCP tool `code_shadow_run` and the CLI `prod-code shadow-run`.
 
+mod deadline;
 pub mod diff;
 pub(crate) mod execute;
 pub mod rank;

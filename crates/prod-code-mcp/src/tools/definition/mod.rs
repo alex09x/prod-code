@@ -58,14 +58,27 @@ pub(crate) async fn handle_definition(
         "textDocument": { "uri": file_uri },
         "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) }
     });
-    let res = execute_lsp_query(
+    let swift_syntax_only = swift_outline_declaration(args, &file_path, line, character);
+    // A Swift declaration this file's own outline shows is answered from the outline when the
+    // analyzer fails as well as when it finds nothing: a warming sourcekit-lsp cancels
+    // requests (#2083).
+    let mut analyzer_failure = None;
+    let res = match execute_lsp_query(
         remote,
         workspace_root,
         &file_path,
         "textDocument/definition",
         params,
     )
-    .await?;
+    .await
+    {
+        Ok(res) => res,
+        Err(error) if swift_syntax_only => {
+            analyzer_failure = Some(format!("{error:#}"));
+            serde_json::Value::Null
+        }
+        Err(error) => return Err(error),
+    };
     let mut out = String::new();
     let has_locations = match &res {
         serde_json::Value::Array(arr) => !arr.is_empty(),
@@ -196,28 +209,14 @@ pub(crate) async fn handle_definition(
             .get("syntax_only_unindexed")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let swift_syntax_only = file_path
-            .extension()
-            .is_some_and(|extension| extension == "swift")
-            && args.get("symbol").is_none()
-            && std::fs::read_to_string(&file_path)
-                .ok()
-                .is_some_and(|source| {
-                    let symbols = crate::tools::outline::file::local_swift_outline_symbols(&source);
-                    super::range::outline_contains_definition(
-                        &symbols,
-                        line.saturating_sub(1) as usize,
-                        character.saturating_sub(1) as usize,
-                    )
-                });
         let is_def = if args.get("symbol").is_some() {
             true
-        } else if is_outline_definition(remote, workspace_root, &file_path, line, character).await {
+        } else if analyzer_failure.is_none()
+            && is_outline_definition(remote, workspace_root, &file_path, line, character).await
+        {
+            // After a failed analyzer the outline comes from the file itself (below).
             true
-        } else if swift_syntax_only {
-            syntax_only = true;
-            true
-        } else if is_lexical_rust_declaration(&file_path, line, character) {
+        } else if swift_syntax_only || is_lexical_rust_declaration(&file_path, line, character) {
             syntax_only = true;
             true
         } else {
@@ -225,7 +224,11 @@ pub(crate) async fn handle_definition(
         };
         if is_def {
             if syntax_only {
-                if swift_syntax_only {
+                if let Some(failure) = &analyzer_failure {
+                    out.push_str(&format!(
+                        "📍 Definition: {file_uri}:{line}:{character} (syntax-only local Swift outline; the analyzer did not answer: {failure})"
+                    ));
+                } else if swift_syntax_only {
                     out.push_str(&format!(
                         "📍 Definition: {file_uri}:{line}:{character} (syntax-only local Swift outline; analyzer returned no definition)"
                     ));
@@ -269,6 +272,30 @@ pub(crate) async fn handle_definition(
         }
     }
     Ok(McpToolCallResult::text(out))
+}
+
+/// A position lookup (no `symbol`) in a Swift file on a declaration that file's own syntax
+/// outline lists.
+fn swift_outline_declaration(
+    args: &serde_json::Value,
+    file_path: &Path,
+    line: u32,
+    character: u32,
+) -> bool {
+    file_path
+        .extension()
+        .is_some_and(|extension| extension == "swift")
+        && args.get("symbol").is_none()
+        && std::fs::read_to_string(file_path)
+            .ok()
+            .is_some_and(|source| {
+                let symbols = crate::tools::outline::file::local_swift_outline_symbols(&source);
+                range::outline_contains_definition(
+                    &symbols,
+                    line.saturating_sub(1) as usize,
+                    character.saturating_sub(1) as usize,
+                )
+            })
 }
 
 fn body_read_error(workspace_root: &Path, uri: &str, error: &anyhow::Error) -> String {
