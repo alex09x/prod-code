@@ -8,7 +8,8 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
-//! A data directory that is a package goes to the mirror (#2048, #2049).
+//! A data directory that is a package goes to the mirror (#2048, #2049), and so does a file git
+//! tracks under a directory named like build output (#2087).
 
 use super::*;
 use crate::sync::scan::scan_workspace_files_with_omitted;
@@ -91,6 +92,51 @@ fn the_files_of_a_data_directory_holding_code_are_synced() {
     let left: Vec<&str> = omitted.iter().map(|o| o.path.as_str()).collect();
     assert!(left.contains(&"data/dump.yaml"), "{left:?}");
     assert!(!left.contains(&"docs/data/backends/alias.yaml"), "{left:?}");
+}
+
+/// #2087: a file git tracks under `build/` (Bazel's REAPI protos at
+/// `proto/build/bazel/remote/execution/v2/`) is a build input and goes to the mirror; untracked
+/// files there stay out, and so does tracked data under an output directory.
+#[test]
+fn tracked_files_under_an_output_named_directory_are_synced() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    if !git(&root, &["init", "-q"]) {
+        return; // no git here
+    }
+    let reapi = "re_grpc_proto/proto/build/bazel/remote/execution/v2/remote_execution.proto";
+    write(&root, "Cargo.toml", "[workspace]\n");
+    write(&root, "re_grpc_proto/build.rs", "fn main() {}\n");
+    write(&root, reapi, "syntax = \"proto3\";\n");
+    write(&root, "build/notes.txt", "tracked\n");
+    write(&root, "dist/data/out.yaml", "x: 1\n");
+    assert!(git(&root, &["add", "."]));
+    write(&root, "build/gen.txt", "untracked output\n");
+    write(
+        &root,
+        "re_grpc_proto/proto/build/gen.proto",
+        "syntax = \"proto3\";\n",
+    );
+
+    let include = SyncInclude::load(&root);
+    assert!(is_synced_git_path_with(reapi, &include));
+    assert!(is_synced_git_path_with("build/notes.txt", &include));
+    assert!(!is_synced_git_path_with("build/gen.txt", &include));
+    assert!(!is_synced_git_path_with(
+        "re_grpc_proto/proto/build/gen.proto",
+        &include
+    ));
+    assert!(!is_synced_git_path_with("dist/data/out.yaml", &include));
+    // Without a checkout to ask, the directory name still decides.
+    assert!(!is_synced_git_path_with(reapi, &SyncInclude::default()));
+
+    let (deltas, omitted) = scan_workspace_files_with_omitted(&root, None).unwrap();
+    let synced: Vec<&str> = deltas.iter().map(|d| d.relative_path.as_str()).collect();
+    assert!(synced.contains(&reapi), "{synced:?}");
+    assert!(synced.contains(&"build/notes.txt"), "{synced:?}");
+    assert!(!synced.contains(&"build/gen.txt"), "{synced:?}");
+    let left: Vec<&str> = omitted.iter().map(|o| o.path.as_str()).collect();
+    assert!(!left.contains(&reapi), "{left:?}");
 }
 
 /// A settings file or a lock beside data is not a package; a directory is read once for all its

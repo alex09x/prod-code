@@ -87,6 +87,12 @@ pub fn is_fixture_path(path: &Path) -> bool {
 /// input (Go's `-mod=vendor`, a C library linked through cgo) and goes too (#313). The size
 /// limits are applied where the file is read.
 pub fn is_synced_git_path(rel_path: &str) -> bool {
+    synced_git_path(rel_path, true)
+}
+
+/// [`is_synced_git_path`]; `output_dirs: false` lifts only the output-directory rule (`build/`,
+/// `dist/`, …), for a file git tracks (#2087).
+fn synced_git_path(rel_path: &str, output_dirs: bool) -> bool {
     let path = Path::new(rel_path);
     for component in path.parent().into_iter().flat_map(Path::components) {
         if let std::path::Component::Normal(dir) = component
@@ -140,7 +146,7 @@ pub fn is_synced_git_path(rel_path: &str) -> bool {
         if !under_code_dir && dir.as_ref() == "target" {
             return false;
         }
-        if !under_code_dir && !under_pkg_dir && is_output_dir(&dir) {
+        if output_dirs && !under_code_dir && !under_pkg_dir && is_output_dir(&dir) {
             return false;
         }
         // Source code git tracks is a package, wherever it sits: a vendored Go package under
@@ -157,10 +163,7 @@ pub fn is_synced_git_path(rel_path: &str) -> bool {
 }
 
 fn is_output_dir(dir: &str) -> bool {
-    matches!(
-        dir,
-        "dist" | "build" | "results" | "samples" | "artifacts" | "dogfood-output"
-    )
+    super::include::OUTPUT_DIR_NAMES.contains(&dir)
 }
 
 fn is_data_dir(dir: &str) -> bool {
@@ -215,10 +218,13 @@ fn is_package_source(path: &Path) -> bool {
 }
 
 /// [`is_synced_git_path`], plus explicit `[sync] include` paths from `prod-code.toml` (#1836),
-/// plus the files of a data directory that holds source code (#2048).
+/// plus the files of a data directory that holds source code (#2048), plus files git tracks
+/// under a directory named like build output: `proto/build/bazel/…/remote_execution.proto` is a
+/// build input (#2087).
 pub fn is_synced_git_path_with(rel_path: &str, include: &SyncInclude) -> bool {
     is_synced_git_path(rel_path)
         || include.is_included(rel_path)
+        || (include.is_tracked_output(rel_path) && synced_git_path(rel_path, false))
         || include
             .root()
             .is_some_and(|root| is_beside_code(root, include, rel_path))

@@ -17,9 +17,35 @@
 
 use crate::config::{is_baseline_ignored, load_config};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// The files git tracks (`ls-files --cached`, not untracked ones) under an output-named
+/// directory of `root`; empty outside a git checkout.
+fn tracked_output_files(root: &Path) -> HashSet<String> {
+    let specs = OUTPUT_DIR_NAMES
+        .iter()
+        .map(|dir| format!(":(glob)**/{dir}/**"));
+    let Ok(output) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-files", "-z", "--cached", "--"])
+        .args(specs)
+        .output()
+    else {
+        return HashSet::new();
+    };
+    if !output.status.success() {
+        return HashSet::new();
+    }
+    output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| String::from_utf8_lossy(path).into_owned())
+        .collect()
+}
 
 #[derive(Debug, Clone)]
 struct IncludePrefix {
@@ -38,9 +64,43 @@ pub struct SyncInclude {
     /// Per data directory, whether it holds source code: a scan asks for every file of the
     /// directory, and reading it again for each made a large one quadratic.
     package_dirs: Arc<Mutex<HashMap<PathBuf, bool>>>,
+    /// The files git tracks under a directory named like build output (`build/`, `dist/`, …),
+    /// listed once on first use (#2087).
+    tracked_outputs: Arc<OnceLock<HashSet<String>>>,
 }
 
+/// Directory names the sync takes for build output; a file git tracks under one is still an
+/// input (#2087).
+pub(crate) const OUTPUT_DIR_NAMES: &[&str] = &[
+    "dist",
+    "build",
+    "results",
+    "samples",
+    "artifacts",
+    "dogfood-output",
+];
+
 impl SyncInclude {
+    /// Whether git tracks `rel_path` under an output-named directory of [`SyncInclude::root`].
+    pub(crate) fn is_tracked_output(&self, rel_path: &str) -> bool {
+        let Some(root) = self.root.as_deref() else {
+            return false;
+        };
+        let in_output_dir = Path::new(rel_path)
+            .parent()
+            .into_iter()
+            .flat_map(Path::components)
+            .any(|component| {
+                matches!(component, Component::Normal(dir)
+                    if dir.to_str().is_some_and(|dir| OUTPUT_DIR_NAMES.contains(&dir)))
+            });
+        in_output_dir
+            && self
+                .tracked_outputs
+                .get_or_init(|| tracked_output_files(root))
+                .contains(rel_path)
+    }
+
     /// Whether directory `rel_dir` holds source code, read once per directory with `probe`.
     pub(crate) fn package_dir(&self, rel_dir: &Path, probe: impl FnOnce() -> bool) -> bool {
         let Ok(mut known) = self.package_dirs.lock() else {

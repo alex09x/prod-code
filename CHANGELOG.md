@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## v0.3.67 — 2026-11-25
+
+### Fixed
+- **Sync Mirrors Tracked Files Under `build/` and Other Output-Named Directories** (#2087): a file git tracks is a build input wherever it sits, so `proto/build/bazel/remote/execution/v2/remote_execution.proto` (Bazel's REAPI layout) reaches the node and a `build.rs` that compiles it no longer fails with `No such file or directory`. The directory-name rule (`build/`, `dist/`, `results/`, `samples/`, `artifacts/`) still keeps untracked output out, and data directories keep their own rule. Mirrors re-check their file lists once after the upgrade.
+
 ## v0.3.66 — 2026-11-23
 
 ### Fixed
