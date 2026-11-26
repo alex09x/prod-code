@@ -199,7 +199,9 @@ async fn push_workspace_sync_inner(
                         let unwritten: Vec<String> = outcome
                             .stale_paths
                             .iter()
-                            .filter(|p| scope.includes(p))
+                            .filter(|p| {
+                                scope.includes(p) && !crate::sync::git::is_nested_repository(p)
+                            })
                             .cloned()
                             .collect();
                         if !unwritten.is_empty() {

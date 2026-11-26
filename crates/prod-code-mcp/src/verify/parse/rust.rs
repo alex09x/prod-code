@@ -56,7 +56,17 @@ pub fn parse_cargo_json_line(line: &str) -> Option<Diagnostic> {
 pub fn parse_rustc_text(text: &str) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     let mut pending: Option<Diagnostic> = None;
+    // The stderr of a build script that failed, read into its diagnostic: cargo prints only
+    // "failed to run custom build command" as the error and the reason below it (#2095).
+    let mut build_script: Option<BuildScriptStderr> = None;
     for raw in text.lines() {
+        if let Some(script) = build_script.as_mut()
+            && let Some(d) = pending.as_mut()
+            && script.read(raw)
+        {
+            d.message = script.message();
+            continue;
+        }
         let line = raw.trim_end();
         let header = line
             .strip_prefix("error")
@@ -69,6 +79,9 @@ pub fn parse_rustc_text(text: &str) -> Vec<Diagnostic> {
             if let Some(d) = pending.take() {
                 out.push(d);
             }
+            build_script = msg
+                .starts_with("failed to run custom build command")
+                .then(|| BuildScriptStderr::new(msg));
             if msg.starts_with("aborting due to")
                 || msg.contains("warning(s) emitted")
                 || msg.contains("warnings emitted")
@@ -109,6 +122,59 @@ pub fn parse_rustc_text(text: &str) -> Vec<Diagnostic> {
         out.push(d);
     }
     out
+}
+
+/// The lines a failed build script wrote to stderr, as cargo quotes them under `--- stderr`.
+struct BuildScriptStderr {
+    header: String,
+    in_stderr: bool,
+    lines: Vec<String>,
+}
+
+impl BuildScriptStderr {
+    const MAX_LINES: usize = 6;
+    const MAX_LINE_BYTES: usize = 300;
+
+    fn new(header: &str) -> Self {
+        Self {
+            header: header.to_string(),
+            in_stderr: false,
+            lines: Vec::new(),
+        }
+    }
+
+    /// Whether `line` belongs to the failure's `Caused by:` block (and was taken in); a line
+    /// that starts another diagnostic does not.
+    fn read(&mut self, raw: &str) -> bool {
+        // cargo indents what it quotes; a diagnostic of its own starts at the margin.
+        if raw.starts_with("error") || raw.starts_with("warning") {
+            return false;
+        }
+        let line = raw.trim();
+        if line == "--- stderr" {
+            self.in_stderr = true;
+        } else if line.starts_with("--- ") {
+            self.in_stderr = false;
+        } else if self.in_stderr
+            && !line.is_empty()
+            && !line.starts_with("note: run with `RUST_BACKTRACE")
+            && self.lines.len() < Self::MAX_LINES
+        {
+            let mut end = line.len().min(Self::MAX_LINE_BYTES);
+            while !line.is_char_boundary(end) {
+                end -= 1;
+            }
+            self.lines.push(line[..end].to_string());
+        }
+        true
+    }
+
+    fn message(&self) -> String {
+        if self.lines.is_empty() {
+            return self.header.clone();
+        }
+        format!("{}; its stderr: {}", self.header, self.lines.join(" | "))
+    }
 }
 
 /// Parses `cargo test` (libtest) output: per-test results and failure output blocks.

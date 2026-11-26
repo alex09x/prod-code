@@ -218,6 +218,41 @@ fn cargo_summaries_of_a_failed_run_are_not_compiler_errors() {
     );
 }
 
+/// #2095: a build script that panics is reported with what it wrote to stderr, not only with
+/// cargo's "failed to run custom build command".
+#[test]
+fn a_failed_build_script_is_reported_with_its_stderr() {
+    let stderr = "   Compiling web v0.1.0 (/w/crates/web)\n\
+        error: failed to run custom build command for `web v0.1.0 (/w/crates/web)`\n\
+        \n\
+        Caused by:\n  \
+        process didn't exit successfully: `/w/target/debug/build/web-1/build-script-build` (exit status: 101)\n  \
+        --- stdout\n  \
+        cargo:rerun-if-changed=web\n  \
+        --- stderr\n\
+        \n  \
+        thread 'main' panicked at crates/web/build.rs:12:9:\n  \
+        Could not start Bun: No such file or directory (os error 2)\n  \
+        error: not a compiler diagnostic\n  \
+        note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\
+        warning: build failed, waiting for other jobs to finish...\n\
+        error[E0308]: mismatched types\n --> src/lib.rs:2:29\n";
+    let parsed = crate::verify::parse::rust::parse_rustc_text(stderr);
+    // cargo's "build failed, waiting for other jobs" is a summary, not a diagnostic.
+    assert_eq!(parsed.len(), 2, "{parsed:?}");
+    let script = &parsed[0];
+    assert_eq!(script.level, "error");
+    assert_eq!(
+        script.message,
+        "failed to run custom build command for `web v0.1.0 (/w/crates/web)`; its stderr: \
+         thread 'main' panicked at crates/web/build.rs:12:9: | \
+         Could not start Bun: No such file or directory (os error 2) | \
+         error: not a compiler diagnostic"
+    );
+    assert_eq!(parsed[1].message, "mismatched types");
+    assert_eq!(parsed[1].file.as_deref(), Some("src/lib.rs"));
+}
+
 #[test]
 fn errors_come_first_and_each_level_keeps_compiler_order() {
     let diagnostics = vec![

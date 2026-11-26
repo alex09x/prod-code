@@ -201,8 +201,19 @@ pub(crate) fn parse_porcelain_status(output: &[u8], paths: &mut BTreeMap<String,
         } else if status.contains(&b'C') {
             let Some(_) = fields.next() else { break };
         }
+        if is_nested_repository(&path) {
+            continue;
+        }
         paths.insert(path, status.contains(&b'D'));
     }
+}
+
+/// Whether git listed `path` as a whole directory: an untracked checkout of another repository
+/// (a directory with its own `.git`, such as a worktree created inside this one), which git
+/// names `dir/` instead of its files. It is not a file of this checkout and is never sent or
+/// deleted as one: sent, it failed every sync once the directory was gone (#2096).
+pub(crate) fn is_nested_repository(path: &str) -> bool {
+    path.ends_with('/')
 }
 
 /// The files git lists under `dir` — tracked, and untracked but not ignored — relative to `root`,
@@ -239,6 +250,9 @@ pub(crate) fn git_listed_files(root: &Path, dir: &Path) -> Option<Vec<String>> {
         .filter(|path| !path.is_empty())
     {
         let rel_path = String::from_utf8_lossy(path).into_owned();
+        if is_nested_repository(&rel_path) {
+            continue;
+        }
         if let Some(expanded) = expand_contained_dir_symlink(&canonical_root, &rel_path) {
             files.extend(expanded);
         } else {

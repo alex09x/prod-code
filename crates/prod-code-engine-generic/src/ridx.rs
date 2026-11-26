@@ -69,19 +69,31 @@ pub fn index_building(status: &Value) -> Option<String> {
     roots.iter().find_map(|root| {
         let name = root.get("root").and_then(Value::as_str).unwrap_or("?");
         let flag = |key: &str| root.get(key).and_then(Value::as_bool) == Some(true);
-        if root.get("indexed").and_then(Value::as_bool) != Some(true) {
-            Some(format!("the ridx index of {name} is not built yet"))
+        let behind = if root.get("indexed").and_then(Value::as_bool) != Some(true) {
+            format!(
+                "the ridx index of {name} is not built yet (a first index of a large workspace \
+                 takes a minute or two)"
+            )
         } else if flag("building") {
-            Some(format!("the ridx index of {name} is being rebuilt"))
+            format!("the ridx index of {name} is being rebuilt")
         } else if flag("pendingChanges") {
-            Some(format!(
-                "the ridx index of {name} does not cover the latest changes yet"
-            ))
+            format!("the ridx index of {name} does not cover the latest changes yet")
         } else {
-            None
-        }
+            return None;
+        };
+        // The error of the run being replaced says why the next one may fail the same way
+        // (a build script that cannot run on this node, a dependency it cannot fetch).
+        Some(match root.get("error").and_then(Value::as_str) {
+            Some(error) => format!("{behind}; its last build failed: {error}"),
+            None => behind,
+        })
     })
 }
+
+/// How long a question waits for a ridx index to catch up before it is answered with how far
+/// the index got. Shorter than the share a client gives one lookup of a batch (about 20 s), so
+/// the caller reads why instead of its own bare timeout (#2090-#2093).
+pub const RIDX_GATE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// What a `ridx/safeDelete` refusal whose code alone does not say what to do means, and what to
 /// do about it.
@@ -362,11 +374,12 @@ impl GenericLspEngine {
         }
         // One deadline bounds the whole wait: every status request and every pause gets only
         // what is left of it.
-        let wait = self.config.index_wait;
+        let wait = self.config.index_wait.min(RIDX_GATE_WAIT);
         let deadline = tokio::time::Instant::now() + wait;
         let behind_after = |behind: String| {
             anyhow!(
-                "{behind} after {:.1}s; ask again once it is indexed",
+                "{behind}, still after {:.1}s; ask again in a minute. code_outline, code_grep \
+                 and code_exec do not need the index and work meanwhile",
                 wait.as_secs_f64()
             )
         };
@@ -509,9 +522,10 @@ mod tests {
         // Not built yet, or not taken up yet: waited for, not a failure.
         let unbuilt = json!({"roots": [{"root": "/w", "indexed": false, "error": null}]});
         assert_eq!(index_failure(&unbuilt), None);
-        assert_eq!(
-            index_building(&unbuilt).as_deref(),
-            Some("the ridx index of /w is not built yet")
+        let text = index_building(&unbuilt).unwrap();
+        assert!(
+            text.starts_with("the ridx index of /w is not built yet"),
+            "{text}"
         );
         assert_eq!(index_failure(&json!({"roots": []})), None);
         assert!(index_building(&json!({"roots": []})).is_some());
@@ -529,7 +543,13 @@ mod tests {
                 "root": "/w", "indexed": true, "error": "mismatched types", flag: true
             }]});
             assert_eq!(index_failure(&status), None, "{flag}");
-            assert!(index_building(&status).is_some(), "{flag}");
+            // The caller still reads why the run before failed (#2092: a build script that
+            // cannot start on the node fails every run the same way).
+            let text = index_building(&status).unwrap();
+            assert!(
+                text.ends_with("; its last build failed: mismatched types"),
+                "{flag}: {text}"
+            );
         }
         let settled = json!({"roots": [{
             "root": "/w", "indexed": true, "error": "mismatched types",

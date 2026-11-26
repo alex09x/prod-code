@@ -141,3 +141,54 @@ fn tracked_directory_symlink_within_workspace_expands_to_member_files() {
         "prepare_workspace_sync_for must include files under contained directory symlink"
     );
 }
+
+/// #2096: an untracked directory holding another checkout (a worktree created inside this one)
+/// is listed by git as `wt/`; it is not a file, so it is neither sent nor, once gone, deleted.
+#[test]
+fn a_nested_checkout_is_not_a_file_to_sync() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let git = |dir: &Path, args: &[&str]| {
+        std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    if !git(&root, &["init", "-q"]) {
+        return; // no git here
+    }
+    std::fs::write(root.join("lib.rs"), "fn main() {}\n").unwrap();
+    assert!(git(&root, &["add", "."]) && git(&root, &["commit", "-qm", "base"]));
+    let nested = root.join("wt");
+    std::fs::create_dir(&nested).unwrap();
+    assert!(git(&nested, &["init", "-q"]));
+    std::fs::write(nested.join("main.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(root.join("new.rs"), "fn f() {}\n").unwrap();
+
+    let head = git_head(&root).unwrap();
+    let (paths, dirty) = changed_paths(&root, Some(&head), &head).unwrap();
+    assert!(paths.contains_key("new.rs"), "{paths:?}");
+    assert!(!paths.keys().any(|p| p.starts_with("wt")), "{paths:?}");
+    assert!(!dirty.iter().any(|p| p.starts_with("wt")), "{dirty:?}");
+    let listed = git_listed_files(&root, &root).unwrap();
+    assert!(!listed.iter().any(|p| p.ends_with('/')), "{listed:?}");
+    let deltas = collect_git_dirty_files(&root, false).unwrap();
+    assert!(
+        !deltas.iter().any(|d| d.relative_path.starts_with("wt")),
+        "{:?}",
+        deltas.iter().map(|d| &d.relative_path).collect::<Vec<_>>()
+    );
+
+    std::fs::remove_dir_all(&nested).unwrap();
+    let (paths, _) = changed_paths(&root, Some(&head), &head).unwrap();
+    assert!(!paths.keys().any(|p| p.starts_with("wt")), "{paths:?}");
+}
