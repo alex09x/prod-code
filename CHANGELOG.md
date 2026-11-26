@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## v0.3.68 — 2026-11-26
+
+### Fixed
+- **Rust Definitions Say Why They Wait Instead of Timing Out** (#2090, #2091, #2092, #2093): a question that needs the Rust Intelligence index waits for it at most 10 s, less than a client gives one lookup of a batch, then answers how far the index got (not built yet, being rebuilt, behind the latest changes) and what works without it. It waited 30 s, so the client gave up first and the agent read a bare timeout. When the index run being replaced failed, the answer quotes its error (`cargo check exited with status 101`).
+- **`code_test` Shows Why a Build Script Failed** (#2095): the `--- stderr` of a failed `build.rs` (`Could not start Bun: No such file or directory`) is part of its diagnostic; the report had only cargo's `failed to run custom build command`.
+- **A Checkout Nested in the Workspace No Longer Breaks the Sync** (#2096): git lists an untracked directory holding another repository (a worktree created inside the checkout) as `dir/`; it was synced as a file, and once removed locally every call failed with `the node could not write 1 file(s) ... dir/`. Such entries are left out.
+
 ## v0.3.67 — 2026-11-25
 
 ### Fixed
