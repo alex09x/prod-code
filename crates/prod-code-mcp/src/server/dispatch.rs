@@ -134,6 +134,69 @@ pub(crate) async fn handle_mcp_request_at(
     req_val: serde_json::Value,
     received: Instant,
 ) -> Result<Option<serde_json::Value>> {
+    let call = (req_val.get("method").and_then(|m| m.as_str()) == Some("tools/call")).then(|| {
+        let params = req_val.get("params");
+        let name = params
+            .and_then(|p| p.get("name"))
+            .and_then(|n| n.as_str())
+            .unwrap_or("")
+            .to_string();
+        let args = params
+            .and_then(|p| p.get("arguments"))
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        (name, args)
+    });
+    if let Some((name, args)) = call {
+        let id = req_val.get("id").cloned();
+        if name == "code_run_result" {
+            let result = super::detach::run_result(&args).await;
+            return Ok(Some(serde_json::to_value(JsonRpcResponse::success(
+                id, result,
+            ))?));
+        }
+        // A command that may outlive the client's limit for one call runs on its own; the
+        // call answers with its result, or with the run's ID once the window ends (#2089).
+        if let Some(after) = super::detach::detach_after(&name, &args) {
+            let mut run_remote = *remote;
+            let root = workspace_root.to_path_buf();
+            let tool = name.clone();
+            let run = async move {
+                let policy = crate::cluster::node_policy();
+                let answer = handle_mcp_request_received(
+                    &mut run_remote,
+                    &root,
+                    req_val,
+                    &policy,
+                    received,
+                    |old, root| async move { rediscover_node(old, &root).await },
+                )
+                .await;
+                match answer {
+                    Ok(Some(response)) => response
+                        .get("result")
+                        .cloned()
+                        .or_else(|| {
+                            response.get("error").map(|error| {
+                                let text = format!("{name} failed: {error}");
+                                serde_json::to_value(protocol::McpToolCallResult::error(text))
+                                    .unwrap_or_default()
+                            })
+                        })
+                        .unwrap_or_default(),
+                    Ok(None) => serde_json::Value::Null,
+                    Err(error) => serde_json::to_value(protocol::McpToolCallResult::error(
+                        tool_error_text(&error),
+                    ))
+                    .unwrap_or_default(),
+                }
+            };
+            let result = super::detach::run_detachable(&tool, after, run).await;
+            return Ok(Some(serde_json::to_value(JsonRpcResponse::success(
+                id, result,
+            ))?));
+        }
+    }
     let policy = crate::cluster::node_policy();
     handle_mcp_request_received(
         remote,

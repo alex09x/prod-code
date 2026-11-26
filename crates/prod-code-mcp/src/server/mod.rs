@@ -9,6 +9,7 @@
  */
 
 mod call;
+pub(crate) mod detach;
 pub mod dispatch;
 pub mod failover;
 pub mod failover_pin;
