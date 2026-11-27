@@ -41,8 +41,22 @@ pub fn execution_tools() -> Vec<McpTool> {
                         "description": "How much of the output tail to return (default 16384)"
                     },
                     "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Environment variables for the command, e.g. {\"RUST_BACKTRACE\": \"1\"}" },
-                    "workspace": { "type": "string", "description": "Absolute path to another Git worktree of this repository; runs in and syncs that checkout. Defaults to the MCP server's configured workspace." }
+                    "workspace": { "type": "string", "description": "Absolute path to another Git worktree of this repository; runs in and syncs that checkout. Defaults to the MCP server's configured workspace." },
+                    "detach_after_secs": { "type": "integer", "description": "Answer with a run ID if the command is still running after this many seconds (default 240, under the few minutes an MCP client allows one call); 0 waits for the end. Also for code_test, code_check, code_lint, code_benchmarks and code_coverage." }
                 }
+            }),
+        },
+        McpTool {
+            name: "code_run_result".to_string(),
+            description: "The result of a long command run (code_exec, code_test, code_check, code_lint, code_benchmarks, code_coverage) that answered with a run ID because it was still running after its detach window. Returns the run's result once it has finished, as the original call would have; otherwise says it is still running. Each call waits up to `wait_secs`."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "run": { "type": "string", "description": "The run ID the long call answered with, e.g. `run-3`" },
+                    "wait_secs": { "type": "integer", "description": "How long to wait for the result (default and at most 240)" }
+                },
+                "required": ["run"]
             }),
         },
         McpTool {
@@ -63,7 +77,7 @@ pub fn execution_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_check".to_string(),
-            description: "Compile-check the whole workspace on the remote gateway (cargo check / go build) and return structured compiler errors and warnings with file:line:col. Nothing runs on the local machine. `fix: true` (Rust) applies every fix the compiler marks machine-applicable to the checkout in one edit, then checks again and reports what was fixed, what was skipped and why, and what is left."
+            description: "Compile-check the whole workspace on the remote gateway (cargo check / go build) and return structured compiler errors and warnings with file:line:col. Nothing runs on the local machine. `fix: true` (Rust) applies every fix the compiler marks machine-applicable to the checkout in one edit, then checks again and reports what was fixed, what was skipped and why, and what is left. The project's `prod-code.toml` decides the command: `[rust] runner = \"mitts\"` runs Mitts instead of Cargo, `[rust] toolchain` pins the toolchain, and `[commands.<language>] check = [\"argv\", ...]` replaces the planned command."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -77,7 +91,7 @@ pub fn execution_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_lint".to_string(),
-            description: "Lint the whole workspace on the remote gateway (cargo clippy -D warnings; golangci-lint, or go vet on a node without it; ruff; eslint / biome; clang-tidy) and return structured findings with file:line:col. `fix: true` (Rust) applies every fix clippy and rustc mark machine-applicable, then lints again."
+            description: "Lint the whole workspace on the remote gateway (cargo clippy -D warnings; golangci-lint, or go vet on a node without it; ruff; eslint / biome; clang-tidy) and return structured findings with file:line:col. `fix: true` (Rust) applies every fix clippy and rustc mark machine-applicable, then lints again. The project's `prod-code.toml` decides the command: `[rust] runner = \"mitts\"` runs Mitts instead of Cargo, `[rust] toolchain` pins the toolchain, and `[commands.<language>] lint = [\"argv\", ...]` replaces the planned command."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -105,7 +119,7 @@ pub fn execution_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_test".to_string(),
-            description: "Run tests on the remote gateway (cargo test / go test -json / pytest / vitest / …), optionally filtered by test name, and return pass/fail counts plus the output of each failed test. `path` narrows the run to the Cargo crate, Go package tree or pytest directory/file containing it. A filtered Rust run matching zero tests returns an error. Pass `workspace` to target another Git worktree of this repository."
+            description: "Run tests on the remote gateway (cargo test / go test -json / pytest / vitest / …), optionally filtered by test name, and return pass/fail counts plus the output of each failed test. `path` narrows the run to the Cargo crate, Go package tree or pytest directory/file containing it. A filtered Rust run matching zero tests returns an error. Pass `workspace` to target another Git worktree of this repository. The project's `prod-code.toml` decides the command: `[rust] runner = \"mitts\"` runs Mitts instead of Cargo, `[rust] toolchain` pins the toolchain, and `[commands.<language>] test = [\"argv\", \"{filter}\"]` replaces the planned command."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",

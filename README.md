@@ -352,6 +352,7 @@ tool before applying it.
 |---|---|
 | `code_check` · `code_lint` · `code_test` · `code_benchmarks` | compile check, lint, test, and benchmark on the node with parsed diagnostics; `path` narrows scope; `fix: true` applies compiler fixes |
 | `code_exec` | execute any build or toolchain command in remote workspace copy; modified files, formatters, and lockfiles are written back |
+| `code_run_result` | the result of a command run still going after 240 s: such a call answers with a run ID instead of being cut off by the MCP client's limit for one call |
 | `code_pull` | retrieve files and compiled artifacts from the last execution node, preserving executable permissions; reports the node and checkout copy |
 | `code_diagnose_failure` | run tests and generate diagnostic failure dossiers with sites, callers, changes, and printed assertion operands |
 

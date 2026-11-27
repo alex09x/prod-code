@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## v0.3.69 — 2026-11-26
+
+### Added
+- **Long Runs Answer With a Run ID Instead of Being Cut Off** (#2089): an MCP client ends a single tool call after a few minutes (300 s is common), whatever `timeout_secs` says, and the run's result was lost with it. `code_exec`, `code_test`, `code_check`, `code_lint`, `code_benchmarks`, `code_coverage` and `code_diagnose_failure` still running after 240 s answer with a run ID and keep going; the new `code_run_result {run}` returns the result once it is there (each call waits up to 240 s). `detach_after_secs` sets the window, `0` waits for the end; `PROD_CODE_DETACH_SECS` sets it for the server.
+
+### Changed
+- **The Command Tools Say How a Project Picks Its Runner** (#2097): `code_test`, `code_check` and `code_lint` describe the `prod-code.toml` settings that already decide the command: `[rust] runner = "mitts"`, `[rust] toolchain`, and `[commands.<language>]`.
+
 ## v0.3.68 — 2026-11-26
 
 ### Fixed
