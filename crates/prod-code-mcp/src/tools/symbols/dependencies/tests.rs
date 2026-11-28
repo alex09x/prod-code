@@ -139,6 +139,50 @@ async fn symbols_dependency_fallback_table_preserves_workspace_precedence_and_bo
     );
 }
 
+/// #2094: a git dependency's function asked for by its crate path. The server matches names
+/// only, so the whole path finds nothing; its name does, under the module that owns it, in the
+/// directory Cargo named after the crate. Another crate's path is not it, and neither is a
+/// crate whose name only starts the same.
+#[tokio::test]
+async fn a_dependency_function_resolves_by_its_crate_path() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        ("src/main.rs", "fn main() {}\n"),
+    ]);
+    let checkout = ws.root().parent().unwrap().join("git/checkouts");
+    let module = checkout.join("rapidfire-80d5a94b1426bea5/5c8b6cd/src/mpsc.rs");
+    let lookalike = checkout.join("rapidfire-extra-0.1.0/src/mpsc.rs");
+    let (module_path, lookalike_path) = (module.clone(), lookalike.clone());
+    let gateway = ScriptedGateway::start(move |method, params| match method {
+        "prod-code/handshake" => json!({"index_gated": true}),
+        "prod-code/readFile" => json!("\npub fn bounded(capacity: usize) {}\n"),
+        "workspace/symbol" if params["searchScope"] == "dependencies" => {
+            match params["query"].as_str().unwrap() {
+                "bounded" => json!([
+                    owned("bounded", &module_path, 2, 8, "mpsc"),
+                    owned("bounded", &lookalike_path, 2, 8, "mpsc")
+                ]),
+                _ => json!([]),
+            }
+        }
+        "workspace/symbol" | "textDocument/documentSymbol" => json!([]),
+        _ => Value::Null,
+    })
+    .await;
+
+    let hit = resolve_symbol(gateway.addr(), &ws.root(), "rapidfire::mpsc::bounded", None)
+        .await
+        .expect("the crate path names the git dependency's function");
+    assert_eq!((&hit.path, hit.line), (&module, 2));
+    for other in ["tokio::mpsc::bounded", "rapid::mpsc::bounded"] {
+        let result = resolve_symbol(gateway.addr(), &ws.root(), other, None).await;
+        assert!(result.is_err(), "{other}: {result:?}");
+    }
+}
+
 #[tokio::test]
 async fn symbols_dependency_scope_rejects_malformed_exact_positions() {
     let ws = Workspace::new(&[

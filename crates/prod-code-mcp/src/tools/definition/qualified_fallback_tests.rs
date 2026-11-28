@@ -77,6 +77,43 @@ fn a_module_beside_an_impl_is_not_its_member() {
     );
 }
 
+/// #2102: `tokio::sync::mpsc::Receiver::recv_many` names tokio's type. A local `impl<T>
+/// Receiver<T>` in `src/mpsc.rs` has a `recv_many` too, but its module is `mpsc`, not
+/// `tokio::sync::mpsc`, so it is not the answer; nor is it `zzz::Receiver::recv_many`. Its own
+/// paths still find it, and so does a module path to a free function.
+#[test]
+fn modules_named_before_the_owner_must_be_the_files() {
+    let temp = checkout();
+    let root = temp.path();
+    std::fs::write(
+        root.join("src/mpsc.rs"),
+        "pub struct Receiver<T>(T);\nimpl<T> Receiver<T> {\n    pub async fn recv_many(&mut self, limit: usize) -> usize { limit }\n}\n",
+    )
+    .unwrap();
+    for symbol in [
+        "tokio::sync::mpsc::Receiver::recv_many",
+        "zzz::Receiver::recv_many",
+        "zzz::mpsc::Receiver::recv_many",
+    ] {
+        let hits = find_unindexed_rust_declarations(root, symbol, None);
+        assert!(hits.is_empty(), "{symbol}: {hits:?}");
+    }
+    for symbol in [
+        "mpsc::Receiver::recv_many",
+        "crate::mpsc::Receiver::recv_many",
+        "Receiver::recv_many",
+    ] {
+        let hits = find_unindexed_rust_declarations(root, symbol, None);
+        assert_eq!(hits.len(), 1, "{symbol}: {hits:?}");
+        assert!(hits[0].path.ends_with("src/mpsc.rs"), "{symbol}");
+    }
+    for symbol in ["terminal::state::feed", "terminal::state::Terminal::feed"] {
+        let hits = find_unindexed_rust_declarations(root, symbol, None);
+        assert_eq!(hits.len(), 1, "{symbol}: {hits:?}");
+        assert!(hits[0].path.ends_with("src/terminal/state.rs"), "{symbol}");
+    }
+}
+
 /// The qualifier still finds what it names, spelled with a dot or with `::`, and a bare name
 /// still finds every declaration of it.
 #[test]

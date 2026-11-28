@@ -221,19 +221,19 @@ impl GenericLspEngine {
                 // covers every reported change; otherwise it is refused. Its progress does not
                 // decide it (`end` comes for a failed build too, and a rebuild longer than the
                 // wait must not let an older index answer), so it is not waited on: the status
-                // is, under the one index-wait deadline.
-                self.ridx_index_gate()
+                // is, under the one index-wait deadline. A read-only question a rebuild outlasts
+                // is answered from the loaded index with a note (#2101).
+                self.ridx_index_gate(method)
                     .await
-                    .with_context(|| format!("'{method}' is not asked"))?;
-                None
+                    .with_context(|| format!("'{method}' is not asked"))?
             } else {
-                let busy = self.readiness.wait(self.config.index_wait).await;
-                if busy.is_none() {
-                    self.ridx_index_gate()
+                match self.readiness.wait(self.config.index_wait).await {
+                    Some(busy) => Some(busy),
+                    None => self
+                        .ridx_index_gate(method)
                         .await
-                        .with_context(|| format!("'{method}' is not asked"))?;
+                        .with_context(|| format!("'{method}' is not asked"))?,
                 }
-                busy
             }
         } else {
             None

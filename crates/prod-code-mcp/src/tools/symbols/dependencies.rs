@@ -41,22 +41,35 @@ pub(super) async fn dependency_symbol_search(
     if anchor.extension().is_none_or(|extension| extension != "rs") {
         return Ok(Vec::new());
     }
+    let query = |query: String| {
+        let anchor = anchor.clone();
+        async move {
+            let response = crate::tools::execute_lsp_query(
+                remote,
+                root,
+                &anchor,
+                "workspace/symbol",
+                serde_json::json!({
+                    "query": query,
+                    "limit": 200,
+                    "searchScope": "dependencies",
+                    "prodCodeTimeoutMs": DEPENDENCY_SEARCH_BUDGET.as_millis() as u64,
+                }),
+            )
+            .await?;
+            let mut hits = parse_workspace_symbol_hits(root, &query, &response, 200)?;
+            hits.retain(|hit| qualifier_matches(root, hit, owners));
+            anyhow::Ok(hits)
+        }
+    };
     let search = async {
-        let response = crate::tools::execute_lsp_query(
-            remote,
-            root,
-            &anchor,
-            "workspace/symbol",
-            serde_json::json!({
-                "query": symbol,
-                "limit": 200,
-                "searchScope": "dependencies",
-                "prodCodeTimeoutMs": DEPENDENCY_SEARCH_BUDGET.as_millis() as u64,
-            }),
-        )
-        .await?;
-        let mut hits = parse_workspace_symbol_hits(root, symbol, &response, 200)?;
-        hits.retain(|hit| qualifier_matches(root, hit, owners));
+        let hits = query(symbol.to_string()).await?;
+        // A server that matches only names finds nothing for the whole path
+        // (`rapidfire::mpsc::bounded`): its name is asked, and the path picks the hit (#2094).
+        let name = super::matching::bare_symbol_name(symbol.rsplit("::").next().unwrap_or(symbol));
+        if hits.is_empty() && !owners.is_empty() && name != symbol {
+            return query(name.to_string()).await;
+        }
         Ok(hits)
     };
     match tokio::time::timeout(DEPENDENCY_SEARCH_BUDGET, search).await {

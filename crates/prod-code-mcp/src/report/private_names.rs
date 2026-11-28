@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
 
-use super::declarations;
+use super::{declarations, dictionary};
 
 const GUIDANCE: &str = "Describe the problem with a neutral reproduction. File private details in the private incident store and pass its key as private_ref (--private-ref). For another public repository only, explicitly set allow_private_names: true (--allow-private-names).";
 const FILE_BYTES: u64 = 256 * 1024;
@@ -128,7 +128,11 @@ pub(super) fn check(root: &Path, texts: &[&str]) -> Result<()> {
                 .flatten()
                 .map(|capture| capture.as_str())
             {
-                if !declarations::generic(name) {
+                // A declared name that is one ordinary English word (`rebuild`, `Receiver`)
+                // identifies nothing in prose; file names stay protected above (#2101, #2103).
+                if !declarations::generic(name)
+                    && !dictionary::is_english_word(name, dictionary::system())
+                {
                     record(texts, name, true, &mut offending);
                 }
             }

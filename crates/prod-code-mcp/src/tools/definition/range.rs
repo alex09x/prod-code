@@ -119,6 +119,25 @@ pub(crate) fn find_unindexed_rust_declarations(
         if !names_word(&text, name) {
             continue;
         }
+        // The modules a path names before its owner are the file's: `tokio::sync::mpsc::
+        // Receiver::recv_many` is not the `recv_many` of a local `impl Receiver` in `mpsc.rs`,
+        // and neither is `zzz::Receiver::recv_many` (#2102). The owner is a module of the file
+        // (`ledger::math::settle`) or a type in it (`mpsc::Receiver::recv_many`).
+        // `crate::` is the root of this crate, which every file's path starts from.
+        let path_segments = match segments.split_first() {
+            Some((&"crate", rest)) => rest,
+            _ => &segments[..],
+        };
+        if path_segments.len() > 2 {
+            use crate::tools::symbols::matching::module_path_ends_with;
+            let through_owner = &path_segments[..path_segments.len() - 1];
+            let before_owner = &path_segments[..path_segments.len() - 2];
+            if !module_path_ends_with(root, &path, through_owner)
+                && !module_path_ends_with(root, &path, before_owner)
+            {
+                continue;
+            }
+        }
         // Whether the qualifier is only a type of this file, met in an `impl` header: then the
         // item must be inside that `impl`, and a `mod cancel;` beside it is not
         // `Exec::cancel` (#2045).

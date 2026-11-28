@@ -21,6 +21,32 @@ fn text(value: &Value) -> String {
         .to_string()
 }
 
+/// A detached run without a budget of its own gets its command's, not the 150 s of one call,
+/// which ended it before the 240 s window; a budget the caller named is kept.
+#[test]
+fn a_detached_run_outlives_the_budget_of_one_call() {
+    use crate::server::dispatch::{MCP_TOOL_CALL_TIMEOUT, resolve_tool_call_timeout};
+    let call = |arguments: Value| serde_json::json!({"method": "tools/call", "params": {"name": "code_test", "arguments": arguments}});
+    let budget = |request: &Value| resolve_tool_call_timeout(&request["params"]["arguments"]);
+    let mut bare = call(serde_json::json!({"filter": "x"}));
+    assert_eq!(budget(&bare), MCP_TOOL_CALL_TIMEOUT);
+    assert!(MCP_TOOL_CALL_TIMEOUT < DEFAULT_DETACH_AFTER);
+    give_run_its_budget(&mut bare);
+    assert_eq!(budget(&bare), DETACHED_RUN_BUDGET);
+    assert!(budget(&bare) > DEFAULT_DETACH_AFTER);
+    assert_eq!(bare["params"]["arguments"]["filter"], "x");
+    for named in [
+        serde_json::json!({"timeout_secs": 30}),
+        serde_json::json!({"timeout_millis": 9000}),
+    ] {
+        let mut request = call(named.clone());
+        let before = budget(&request);
+        give_run_its_budget(&mut request);
+        assert_eq!(budget(&request), before, "{named}");
+        assert_eq!(request["params"]["arguments"], named);
+    }
+}
+
 fn run_id(answer: &Value) -> String {
     let text = text(answer);
     let start = text.find("`run-").expect("a run ID") + 1;
