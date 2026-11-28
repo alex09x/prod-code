@@ -11,6 +11,7 @@
 //! Reporting a bug in prod-code itself as a GitHub issue, from the agent that hit it (#290).
 
 mod declarations;
+mod dictionary;
 pub mod gh;
 mod ipv6;
 mod private_names;

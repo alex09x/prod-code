@@ -288,6 +288,11 @@ async fn workspace_selector_rejects_unrelated_and_invalid_nested_roots() {
         format!("{error:#}").contains("same Git repository"),
         "{error:#}"
     );
+    // The refusal says how to reach the other repository (#2103).
+    assert!(
+        format!("{error:#}").contains("Run the prod-code CLI from that folder"),
+        "{error:#}"
+    );
 
     let fake_nested = ws.root().join("review-worktrees/pr50");
     std::fs::create_dir_all(&fake_nested).unwrap();

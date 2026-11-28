@@ -3649,8 +3649,9 @@ async fn a_ridx_deletion_needs_a_fresh_index() {
 }
 
 /// An index question waits while ridx says its index does not cover the latest reported change
-/// (`pendingChanges`), and is refused once the wait runs out; a ridx without that report
-/// (`ridx/status` 1) is refused at once.
+/// (`pendingChanges`). Once the wait runs out, a question about uses is refused, and a
+/// navigation question is answered from the loaded index with a note that it is not final
+/// (#2101); a ridx without that report (`ridx/status` 1) is refused at once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_index_question_waits_for_pending_changes_and_needs_their_report() {
     let (dir, script) = workspace();
@@ -3665,14 +3666,13 @@ async fn an_index_question_waits_for_pending_changes_and_needs_their_report() {
     let engine = GenericLspEngine::spawn(dir.path(), pending)
         .await
         .expect("the fake server starts");
+    let references = serde_json::json!({ "textDocument": { "uri": "file:///w/src/util.rs" },
+        "position": { "line": 0, "character": 7 }, "context": { "includeDeclaration": true } });
     let started = std::time::Instant::now();
     let err = engine
-        .send_request(
-            "workspace/symbol",
-            serde_json::json!({ "query": "indexed" }),
-        )
+        .send_request("textDocument/references", references)
         .await
-        .expect_err("not answered from an index behind a change");
+        .expect_err("uses are not answered from an index behind a change");
     assert!(
         started.elapsed() >= Duration::from_millis(700),
         "it waited first"
@@ -3680,6 +3680,26 @@ async fn an_index_question_waits_for_pending_changes_and_needs_their_report() {
     assert!(
         format!("{err:#}").contains("does not cover the latest changes"),
         "{err:#}"
+    );
+    let started = std::time::Instant::now();
+    let answer = engine
+        .send_request(
+            "workspace/symbol",
+            serde_json::json!({ "query": "indexed" }),
+        )
+        .await
+        .expect("navigation is answered from the loaded index");
+    assert!(
+        started.elapsed() >= Duration::from_millis(700),
+        "it waited first"
+    );
+    let note = &answer[prod_code_protocol::readiness::BUSY_MEMBER];
+    assert_eq!(note["title"], "taking up changes", "{answer}");
+    assert!(
+        note["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("answered from the loaded index")),
+        "{answer}"
     );
 
     let v1 = GenericLspEngine::spawn(
@@ -3698,9 +3718,10 @@ async fn an_index_question_waits_for_pending_changes_and_needs_their_report() {
     assert!(format!("{err:#}").contains("ridx/status 2"), "{err:#}");
 }
 
-/// A ridx rebuild that outlasts the index wait (its progress still running) does not let an
-/// index question through with a busy note: the status must prove the index current, or the
-/// question is refused.
+/// A ridx rebuild that outlasts the index wait (its progress still running) does not let a
+/// question about uses through: the status must prove the index current, or it is refused. A
+/// navigation question is answered from the loaded index after the same one wait, with the
+/// changed files ridx names in its note (#2101).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_ridx_rebuild_longer_than_the_wait_refuses_instead_of_answering_busy() {
     let (dir, script) = workspace();
@@ -3722,18 +3743,19 @@ async fn a_ridx_rebuild_longer_than_the_wait_refuses_instead_of_answering_busy()
     c.env.insert(
         "FAKE_RIDX_STATUS".to_string(),
         serde_json::json!({ "roots": [{ "root": "/w", "indexed": true, "error": null,
-            "building": true, "pendingChanges": false }] })
+            "building": true, "pendingChanges": false, "buildingForMs": 42000,
+            "changedFileCount": 4,
+            "changedFiles": ["/w/src/a.rs", "/w/src/b.rs", "/w/src/c.rs", "/w/src/d.rs"] }] })
         .to_string(),
     );
     let engine = GenericLspEngine::spawn(dir.path(), c)
         .await
         .expect("the fake server starts");
+    let references = serde_json::json!({ "textDocument": { "uri": "file:///w/src/util.rs" },
+        "position": { "line": 0, "character": 7 }, "context": { "includeDeclaration": true } });
     let started = std::time::Instant::now();
     let err = engine
-        .send_request(
-            "workspace/symbol",
-            serde_json::json!({ "query": "indexed" }),
-        )
+        .send_request("textDocument/references", references)
         .await
         .expect_err("refused, not answered from the older index");
     let took = started.elapsed();
@@ -3742,5 +3764,27 @@ async fn a_ridx_rebuild_longer_than_the_wait_refuses_instead_of_answering_busy()
     assert!(
         took >= Duration::from_millis(550) && took < Duration::from_millis(1100),
         "the refusal came after {took:?}"
+    );
+    let started = std::time::Instant::now();
+    let answer = engine
+        .send_request(
+            "workspace/symbol",
+            serde_json::json!({ "query": "indexed" }),
+        )
+        .await
+        .expect("navigation is answered from the loaded index");
+    let took = started.elapsed();
+    assert!(
+        took >= Duration::from_millis(550) && took < Duration::from_millis(1100),
+        "the answer came after {took:?}"
+    );
+    let note = &answer[prod_code_protocol::readiness::BUSY_MEMBER];
+    assert_eq!(note["title"], "rebuilding its index", "{answer}");
+    assert_eq!(note["for_ms"], 42000, "{answer}");
+    assert_eq!(
+        note["message"],
+        "answered from the loaded index; 4 changed file(s) not in it yet: src/a.rs, src/b.rs, \
+         src/c.rs, ...",
+        "{answer}"
     );
 }

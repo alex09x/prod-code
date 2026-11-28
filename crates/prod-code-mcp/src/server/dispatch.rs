@@ -158,6 +158,8 @@ pub(crate) async fn handle_mcp_request_at(
         // A command that may outlive the client's limit for one call runs on its own; the
         // call answers with its result, or with the run's ID once the window ends (#2089).
         if let Some(after) = super::detach::detach_after(&name, &args) {
+            let mut req_val = req_val;
+            super::detach::give_run_its_budget(&mut req_val);
             let mut run_remote = *remote;
             let root = workspace_root.to_path_buf();
             let tool = name.clone();

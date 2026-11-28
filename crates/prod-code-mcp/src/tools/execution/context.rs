@@ -156,9 +156,15 @@ fn explicit_workspace_root(configured: &Path, raw: &str) -> Result<PathBuf> {
         selected_top == selected,
         "workspace must name the root of a Git worktree"
     );
+    // A separate repository is refused on purpose (#1811): this server writes only into the
+    // checkout it was started for and that checkout's worktrees. The caller is told how to
+    // reach the other one (#2103).
     ensure!(
         configured_common == selected_common,
-        "workspace must be a worktree of the same Git repository as the configured workspace"
+        "workspace must be a worktree of the same Git repository as the configured workspace; \
+         {raw} is a separate repository. Run the prod-code CLI from that folder (`prod-code \
+         def|refs|test|exec ...` there), or start an MCP session with that folder as its \
+         workspace"
     );
     Ok(selected)
 }

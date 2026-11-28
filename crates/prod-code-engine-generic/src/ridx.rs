@@ -90,6 +90,86 @@ pub fn index_building(status: &Value) -> Option<String> {
     })
 }
 
+/// Navigation a loaded index may answer while a rebuild runs, with a note that the answer is not
+/// final (#2101): where a name is declared and what it is. A position it gives is checked
+/// against the current source by whoever uses it. Uses (references, implementations, callers)
+/// are what refactorings write their edits from, and an edit tool applies before it reads a
+/// note, so those wait for an index that covers every change, as before.
+pub fn may_answer_from_loaded_index(method: &str) -> bool {
+    matches!(
+        method,
+        "textDocument/definition"
+            | "textDocument/declaration"
+            | "textDocument/typeDefinition"
+            | "textDocument/hover"
+            | "textDocument/documentSymbol"
+            | "workspace/symbol"
+    )
+}
+
+/// The note for an answer from a loaded index that does not cover the latest changes yet: every
+/// root has an index (`indexed`), none failed, and at least one is rebuilding or has changes not
+/// indexed. It names how many files changed and the first of them (`changedFiles`,
+/// `changedFileCount`, `buildingForMs`, ridx 0.3.18), so the caller can tell whether the answer
+/// touches them. A root not built yet gives no note: there is nothing to answer from.
+pub fn loaded_index_busy(
+    status: &Value,
+    waited: std::time::Duration,
+) -> Option<prod_code_protocol::readiness::Busy> {
+    let roots = status.get("roots")?.as_array()?;
+    if roots.is_empty()
+        || roots
+            .iter()
+            .any(|root| root.get("indexed").and_then(Value::as_bool) != Some(true))
+    {
+        return None;
+    }
+    let flag = |root: &Value, key: &str| root.get(key).and_then(Value::as_bool) == Some(true);
+    let behind = roots
+        .iter()
+        .find(|root| flag(root, "building") || flag(root, "pendingChanges"))?;
+    let name = behind.get("root").and_then(Value::as_str).unwrap_or("");
+    let changed: Vec<String> = behind
+        .get("changedFiles")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(|file| {
+            let relative = file.strip_prefix(name).unwrap_or(file);
+            relative.trim_start_matches('/').to_string()
+        })
+        .collect();
+    let count = behind
+        .get("changedFileCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(changed.len() as u64);
+    let message = (count > 0).then(|| {
+        let shown: Vec<&str> = changed.iter().take(3).map(String::as_str).collect();
+        let listed = match (shown.is_empty(), count as usize > shown.len()) {
+            (true, _) => String::new(),
+            (false, true) => format!(": {}, ...", shown.join(", ")),
+            (false, false) => format!(": {}", shown.join(", ")),
+        };
+        format!("answered from the loaded index; {count} changed file(s) not in it yet{listed}")
+    });
+    let for_ms = behind
+        .get("buildingForMs")
+        .and_then(Value::as_u64)
+        .unwrap_or(waited.as_millis() as u64);
+    Some(prod_code_protocol::readiness::Busy {
+        title: if flag(behind, "building") {
+            "rebuilding its index".to_string()
+        } else {
+            "taking up changes".to_string()
+        },
+        message: message.or_else(|| Some("answered from the loaded index".to_string())),
+        percentage: None,
+        for_ms,
+        unreported: false,
+    })
+}
+
 /// How long a question waits for a ridx index to catch up before it is answered with how far
 /// the index got. Shorter than the share a client gives one lookup of a batch (about 20 s), so
 /// the caller reads why instead of its own bare timeout (#2090-#2093).
@@ -352,8 +432,14 @@ impl GenericLspEngine {
     ///
     /// A root being rebuilt, or with reported changes not indexed yet, is waited for (up to the
     /// index wait): a question asked right after a sync or a command wrote a file must not be
-    /// answered from the index of the files before it.
-    pub(crate) async fn ridx_index_gate(&self) -> Result<()> {
+    /// answered from the index of the files before it. When the wait ends and every root has a
+    /// loaded index, a read-only question (`method`) is answered from it with the note returned
+    /// here, which marks the answer not final; a rebuild that outlasts every wait no longer
+    /// refuses navigation for as long as edits keep coming (#2101).
+    pub(crate) async fn ridx_index_gate(
+        &self,
+        method: &str,
+    ) -> Result<Option<prod_code_protocol::readiness::Busy>> {
         if !self.caps_satisfy(declares_status).await {
             // A server configured as ridx that declares no status at all (0.3.8) cannot say
             // whether its index is current either.
@@ -363,7 +449,7 @@ impl GenericLspEngine {
                      (ridx/status 2); upgrade Rust Intelligence"
                 );
             }
-            return Ok(());
+            return Ok(None);
         }
         if !self.caps_satisfy(declares_pending_changes).await {
             anyhow::bail!(
@@ -384,22 +470,33 @@ impl GenericLspEngine {
             )
         };
         let mut last = "the ridx index did not prove current".to_string();
+        let mut last_status: Option<Value> = None;
+        // The wait is over: a read-only question is answered from the loaded index, marked not
+        // final, when there is one; anything else is refused with how far the index got.
+        let at_deadline = |last: String, last_status: Option<Value>| match last_status
+            .as_ref()
+            .and_then(|status| loaded_index_busy(status, wait))
+        {
+            Some(busy) if may_answer_from_loaded_index(method) => Ok(Some(busy)),
+            _ => Err(behind_after(last)),
+        };
         loop {
             let left = deadline.saturating_duration_since(tokio::time::Instant::now());
             if left.is_zero() {
-                return Err(behind_after(last));
+                return at_deadline(last, last_status);
             }
             let status = match tokio::time::timeout(left, self.ridx_status(left)).await {
                 Ok(status) => status?,
-                Err(_) => return Err(behind_after(last)),
+                Err(_) => return at_deadline(last, last_status),
             };
             if let Some(reason) = index_failure(&status) {
                 return Err(anyhow!("{reason}; its index answers are not final"));
             }
             let Some(behind) = index_building(&status) else {
-                return Ok(());
+                return Ok(None);
             };
             last = behind;
+            last_status = Some(status);
             let left = deadline.saturating_duration_since(tokio::time::Instant::now());
             tokio::time::sleep(left.min(std::time::Duration::from_millis(100))).await;
         }
@@ -413,6 +510,43 @@ mod tests {
 
     fn ridx(methods: Value) -> Value {
         json!({"experimental": {"ridx": {"methods": methods, "requestOptions": {"minVersion": 1}}}})
+    }
+
+    /// #2101: only a loaded index answers while a rebuild runs; a root without one gives no
+    /// note, an idle current one needs none, and uses are never answered stale.
+    #[test]
+    fn a_loaded_index_answers_navigation_only_while_it_is_rebuilt() {
+        let wait = std::time::Duration::from_secs(10);
+        let root = |indexed: bool, building: bool| json!({"root": "/w", "indexed": indexed, "building": building});
+        assert!(loaded_index_busy(&json!({"roots": [root(false, true)]}), wait).is_none());
+        assert!(
+            loaded_index_busy(
+                &json!({"roots": [root(true, true), root(false, false)]}),
+                wait
+            )
+            .is_none()
+        );
+        assert!(loaded_index_busy(&json!({"roots": [root(true, false)]}), wait).is_none());
+        assert!(loaded_index_busy(&json!({"roots": []}), wait).is_none());
+        let busy = loaded_index_busy(&json!({"roots": [root(true, true)]}), wait).unwrap();
+        assert_eq!(busy.title, "rebuilding its index");
+        assert_eq!(busy.for_ms, 10_000);
+        assert_eq!(
+            busy.message.as_deref(),
+            Some("answered from the loaded index")
+        );
+        assert!(!busy.unreported);
+        assert!(may_answer_from_loaded_index("textDocument/definition"));
+        assert!(may_answer_from_loaded_index("workspace/symbol"));
+        for method in [
+            "textDocument/references",
+            "textDocument/implementation",
+            "callHierarchy/incomingCalls",
+            "textDocument/rename",
+            "ridx/safeDelete",
+        ] {
+            assert!(!may_answer_from_loaded_index(method), "{method}");
+        }
     }
 
     #[test]

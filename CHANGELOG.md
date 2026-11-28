@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## v0.3.70 — 2026-11-28
+
+### Fixed
+- **A Path Naming Another Crate No Longer Finds a Same-Named Local Method** (#2102): `code_definition {symbol: "tokio::sync::mpsc::Receiver::recv_many"}` answered with a local `mpsc::Receiver::recv_many`. When the index had no such item, the source fallback checked only the owner (`Receiver`), so even `zzz::Receiver::recv_many` matched. The modules a path names before its owner must now be the file's (`mpsc::Receiver::recv_many` and `crate::mpsc::...` still find the local one).
+- **Navigation Answers From the Loaded Rust Index While It Is Rebuilt** (#2101): a large workspace whose agent keeps editing can rebuild its Rust Intelligence index back to back, and every definition was refused with "is being rebuilt" for as long as that lasted. When the wait ends and the index is loaded, definitions, hover, outlines and symbol search answer from it, marked not final (`answer_final: false`), with how many files changed and the first of them. References, implementations, callers, rename and safe delete still wait for a current index, since refactorings write edits from them.
+- **A Long Run Is Not Cut at 150 s Before It Can Answer With Its Run ID** (#2089): a detached `code_test` or `code_exec` without `timeout_secs` was ended by the 150 s budget of one call before the 240 s window gave its run ID. A detached run now gets its command's budget.
+- **Dependency Functions Resolve by Their Crate Path** (#2094): `rapidfire::mpsc::bounded` from a git or registry dependency was "no symbol named"; only `mpsc::bounded` worked. The directory Cargo unpacks a dependency into (`rapidfire-80d5a94b…`, `tokio-1.53.1`) names its crate, and a name-only dependency search is asked by the bare name when the path finds nothing.
+- **Issue Reports Are Not Refused for Ordinary English** (#2101, #2103): a declared name that is one English word of the system dictionary (`rebuild`, `steady`, `Receiver`) no longer blocks `code_report_issue`. Compound identifiers, words not in the dictionary and file names stay protected.
+
+### Changed
+- **Another Repository's Checkout Is Refused With What to Do** (#2103): `workspace` still selects only worktrees of the configured repository; the refusal now says to run the prod-code CLI from that folder or start an MCP session there.
+
 ## v0.3.69 — 2026-11-26
 
 ### Added

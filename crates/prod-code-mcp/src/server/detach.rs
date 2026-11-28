@@ -42,6 +42,35 @@ pub(crate) const DEFAULT_DETACH_AFTER: Duration = Duration::from_secs(240);
 pub(crate) const MAX_RESULT_WAIT: Duration = Duration::from_secs(240);
 /// How long a finished run's result is kept for a `code_run_result` that has not come yet.
 const KEEP_FINISHED: Duration = Duration::from_secs(3600);
+/// The budget of a detached run that names none: the command tools' own default timeout
+/// (3600 s) and a margin, not the 150 s one call gets.
+pub(crate) const DETACHED_RUN_BUDGET: Duration = Duration::from_secs(3605);
+
+/// Gives a detached `tools/call` request the budget of its command. Without `timeout_secs` or
+/// `timeout_millis` a call is cut at 150 s, before the 240 s detach window ends, so a run
+/// meant to outlive one call failed as a timed-out call instead (#2089). `timeout_millis` sets
+/// only the call's budget; the command keeps its own timeout.
+pub(crate) fn give_run_its_budget(request: &mut Value) {
+    let Some(arguments) = request
+        .get_mut("params")
+        .and_then(|params| params.get_mut("arguments"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    let named = |key: &str| {
+        arguments
+            .get(key)
+            .and_then(Value::as_u64)
+            .is_some_and(|v| v > 0)
+    };
+    if !named("timeout_secs") && !named("timeout_millis") {
+        arguments.insert(
+            "timeout_millis".to_string(),
+            Value::from(DETACHED_RUN_BUDGET.as_millis() as u64),
+        );
+    }
+}
 
 /// A run's result: the `tools/call` result object, as it would have been answered.
 type Outcome = Option<Arc<Value>>;

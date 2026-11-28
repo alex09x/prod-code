@@ -175,7 +175,11 @@ pub(crate) fn owner_path_matches(
         return false;
     }
     let module_prefix = &requested[..requested.len() - declared.len()];
-    !module_prefix.is_empty() && module_path_ends_with(root, path, module_prefix)
+    // The owner a server names can be the file's own module (`bounded` in `mpsc.rs`, owner
+    // `mpsc`): then the file's module path is the whole requested path (#2094).
+    !module_prefix.is_empty()
+        && (module_path_ends_with(root, path, module_prefix)
+            || module_path_ends_with(root, path, requested))
 }
 
 /// Whether the module path `path`'s file gives it ends with `qualifiers`:
@@ -219,6 +223,24 @@ pub(crate) fn module_path_ends_with(root: &Path, path: &Path, qualifiers: &[&str
         || (module_root_alias(root, path, qualifiers[0]) && ends_with(&qualifiers[1..]))
 }
 
+/// Whether a directory of `path` is the one Cargo unpacks the crate `wanted` (`-` as `_`) into:
+/// its name and then a version (`tokio-1.53.1`, `zed_xim-0.4.0-zed`) or a git checkout hash
+/// (`rapidfire-80d5a94b1426bea5`). `futures-core-0.3.31` is not `futures`.
+fn names_dependency_crate(path: &Path, wanted: &str) -> bool {
+    path.components().any(|component| {
+        let dir = component.as_os_str().to_string_lossy().replace('-', "_");
+        let Some(rest) = dir
+            .strip_prefix(wanted)
+            .and_then(|rest| rest.strip_prefix('_'))
+        else {
+            return false;
+        };
+        let version = rest.starts_with(|c: char| c.is_ascii_digit());
+        let git_hash = rest.len() >= 8 && rest.chars().all(|c| c.is_ascii_hexdigit());
+        version || git_hash
+    })
+}
+
 /// Whether `candidate` is a root segment the source itself establishes: Rust's `crate`, the
 /// containing Cargo package/lib name, or the checkout directory name.
 pub(crate) fn module_root_alias(root: &Path, path: &Path, candidate: &str) -> bool {
@@ -231,6 +253,12 @@ pub(crate) fn module_root_alias(root: &Path, path: &Path, candidate: &str) -> bo
         return true;
     }
     if cargo_manifest_names(root.join("Cargo.toml"), candidate) {
+        return true;
+    }
+    // A dependency's file, outside the checkout, is under the directory Cargo named after its
+    // crate: `tokio-1.53.1/src/...` from the registry, `rapidfire-80d5a94b1426bea5/<rev>/src/...`
+    // from git. That name is its root, so `rapidfire::mpsc::bounded` names it (#2094).
+    if !path.starts_with(root) && names_dependency_crate(path, &wanted) {
         return true;
     }
     // Test fixtures and macOS callers can spell a file through `/var` while their canonical
